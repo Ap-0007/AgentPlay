@@ -55,7 +55,10 @@ function classifyTask(files, instruction, preferredOutput = 'auto') {
   if (files.length === 1 && IMAGE_EXTS.includes(exts[0])) {
     const imageEdit = parseImageEditInstruction(text)
     if (imageEdit) return { kind: 'image-convert', outputFormat: imageEdit.format || exts[0].slice(1), requiresAi: false, summary: '本地图片转换', imageEdit }
-    throw new Error('图片任务请说明：转成什么格式（png/jpg/webp），或压缩/缩放到什么程度')
+    if (/描述|介绍|什么|说说|讲讲|提取.*(?:文字|文本)|识别.*(?:文字|内容)|读.*字|OCR|总结|分析|看图/i.test(text)) {
+      return { kind: 'image-ask', outputFormat: 'chat', requiresAi: true, summary: '图片理解' }
+    }
+    throw new Error('图片任务请说明：转成什么格式（png/jpg/webp），或压缩/缩放到什么程度；也可以直接问"这张图里有什么"')
   }
   if (files.length === 1 && AUDIO_EXTS.includes(exts[0]) && /转写|听写|转录|字幕|语音.*文字|识别.*说话|转成文字/.test(text)) {
     return { kind: 'transcribe', outputFormat: /时间轴|srt|时间戳/.test(text) ? 'srt' : 'txt', requiresAi: false, summary: '离线语音转写' }
@@ -802,7 +805,7 @@ async function splitPdf(filePath, outputDir, baseName) {
 }
 
 class DocumentWorkspaceService {
-  constructor({ outputRoot, historyRoot, complete, renderPdf, ocr, officeConvert, imageWindow, transcriber }) {
+  constructor({ outputRoot, historyRoot, complete, renderPdf, ocr, officeConvert, imageWindow, transcriber, describeImage }) {
     this.outputRoot = outputRoot
     this.historyRoot = historyRoot
     this.complete = complete
@@ -811,6 +814,7 @@ class DocumentWorkspaceService {
     this.officeConvert = officeConvert || null
     this.imageWindow = imageWindow || null
     this.transcriber = transcriber || null
+    this.describeImage = describeImage || null
   }
 
   inspect(filePaths) {
@@ -853,15 +857,17 @@ class DocumentWorkspaceService {
     const prompt = [
       `用户要求：${plan.instruction}`,
       `目标格式：${plan.outputFormat}`,
-      sourceChunks.join('\n').slice(0, MAX_PROMPT_CHARS),
+      this.truncateAtParagraph(sourceChunks.join('\n')),
       '只返回一个 JSON 对象，不要使用 Markdown 代码块。结构：',
       '{"title":"文件标题","summary":"完成说明","outputFormat":"docx|xlsx|pptx|pdf|txt|md","content":"用于Word/PDF/文本的完整正文，使用#标题和-列表","slides":[{"title":"页标题","bullets":["要点"],"notes":"备注"}],"sheets":[{"name":"工作表名","rows":[["表头"],["数据"]]}]}',
       '事实必须来自源文件；资料不足时明确标注，不得编造。Excel公式必须以=开头，PPT每页最多8个要点。'
     ].join('\n')
+    options.onStatus?.('正在生成内容')
     const response = await this.complete({
       systemPrompt: '你是 AgentPlay 文档规划器。你只生成严格、可执行、符合指定 JSON 结构的文档数据。',
       prompt,
-      signal: options.signal
+      signal: options.signal,
+      timeoutMs: 180000
     })
     return normalizeAiPlan(parseJsonObject(response.text), plan.outputFormat)
   }
@@ -886,6 +892,67 @@ class DocumentWorkspaceService {
       signal: options.signal
     })
     return normalizeBundlePlan(parseJsonObject(response.text), plan.bundleFormats)
+  }
+
+  // 段落边界截断：超长时在尾部 2000 字内回退到最后一个空行，避免把句子拦腰切断
+  truncateAtParagraph(text, maxChars = MAX_PROMPT_CHARS) {
+    const value = String(text || '')
+    if (value.length <= maxChars) return value
+    const boundary = value.lastIndexOf('\n\n', maxChars)
+    return boundary > 0 && boundary > maxChars - 2000 ? value.slice(0, boundary) : value.slice(0, maxChars)
+  }
+
+  // 单格式生成：每次只让模型产出一种格式，单次调用小、快、失败不拖死其它格式
+  async buildSectionPlan(plan, format, sourceText, options = {}) {
+    const schemas = {
+      docx: '{"title":"报告标题","content":"完整正文，使用#标题和-列表"}',
+      pdf: '{"title":"交付文档标题","content":"完整正文，使用#标题和-列表"}',
+      md: '{"content":"Markdown 正文"}',
+      txt: '{"content":"纯文本正文"}',
+      xlsx: '{"sheets":[{"name":"工作表名","rows":[["表头"],["数据"]]}]}',
+      pptx: '{"title":"演示稿标题","slides":[{"title":"页标题","bullets":["要点"],"notes":"备注"}]}'
+    }
+    const prompt = [
+      `用户要求：${plan.instruction}`,
+      `本次只生成 ${format.toUpperCase()} 一种格式的内容，不要输出其它格式。`,
+      sourceText,
+      '只返回一个 JSON 对象，不要使用 Markdown 代码块。结构：',
+      schemas[format] || schemas.txt,
+      '事实必须来自源文件；资料不足时明确标注，不得编造；PPT每页最多8个要点；Excel公式必须以=开头。'
+    ].join('\n')
+    const response = await this.complete({
+      systemPrompt: '你是 AgentPlay 文档规划器。你只生成严格、可执行、符合指定 JSON 结构的文档数据。',
+      prompt,
+      signal: options.signal,
+      timeoutMs: 180000
+    })
+    const raw = { title: plan.files[0]?.name || 'AgentPlay文档', [format]: parseJsonObject(response.text) }
+    return normalizeBundlePlan(raw, [format]).sections[format]
+  }
+
+  async buildBundleSections(plan, options = {}) {
+    const sourceChunks = []
+    for (const file of plan.files) {
+      sourceChunks.push(`\n===== ${file.name} =====\n${await extractText(file.path, this.ocr)}`)
+    }
+    const sourceText = this.truncateAtParagraph(sourceChunks.join('\n'))
+    const sections = {}
+    const failures = {}
+    const total = plan.bundleFormats.length
+    for (let index = 0; index < plan.bundleFormats.length; index++) {
+      const format = plan.bundleFormats[index]
+      options.onStatus?.(`正在生成 ${format.toUpperCase()}（${index + 1}/${total}）`)
+      try {
+        sections[format] = await this.buildSectionPlan(plan, format, sourceText, options)
+      } catch (error) {
+        if (options.signal?.aborted) throw error
+        failures[format] = error instanceof Error ? error.message : String(error)
+      }
+    }
+    if (!Object.keys(sections).length) {
+      throw new Error(`全部格式生成失败：${Object.values(failures)[0] || '未知原因'}`)
+    }
+    return { sections, failures }
   }
 
   async buildFormulaPlan(plan, options = {}) {
@@ -925,21 +992,23 @@ class DocumentWorkspaceService {
 
   async writeBundle(plan, bundle) {
     const outputDir = plan.files[0] ? path.dirname(plan.files[0].path) : this.outputRoot
-    const baseName = cleanFileName(path.parse(plan.files[0]?.name || bundle.title).name)
+    const baseName = cleanFileName(path.parse(plan.files[0]?.name || 'AgentPlay成套文档').name)
     const labels = { docx: '报告', xlsx: '分析', pptx: '汇报', pdf: '交付', md: '文档', txt: '文本' }
     const outputs = []
     for (const [format, section] of Object.entries(bundle.sections)) {
       const finalPath = uniqueOutputPath(outputDir, `${baseName}-AgentPlay处理版-${labels[format] || format}`, format)
       if (format === 'docx') await writeDocx(finalPath, section.title, section.content)
       else if (format === 'xlsx') await writeWorkbook(finalPath, section.sheets)
-      else if (format === 'pptx') await writePresentation(finalPath, section.title || bundle.title, section.slides.length ? section.slides : slidesFromText(section.title || bundle.title, section.content))
+      else if (format === 'pptx') await writePresentation(finalPath, section.title || baseName, section.slides.length ? section.slides : slidesFromText(section.title || baseName, section.content))
       else if (format === 'pdf') {
         if (!this.renderPdf) throw new Error('当前平台没有可用的 PDF 渲染器')
         await this.renderPdf(htmlForPdf(section.title, section.content), finalPath)
       } else commitBuffer(finalPath, Buffer.from(section.content || '', 'utf8'))
       outputs.push(finalPath)
     }
-    return { outputs, summary: `${bundle.summary}（共 ${outputs.length} 个文件）` }
+    const failureNotes = Object.entries(bundle.failures || {})
+    const summary = `已生成 ${outputs.length} 个文件${failureNotes.length ? `；${failureNotes.map(([format, reason]) => `${format.toUpperCase()} 失败（${reason}）`).join('；')}，可重试` : ''}`
+    return { outputs, summary, failures: bundle.failures }
   }
 
   recordHistory(plan, result) {
@@ -983,6 +1052,11 @@ class DocumentWorkspaceService {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, plan.imageEdit.format || plan.files[0].ext.slice(1))
       const converted = await convertImage({ sourcePath: plan.files[0].path, finalPath, instruction: plan.instruction, createWindow: this.imageWindow })
       result = { outputs: [finalPath], summary: `已转换为 ${converted.format.toUpperCase()}（${(converted.bytes / 1024).toFixed(0)}KB）` }
+    } else if (plan.kind === 'image-ask') {
+      if (!this.describeImage) throw new Error('当前平台没有图片理解能力')
+      options.onStatus?.('正在理解图片内容')
+      const answer = await this.describeImage(plan.files[0].path, plan.instruction, options)
+      result = { outputs: [], summary: answer, chatOnly: true }
     } else if (plan.kind === 'docx-insert-image') {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'docx')
       const inserted = await insertImageIntoDocx(plan.files[0].path, plan.files[1].path, finalPath, { anchor: plan.anchor })
@@ -1014,7 +1088,7 @@ class DocumentWorkspaceService {
       await editSpreadsheet(plan.files[0].path, finalPath, '')
       result = { outputs: [finalPath], summary: '表格已转换并另存为新的 XLSX 文件' }
     } else if (plan.kind === 'ai-bundle') {
-      const bundle = await this.buildBundlePlan(plan, options)
+      const bundle = await this.buildBundleSections(plan, options)
       result = await this.writeBundle(plan, bundle)
     } else {
       result = await this.writeGenerated(plan, plan.requiresAi ? await this.buildAiPlan(plan, options) : null)

@@ -19,7 +19,9 @@ function kindLabel(kind: string) {
     'docx-edit': '本地无损编辑 DOCX',
     'pptx-edit': '本地页面级编辑 PPTX',
     'office-convert': '本机 Office 高保真转换',
-    'ai-bundle': 'AI 成套生成'
+    'ai-bundle': 'AI 成套生成',
+    'image-convert': '本地图片转换',
+    'image-ask': '图片理解（云端视觉或本机 OCR）'
   }
   return labels[kind] || kind
 }
@@ -44,15 +46,21 @@ export default function AgentPanel() {
     useAgentStore()
   const [attachments, setAttachments] = useState<Array<{ token: string; name: string; ext: string; size: number }>>([])
   const [docCaps, setDocCaps] = useState<{ modelConfigured: boolean; modelLocal: boolean; providerName: string; model: string } | null>(null)
-  const [docBusy, setDocBusy] = useState(false)
-  const [docStatus, setDocStatus] = useState('')
-  const [docOutputs, setDocOutputs] = useState<string[]>([])
+  const task = useAgentStore((s) => s.task)
+  const setTask = useAgentStore((s) => s.setTask)
+  const docBusy = task.running
+  const docStatus = task.status
+  const docOutputs = task.outputs
+  const setDocBusy = (value: boolean) => setTask({ running: value })
+  const setDocStatus = (value: string) => setTask({ status: value })
+  const setDocOutputs = (value: string[]) => setTask({ outputs: value })
   const [needsApproval, setNeedsApproval] = useState(false)
   const [cloudApproved, setCloudApproved] = useState(false)
   const [outputFormat, setOutputFormat] = useState('auto')
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
   const docRequestIdRef = useRef('')
+  const docBusyRef = useRef(false)
   const runDocTaskRef = useRef<(forceApprove?: boolean) => Promise<void>>(async () => {})
   const runAnalysisTaskRef = useRef<(forceApprove?: boolean) => Promise<void>>(async () => {})
   const routeTextSendRef = useRef<() => Promise<void>>(async () => {})
@@ -129,6 +137,66 @@ export default function AgentPanel() {
     return () => window.removeEventListener('ai-player-attach-docs', handler)
   }, [])
 
+  // 拖文件进对话窗 = 与系统选择框同级的显式授权
+  const handleDropFiles = async (event: React.DragEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const paths = Array.from(event.dataTransfer.files)
+      .map((file) => (file as File & { path?: string }).path)
+      .filter((value): value is string => Boolean(value))
+    if (!paths.length) return
+    const result = await window.aiPlayer?.documents?.attachPaths?.(paths)
+    if (!result) return
+    if (!Array.isArray(result)) {
+      addMessage('agent', `[错误] ${result.error}`)
+      return
+    }
+    if (result.length) setAttachments((current) => [...current, ...result])
+  }
+
+  const [history, setHistory] = useState<Array<{ id: string; createdAt: string; instruction: string; kind: string; outputs: string[]; summary: string }>>([])
+  useEffect(() => {
+    if (messages.length === 0 && attachments.length === 0) {
+      void window.aiPlayer?.documents?.history?.().then((items) => { if (items) setHistory(items) })
+    }
+  }, [messages.length, attachments.length])
+
+  // 按附件类型给出推荐动作：点一下 = 自动填指令并直接执行，不用组织语言
+  const suggestedActions = (() => {
+    if (!attachments.length) return [] as Array<{ label: string; text: string }>
+    const exts = new Set(attachments.map((file) => file.ext))
+    const has = (...list: string[]) => list.some((ext) => exts.has(ext))
+    const actions: Array<{ label: string; text: string }> = []
+    if (has('.docx', '.doc', '.txt', '.md', '.rtf', '.odt')) {
+      actions.push(
+        { label: '整理成 Word', text: '把所选资料整理成结构清晰的中文 Word 文档，保留事实和关键数据，增加标题和要点。' },
+        { label: '转成 PDF', text: '把所选文件高保真转成 PDF，保留原版式。' },
+        { label: '做成 PPT', text: '根据所选资料制作一套 12 页以内的中文演示稿，每页只保留关键结论。' },
+        { label: '提取文字', text: '提取所选文件的全部文字，另存为 TXT 文件。' }
+      )
+    }
+    if (has('.xlsx', '.csv', '.ods')) {
+      actions.push(
+        { label: '清理表格', text: '清理所有文本首尾空格，并去除重复行。' },
+        { label: '表格转 PDF', text: '把所选表格转成 PDF。' }
+      )
+    }
+    if (has('.pdf')) {
+      actions.push(
+        { label: '提取文字', text: '提取 PDF 全部文字，另存为 TXT 文件。' },
+        { label: '合并 PDF', text: '按照所选顺序合并这些 PDF，另存为一个新文件。' },
+        { label: '拆分 PDF', text: '把 PDF 按页拆分成单页文件。' }
+      )
+    }
+    if (has('.pptx', '.odp')) actions.push({ label: '演示稿转 PDF', text: '把演示稿转成 PDF。' })
+    return actions.slice(0, 6)
+  })()
+
+  const runSuggested = (text: string) => {
+    setInputText(text)
+    window.setTimeout(() => void runDocTaskRef.current(), 0)
+  }
+
   const openAny = async () => {
     const result = await window.aiPlayer?.chat?.openAny?.()
     if (!result) return
@@ -148,13 +216,16 @@ export default function AgentPanel() {
   const runDocTask = async (forceApprove = false) => {
     const api = window.aiPlayer?.documents
     const instruction = forceApprove ? docInstructionRef.current : inputText.trim()
-    if (!api || !instruction || docBusy) return
+    if (!api || !instruction || docBusyRef.current) return
+    docBusyRef.current = true
     docInstructionRef.current = instruction
     const files = attachments
     if (!forceApprove) {
       addMessage('user', `${instruction}\n（附件：${files.map((file) => file.name).join('、')}）`)
       setInputText('')
     }
+    pendingTaskRef.current = 'doc'
+    setTask({ kind: 'doc', label: '文档任务', error: '' })
     setDocBusy(true)
     setDocStatus('正在分析任务')
     setDocOutputs([])
@@ -182,8 +253,11 @@ export default function AgentPanel() {
       setNeedsApproval(false)
       setCloudApproved(false)
     } catch (error) {
-      addMessage('agent', `[错误] ${error instanceof Error ? error.message : String(error)}`)
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ error: message })
+      addMessage('agent', `[错误] ${message}`)
     } finally {
+      docBusyRef.current = false
       setDocBusy(false)
       setDocStatus('')
     }
@@ -193,7 +267,8 @@ export default function AgentPanel() {
   const runAnalysisTask = async (forceApprove = false) => {
     const api = window.aiPlayer?.analysis
     const instruction = forceApprove ? analysisInstructionRef.current : inputText.trim()
-    if (!api || !instruction || docBusy) return
+    if (!api || !instruction || docBusyRef.current) return
+    docBusyRef.current = true
     const { videoSrc, mediaName, duration } = usePlayerStore.getState()
     if (!videoSrc || /^(https?|blob):/i.test(videoSrc)) {
       addMessage('agent', '[错误] 当前没有可解剖的本地视频，请先打开一个视频文件。')
@@ -204,6 +279,8 @@ export default function AgentPanel() {
       addMessage('user', `${instruction}\n（当前视频：${mediaName || videoSrc}）`)
       setInputText('')
     }
+    pendingTaskRef.current = 'analysis'
+    setTask({ kind: 'analysis', label: '视频解剖', error: '' })
     setDocBusy(true)
     setDocStatus('正在分析任务')
     setDocOutputs([])
@@ -227,8 +304,11 @@ export default function AgentPanel() {
       setNeedsApproval(false)
       setCloudApproved(false)
     } catch (error) {
-      addMessage('agent', `[错误] ${error instanceof Error ? error.message : String(error)}`)
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ error: message })
+      addMessage('agent', `[错误] ${message}`)
     } finally {
+      docBusyRef.current = false
       setDocBusy(false)
       setDocStatus('')
     }
@@ -308,6 +388,8 @@ export default function AgentPanel() {
       <div
         className="w-full max-w-lg h-96 mb-20 bg-player-surface/95 backdrop-blur-md rounded-2xl border border-white/10 flex flex-col shadow-2xl"
         onClick={(e) => e.stopPropagation()}
+        onDrop={(e) => void handleDropFiles(e)}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
       >
         {/* 头部 */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
@@ -386,6 +468,16 @@ export default function AgentPanel() {
             </select>
           </div>
         )}
+        {suggestedActions.length > 0 && (
+          <div className="px-4 py-2 border-b border-white/10 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-gray-500">快捷动作：</span>
+            {suggestedActions.map((action) => (
+              <button key={action.label} disabled={docBusy} onClick={() => runSuggested(action.text)} className="rounded-full border border-player-accent/40 bg-player-accent/10 px-3 py-1 text-xs text-player-accent hover:bg-player-accent/20 disabled:opacity-40">
+                {action.label}
+              </button>
+            ))}
+          </div>
+        )}
         {needsApproval && (
           <div className="flex items-center gap-2 border-b border-amber-400/20 bg-amber-400/[0.06] px-4 py-2 text-xs text-amber-100">
             <label className="flex flex-1 cursor-pointer items-center gap-2">
@@ -416,7 +508,7 @@ export default function AgentPanel() {
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           {messages.length === 0 && attachments.length === 0 && (
             <div className="mt-6">
-              <p className="text-gray-500 text-sm text-center">说点什么，或点 📎 打开视频和文档</p>
+              <p className="text-gray-500 text-sm text-center">说点什么，或点 📎 打开视频和文档，也可以直接把文件拖进来</p>
               <div className="mt-4 grid grid-cols-2 gap-2">
                 {EXAMPLE_TASKS.map((task) => (
                   <button
@@ -428,14 +520,54 @@ export default function AgentPanel() {
                   </button>
                 ))}
               </div>
+              {history.length > 0 && (
+                <div className="mt-5">
+                  <p className="text-[11px] text-gray-600 mb-1">最近任务</p>
+                  <div className="space-y-1">
+                    {history.slice(0, 5).map((record) => (
+                      <div key={record.id} className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+                        <p className="truncate text-xs text-gray-400">{record.instruction}</p>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {record.outputs.map((output) => (
+                            <button key={output} onClick={() => void window.aiPlayer?.system?.openPath(output)} className="truncate rounded bg-black/30 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-black/50" title={output}>
+                              {output.split(/[\\/]/).pop()}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {messages.length === 0 && attachments.length > 0 && (
             <p className="text-gray-500 text-sm text-center mt-8">附件已就绪，说对它们要做什么…</p>
           )}
-          {(docBusy || docOutputs.length > 0) && (
+          {(docBusy || docOutputs.length > 0 || task.error) && (
             <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] p-3">
-              {docBusy && <p className="text-xs text-slate-300"><span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />{docStatus || '正在处理…'}</p>}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-emerald-100">{task.label || '任务'}</span>
+                {docBusy && <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />}
+              </div>
+              {docBusy && (() => {
+                const progress = /（(\d+)\/(\d+)）/.exec(docStatus || '')
+                const percent = progress ? Math.round((Number(progress[1]) / Number(progress[2])) * 100) : null
+                return (
+                  <>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/40">
+                      <div className={`h-full bg-blue-500 transition-all ${percent === null ? 'animate-pulse' : ''}`} style={{ width: `${percent ?? 30}%` }} />
+                    </div>
+                    <p className="mt-1 text-xs text-slate-300">{docStatus || '正在处理…'}</p>
+                  </>
+                )
+              })()}
+              {task.error && (
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <p className="min-w-0 text-xs text-red-300">{task.error}</p>
+                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
+                </div>
+              )}
               {docOutputs.length > 0 && <div className="mt-1 space-y-1">{docOutputs.map((output) => (
                 <button key={output} onClick={() => void window.aiPlayer?.system?.openPath(output)} className="block w-full truncate rounded bg-black/20 px-2 py-1.5 text-left text-xs text-emerald-200 hover:bg-black/30" title={output}>打开结果：{output}</button>
               ))}</div>}

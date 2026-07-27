@@ -532,7 +532,7 @@ class AgentEngine {
     const abort = () => controller.abort()
     options.signal?.addEventListener('abort', abort, { once: true })
     if (options.signal?.aborted) controller.abort()
-    const timer = setTimeout(abort, 90000)
+    const timer = setTimeout(abort, Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 90000)
     try {
       let response
       if (protocol === 'anthropic') {
@@ -582,6 +582,80 @@ class AgentEngine {
     } finally {
       clearTimeout(timer)
       options.signal?.removeEventListener('abort', abort)
+    }
+  }
+
+  // 图片理解：携带一张图片(dataURL)的视觉调用，三协议分支与创作服务同构
+  async completeVision({ prompt, imageDataUrl, apiKey = null, systemPrompt, signal, timeoutMs } = {}) {
+    const resolved = this.resolveProvider(apiKey)
+    const { base, key, model, protocol, requiresKey = true } = resolved
+    if (!base || !model || (!key && requiresKey)) {
+      throw new Error('尚未配置可用模型，请先到“功能 → 模型接入中心”保存连接')
+    }
+    const dataUrl = String(imageDataUrl || '')
+    if (!/^data:image\/(png|jpe?g|webp|gif|bmp);base64,/.test(dataUrl)) throw new Error('图片数据格式无效')
+    const base64 = dataUrl.split(',', 2)[1]
+    const mimeType = dataUrl.slice(5, dataUrl.indexOf(';'))
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) controller.abort()
+    const timer = setTimeout(abort, Number(timeoutMs) > 0 ? Number(timeoutMs) : 90000)
+    try {
+      let response
+      if (protocol === 'anthropic') {
+        response = await safeFetch(resolved, `${base}/v1/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({
+            model, max_tokens: 2048, system: systemPrompt || '你是 AgentPlay 的图片理解助手。',
+            messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } }, { type: 'text', text: prompt }] }]
+          }),
+          signal: controller.signal
+        })
+      } else if (protocol === 'gemini') {
+        response = await safeFetch(resolved, `${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt || '你是 AgentPlay 的图片理解助手。' }] },
+            contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType, data: base64 } }] }]
+          }),
+          signal: controller.signal
+        })
+      } else {
+        const headers = { 'Content-Type': 'application/json' }
+        if (key) headers.Authorization = `Bearer ${key}`
+        response = await safeFetch(resolved, `${base}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: systemPrompt || '你是 AgentPlay 的图片理解助手。' },
+              { role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: dataUrl } }] }
+            ],
+            max_tokens: 2048,
+            temperature: 0.2
+          }),
+          signal: controller.signal
+        })
+      }
+      if (!response.ok) throw new Error(`视觉模型 API ${response.status}: ${(await response.text()).slice(0, 800)}`)
+      const data = await response.json()
+      const text = protocol === 'anthropic'
+        ? (data.content || []).filter((block) => block.type === 'text').map((block) => block.text).join('\n')
+        : protocol === 'gemini'
+          ? (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || '').join('\n')
+          : data.choices?.[0]?.message?.content
+      if (!text) throw new Error('视觉模型没有返回内容')
+      return { text, provider: resolved.providerId, model }
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error(signal?.aborted ? '图片理解已取消' : '图片理解超时')
+      throw error
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
     }
   }
 

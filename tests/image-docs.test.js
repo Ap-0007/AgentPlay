@@ -41,7 +41,8 @@ test('imageSize 读取 PNG/JPEG/BMP 尺寸', () => {
 test('图片相关任务分类：转换、插图、提取、拒绝无格式要求', () => {
   assert.equal(classifyTask([{ path: '照片.jpg' }], '转成webp', 'auto').kind, 'image-convert')
   assert.deepEqual(classifyTask([{ path: '照片.jpg' }], '压缩到一半', 'auto').imageEdit.scale, 0.5)
-  assert.throws(() => classifyTask([{ path: '照片.jpg' }], '总结一下', 'auto'), /图片任务请说明/)
+  assert.equal(classifyTask([{ path: '照片.jpg' }], '总结一下这张图', 'auto').kind, 'image-ask')
+  assert.throws(() => classifyTask([{ path: '照片.jpg' }], '你好', 'auto'), /图片任务请说明/)
   const pair = [{ path: '报告.docx' }, { path: '照片.jpg' }]
   assert.deepEqual(classifyTask(pair, '把这张图插到文档末尾', 'auto'), { kind: 'docx-insert-image', outputFormat: 'docx', requiresAi: false, summary: '本地 DOCX 插图', anchor: null })
   assert.equal(classifyTask(pair, '把图插到"第三章"后面', 'auto').anchor, '第三章')

@@ -40,6 +40,8 @@ interface AiPlayerAPI {
       defaultOutputDir: string
     }>
     selectFiles: () => Promise<Array<{ token: string; name: string; ext: string; size: number }>>
+    attachPaths: (filePaths: string[]) => Promise<Array<{ token: string; name: string; ext: string; size: number }> | { error: string }>
+    history: () => Promise<Array<{ id: string; createdAt: string; instruction: string; kind: string; outputs: string[]; summary: string }>>
     plan: (input: {
       tokens: string[]
       instruction: string

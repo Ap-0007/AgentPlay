@@ -248,11 +248,20 @@ test('mpv compatibility playback uses the same complete-fit aspect policy', () =
   ])
 })
 
-test('native menus own the former oversized toolbar actions', () => {
+test('feature menu is trimmed to daily entries while background actions stay wired', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const library = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MediaLibrary.tsx'), 'utf8')
-  for (const action of ['network-source', 'record', 'dedup', 'organize', 'plugins', 'poster', 'devices', 'model-center']) {
-    assert.match(main, new RegExp(`sendAction\\(['"]${action}['"]\\)`), `${action} is missing from the native menu`)
+  const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
+  const menuBlock = main.slice(main.indexOf("{ label: '功能', submenu: ["), main.indexOf("{ label: '窗口', submenu: ["))
+  for (const keep of ['AI 对话窗', '模型接入中心', '拉片、深度解剖与原创重构', '设备、投屏与同步']) {
+    assert.ok(menuBlock.includes(keep), `菜单应保留：${keep}`)
+  }
+  for (const removed of ['AI 助手', '屏幕录制', '重复文件检查', '智能整理建议', '海报信息刮削', '插件管理', '电脑操作建议', '语音唤醒']) {
+    assert.ok(!menuBlock.includes(removed), `菜单应下线：${removed}`)
+  }
+  // 低频能力的渲染层接线保留在后台，后续由对话指令触发
+  for (const action of ['record', 'dedup', 'organize', 'plugins', 'poster', 'devices']) {
+    assert.match(library + app, new RegExp(`'${action}'`), `${action} 渲染层接线不应删除`)
   }
   assert.doesNotMatch(library, />\s*\+ 网络源\s*</)
   assert.doesNotMatch(library, />\s*去重\s*</)

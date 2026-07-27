@@ -509,18 +509,9 @@ const menuTemplate = [
     { label: '截取当前画面', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendAction('screenshot') }
   ] },
   { label: '功能', submenu: [
-    { label: 'AI 助手', accelerator: 'CmdOrCtrl+K', click: () => sendAction('agent') },
-    { label: 'AI 对话窗…', accelerator: 'CmdOrCtrl+D', click: () => sendAction('agent') },
+    { label: 'AI 对话窗', accelerator: 'CmdOrCtrl+D', click: () => sendAction('agent') },
     { label: '模型接入中心…', click: () => sendAction('model-center') },
     { label: '拉片、深度解剖与原创重构…', accelerator: 'CmdOrCtrl+L', click: () => sendAction('analysis-studio') },
-    { type: 'separator' },
-    { label: '屏幕录制', click: () => sendAction('record') },
-    { label: '重复文件检查', click: () => sendAction('dedup') },
-    { label: '智能整理建议', click: () => sendAction('organize') },
-    { label: '海报信息刮削', click: () => sendAction('poster') },
-    { label: '插件管理', click: () => sendAction('plugins') },
-    { label: '电脑操作建议（只观察）', click: () => sendAction('computer-use') },
-    { label: '语音唤醒（默认关闭）', click: () => sendAction('voice-wake-toggle') },
     { label: '设备、投屏与同步', click: () => sendAction('devices') }
   ] },
   { label: '窗口', submenu: [
@@ -573,7 +564,7 @@ app.whenReady().then(async () => {
     logger: log
   })
   agentEngine = new AgentEngine(mpv)
-  llmComplete = async ({ systemPrompt, prompt, signal }) => {
+  llmComplete = async ({ systemPrompt, prompt, signal, timeoutMs }) => {
     let config = modelConfigStore.resolved('chat')
     let usesBundledRuntime = false
     try {
@@ -583,10 +574,36 @@ app.whenReady().then(async () => {
         usesBundledRuntime = true
         config = { ...config, model: status.model, baseUrl: status.baseUrl }
       }
-      return await agentEngine.completeText([{ role: 'user', content: prompt }], config, { systemPrompt, signal })
+      return await agentEngine.completeText([{ role: 'user', content: prompt }], config, { systemPrompt, signal, timeoutMs })
     } finally {
       if (usesBundledRuntime) bundledRuntime.release()
     }
+  }
+  // 图片理解：优先已配置云端视觉模型；不行就本机 WinRT OCR 兜底（本地模型与零配置场景也能答）
+  const describeImage = async (imagePath, instruction, { signal } = {}) => {
+    const config = modelConfigStore.resolved('chat')
+    const requiresKey = config.requiresKey !== false
+    const visionReady = config.providerId !== 'bundled-lite' && Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey))
+    if (visionReady) {
+      const ext = path.extname(imagePath).toLowerCase().slice(1)
+      try {
+        const dataUrl = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${fs.readFileSync(imagePath).toString('base64')}`
+        if (dataUrl.length > 20 * 1024 * 1024) throw new Error('图片超过 15MB，请先压缩')
+        const result = await agentEngine.completeVision({ prompt: instruction, imageDataUrl: dataUrl, signal, timeoutMs: 120000 })
+        return result.text
+      } catch (error) {
+        log.warn('视觉模型图片理解失败，回落 OCR', error)
+      }
+    }
+    const availability = await ocrService.availability()
+    if (availability.available) {
+      const results = await ocrService.recognize([imagePath])
+      const entry = results.get(imagePath)
+      if (entry?.ok && String(entry.text || '').trim()) {
+        return `${visionReady ? '（视觉模型暂不可用，已用本机 OCR 识别图中文字）' : '（当前模型不支持看图，已用本机 OCR 识别图中文字）'}\n${String(entry.text).trim()}`
+      }
+    }
+    throw new Error(visionReady ? '图片理解失败：视觉模型与 OCR 都没有给出结果' : '没有可用的图片理解方式：云端视觉模型未配置，本机 OCR 不可用或未识别到文字')
   }
   documentWorkspace = new DocumentWorkspaceService({
     outputRoot: path.join(app.getPath('documents'), 'AgentPlay 输出'),
@@ -596,6 +613,7 @@ app.whenReady().then(async () => {
     officeConvert,
     imageWindow: createHiddenWindow,
     transcriber: { transcribeToFile },
+    describeImage,
     complete: llmComplete
   })
   const screenCapture = new ScreenCaptureService(() => mainWindow)
@@ -802,6 +820,32 @@ app.whenReady().then(async () => {
     if (result.canceled) return []
     return approveDocumentPaths(result.filePaths.slice(0, 20))
   })
+  ipcMain.handle('documents:attach-paths', (event, filePaths) => {
+    assertTrustedSender(event)
+    // 拖入对话窗的文件等同用户显式授权（与系统选择框同级）
+    const requested = Array.isArray(filePaths) ? filePaths.slice(0, 20) : []
+    if (!requested.length) return []
+    try {
+      return approveDocumentPaths(requested)
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('documents:history', (event) => {
+    assertTrustedSender(event)
+    const historyFile = path.join(app.getPath('userData'), 'document-workspace', 'history.jsonl')
+    try {
+      const lines = fs.readFileSync(historyFile, 'utf8').split('\n').map((line) => line.trim()).filter(Boolean)
+      return lines.slice(-10).reverse().map((line) => {
+        try {
+          const record = JSON.parse(line)
+          return { id: record.id, createdAt: record.createdAt, instruction: record.instruction, kind: record.kind, outputs: record.outputs || [], summary: record.summary || '' }
+        } catch { return null }
+      }).filter(Boolean)
+    } catch {
+      return []
+    }
+  })
   ipcMain.handle('documents:plan', (event, input = {}) => {
     assertTrustedSender(event)
     const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 20) : []
@@ -839,7 +883,7 @@ app.whenReady().then(async () => {
         }
       }
       sendStatus(plan.requiresAi ? '正在理解要求和生成内容' : '正在执行本地文档操作')
-      const result = await documentWorkspace.run(paths, input.instruction, input.outputFormat, { signal: controller.signal })
+      const result = await documentWorkspace.run(paths, input.instruction, input.outputFormat, { signal: controller.signal, onStatus: sendStatus })
       sendStatus('正在验证并保存结果')
       return { ...result, requestId }
     } catch (error) {
@@ -868,7 +912,7 @@ app.whenReady().then(async () => {
     const split = splitOpenAnyPaths(result.filePaths, {
       inspectDocuments: (paths) => {
         const ext = path.extname(paths[0]).toLowerCase()
-        if (IMAGE_EXTS.includes(ext) || AUDIO_MEDIA_EXTS.includes(ext)) throw new Error('图片/音视频走播放器')
+        if (AUDIO_MEDIA_EXTS.includes(ext)) throw new Error('音视频走播放器')
         return documentWorkspace.inspect(paths)
       },
       isMediaPath: (filePath, ext) => ALL_EXTS.includes(ext),

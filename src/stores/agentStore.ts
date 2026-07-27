@@ -6,6 +6,18 @@ export interface AgentMessage {
   text: string
 }
 
+// 对话窗任务卡片：文档/解剖任务的可视状态；放 store 里，面板关闭再打开不丢
+export interface AgentTask {
+  kind: 'doc' | 'analysis' | null
+  label: string
+  running: boolean
+  status: string
+  outputs: string[]
+  error: string
+}
+
+const EMPTY_TASK: AgentTask = { kind: null, label: '', running: false, status: '', outputs: [], error: '' }
+
 interface AgentState {
   open: boolean
   listening: boolean
@@ -13,6 +25,9 @@ interface AgentState {
   messages: AgentMessage[]
   thinking: boolean
   activeRequestId: string | null
+  task: AgentTask
+  setTask: (patch: Partial<AgentTask>) => void
+  resetTask: () => void
   openPanel: () => void
   closePanel: () => void
   toggleListening: () => void
@@ -30,6 +45,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   messages: [],
   thinking: false,
   activeRequestId: null,
+  task: EMPTY_TASK,
+  setTask: (patch) => set((s) => ({ task: { ...s.task, ...patch } })),
+  resetTask: () => set({ task: EMPTY_TASK }),
   openPanel: () => set({ open: true }),
   closePanel: () => set({ open: false }),
   toggleListening: () => set((s) => ({ listening: !s.listening })),

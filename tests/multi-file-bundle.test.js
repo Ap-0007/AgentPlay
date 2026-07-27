@@ -33,34 +33,36 @@ test('normalizeBundlePlan 只保留被请求的格式并校验结构', () => {
   assert.throws(() => normalizeBundlePlan({ title: '空' }, ['docx']), /没有给出任何可用的成套内容/)
 })
 
-test('联合任务端到端：一次模型调用产出成套文件并记录历史', async () => {
+test('联合任务端到端：每种格式一次模型调用，产出成套文件并记录历史', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-e2e-'))
   try {
     const sourcePath = path.join(tempDir, '销售资料.txt')
     fs.writeFileSync(sourcePath, '1月收入100，成本80；2月收入200，成本150。')
-    const bundleJson = JSON.stringify({
-      title: '销售成套',
-      summary: '已生成销售成套成果',
+    const perFormat = {
       docx: { title: '销售报告', content: '# 销售概况\n- 1月毛利20\n- 2月毛利50' },
       xlsx: { sheets: [{ name: '月度数据', rows: [['月份', '收入', '成本'], ['1月', 100, 80], ['2月', 200, 150]] }] },
-      pptx: { slides: [{ title: '销售概览', bullets: ['总收入300', '总毛利70'], notes: '开场白' }] },
+      pptx: { title: '销售概览', slides: [{ title: '销售概览', bullets: ['总收入300', '总毛利70'], notes: '开场白' }] },
       pdf: { title: '销售交付版', content: '交付正文' }
-    })
+    }
+    const calls = []
     const service = new DocumentWorkspaceService({
       outputRoot: path.join(tempDir, 'outputs'),
       historyRoot: path.join(tempDir, 'history'),
       complete: async ({ prompt }) => {
-        assert.match(prompt, /需要产出：docx、xlsx、pptx、pdf/)
-        return { text: bundleJson }
+        const format = ['docx', 'xlsx', 'pptx', 'pdf'].find((item) => prompt.includes(`本次只生成 ${item.toUpperCase()}`))
+        assert.ok(format, `每次调用必须只生成一种格式：${prompt.slice(0, 80)}`)
+        calls.push(format)
+        return { text: JSON.stringify(perFormat[format]) }
       },
       renderPdf: async (html, finalPath) => fs.writeFileSync(finalPath, '%PDF-1.4\n%%EOF\n')
     })
     const result = await service.run([sourcePath], '把资料做成一套：Word 报告 + Excel 分析表 + PPT 汇报 + PDF 交付版', 'auto')
     assert.equal(result.success, true)
     assert.equal(result.plan.kind, 'ai-bundle')
+    assert.deepEqual(calls, ['docx', 'xlsx', 'pptx', 'pdf'], '四种格式各调用一次')
     assert.equal(result.outputs.length, 4)
     assert.ok(result.outputs.every((output) => fs.existsSync(output)))
-    assert.match(result.summary, /共 4 个文件/)
+    assert.match(result.summary, /已生成 4 个文件/)
 
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.readFile(result.outputs.find((output) => output.endsWith('.xlsx')))

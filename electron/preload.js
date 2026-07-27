@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     capabilities: () => ipcRenderer.invoke('documents:capabilities'),
     selectFiles: () => ipcRenderer.invoke('documents:select-files'),
     plan: (input) => ipcRenderer.invoke('documents:plan', input),
+    attachPaths: (filePaths) => ipcRenderer.invoke('documents:attach-paths', filePaths),
+    history: () => ipcRenderer.invoke('documents:history'),
     run: (input) => ipcRenderer.invoke('documents:run', input),
     cancel: (requestId) => ipcRenderer.invoke('documents:cancel', requestId),
     onOpenExternal: (cb) => subscribeDocumentOpen(cb),
