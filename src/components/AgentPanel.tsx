@@ -326,6 +326,10 @@ export default function AgentPanel() {
   const routeTextSend = async () => {
     const text = inputText.trim()
     const { videoSrc } = usePlayerStore.getState()
+    if (/^去重|重复文件|查重/.test(text)) {
+      await runDedupTask(text)
+      return
+    }
     if (text && window.aiPlayer?.mediaDownload) {
       try {
         const detection = await window.aiPlayer.mediaDownload.detect(text)
@@ -437,6 +441,37 @@ export default function AgentPanel() {
     }
   }
   runLinkAnalysisTaskRef.current = runLinkAnalysisTask
+
+  const runDedupTask = async (instruction: string) => {
+    if (docBusyRef.current) return
+    docBusyRef.current = true
+    pendingTaskRef.current = 'doc'
+    setTask({ kind: 'doc', label: '重复文件检查', error: '' })
+    addMessage('user', instruction)
+    setInputText('')
+    setDocBusy(true)
+    setDocStatus('正在扫描媒体库找重复文件')
+    setDocOutputs([])
+    try {
+      const results = ((await window.aiPlayer?.media?.dedup()) || []) as Array<{ original: string; duplicate: string; name: string }>
+      if (!results.length) {
+        addMessage('agent', '没有发现内容重复的文件 ✓')
+      } else {
+        const lines = results.slice(0, 10).map((d, i) => `${i + 1}. ${d.name}`).join('\n')
+        const more = results.length > 10 ? `\n…共 ${results.length} 组` : ''
+        addMessage('agent', `发现 ${results.length} 组内容重复（下面是重复副本，点开可直接查看）：\n${lines}${more}`)
+        setDocOutputs(results.slice(0, 5).map((d) => d.duplicate))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ error: message })
+      addMessage('agent', `[错误] ${message}`)
+    } finally {
+      docBusyRef.current = false
+      setDocBusy(false)
+      setDocStatus('')
+    }
+  }
 
   const cancelDocTask = async () => {
     if (docRequestIdRef.current) await window.aiPlayer?.documents?.cancel(docRequestIdRef.current)
