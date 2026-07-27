@@ -111,7 +111,6 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   })
   const [metadataStatus, setMetadataStatus] = useState('')
   const [recordTrigger, setRecordTrigger] = useState(0)
-  const recentMedia = usePlayerStore((state) => state.recentMedia)
   const favorites = usePlayerStore((state) => state.favorites)
   const toggleFavorite = usePlayerStore((state) => state.toggleFavorite)
 
@@ -132,6 +131,12 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   }
 
   // 一个“打开”：文件按类型分流（视频进播放器、文档进对话附件），文件夹授权进媒体库
+  // 拉片进对话流：粘贴链接即发全管道；本地视频打开后说“深度解剖”
+  const openAnalysisChat = () => {
+    useAgentStore.getState().openPanel()
+    useAgentStore.getState().addMessage('agent', '把 B站/YouTube/抖音等视频链接粘贴发给我，就自动下载并开始拉片；也可以先用「打开」选一个本地视频，然后对我说“深度解剖这个视频”。')
+  }
+
   const handleOpen = async () => {
     const result = await window.aiPlayer?.home?.open()
     if (!result) return
@@ -340,7 +345,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
           📂 打开
         </button>
         <button onClick={openPanel} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">🎙️ AI 对话窗</button>
-        <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'analysis-studio' }))} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">🎬 拉片</button>
+        <button onClick={() => openAnalysisChat()} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">🎬 拉片</button>
         <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'devices' }))} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">📺 投屏</button>
         <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'model-center' }))} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">🧩 模型接入中心</button>
       </div>
@@ -483,19 +488,6 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
             ))}
           </div>
         )}
-        {recentMedia.length > 0 && !query && !activeTag && (
-          <div className="mb-6">
-            <h2 className="text-gray-400 text-sm mb-3">最近播放</h2>
-            <div className="flex gap-3 overflow-x-auto pb-1">
-              {recentMedia.slice(0, 8).map((item) => (
-                <button key={item.src} onClick={() => onPlay(item.name, item.src)} className="min-w-[180px] max-w-[240px] bg-player-surface rounded-xl px-4 py-3 text-left hover:ring-1 ring-player-accent">
-                  <span className="block text-sm truncate">▶ {item.name}</span>
-                  <span className="block text-[11px] text-gray-600 mt-1">{new Date(item.openedAt).toLocaleString()}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
         <h2 className="text-gray-400 text-sm mb-3">
           {isDesktop ? `媒体库（${files.length}）` : '媒体库（Web 端示例）'}
         </h2>
@@ -506,12 +498,6 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
             <div className="text-4xl mb-4">🎞️</div>
             <p className="text-gray-300 text-base mb-2">这里还没有媒体文件</p>
             <p className="text-gray-500 text-sm mb-5">拖入文件，或点上方「打开」选择文件/文件夹</p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => void handleOpen()}
-                className="px-4 py-2 rounded-lg bg-player-accent text-sm"
-              >📂 打开</button>
-            </div>
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">

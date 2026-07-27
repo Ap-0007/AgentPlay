@@ -27,8 +27,19 @@ test('home action row exposes open, agent panel, analysis, cast and model center
   assert.match(library, /ai-player-attach-docs/)
   // 空态只剩一个“打开”
   const emptyBlock = library.slice(library.indexOf('这里还没有媒体文件'), library.indexOf('这里还没有媒体文件') + 900)
-  assert.ok(emptyBlock.includes('📂 打开'))
-  assert.ok(!emptyBlock.includes('打开文件夹'))
+  assert.ok(!emptyBlock.includes('📂 打开'), '空态不应再有打开按钮（动作行已有唯一入口）')
+})
+
+test('home has exactly one open entry, one recent strip, and analysis opens the chat flow', () => {
+  // 横排“最近播放”已移除，只剩右侧竖排
+  assert.ok(!library.includes('<h2 className="text-gray-400 text-sm mb-3">最近播放</h2>'), '横排最近播放应已移除')
+  // 空态不再重复“打开”按钮
+  const emptyBlock = library.slice(library.indexOf('这里还没有媒体文件'), library.indexOf('这里还没有媒体文件') + 700)
+  assert.ok(!emptyBlock.includes('handleOpen'), '空态不应再有打开按钮')
+  // 拉片按钮改为对话流引导
+  assert.match(library, /openAnalysisChat/)
+  assert.match(library, /就自动下载并开始拉片/)
+  assert.doesNotMatch(library, /detail: 'analysis-studio'/)
 })
 
 test('recent strip auto-hides after idle, pins via localStorage and replays on click', () => {
