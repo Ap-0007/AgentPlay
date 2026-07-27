@@ -102,6 +102,9 @@ interface AiPlayerAPI {
     cancel: () => Promise<boolean>
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
+  home?: {
+    open: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number }>; folders: string[] }>
+  }
   chat?: {
     openAny: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number }> }>
     attachPaths: (filePaths: string[]) => Promise<{ documents: Array<{ token: string; name: string; ext: string; size: number }>; skipped: number }>

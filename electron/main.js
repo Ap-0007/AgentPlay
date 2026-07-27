@@ -1096,18 +1096,9 @@ app.whenReady().then(async () => {
     controller?.abort()
     return Boolean(controller)
   })
-  ipcMain.handle('chat:open-any', async (event) => {
-    assertTrustedSender(event)
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: '打开文件（视频、音频、图片或文档）',
-      properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: '所有支持的文件', extensions: [...new Set([...ALL_EXTS, ...SUPPORTED_EXTENSIONS].map((ext) => ext.slice(1)))] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
-    })
-    if (result.canceled) return { media: [], documents: [] }
-    const split = splitOpenAnyPaths(result.filePaths, {
+  // “打开任意文件”统一分流：媒体进播放器、文档进授权附件（chat:open-any 与 home:open 共用）
+  const splitAndApproveAny = (filePaths) => {
+    const split = splitOpenAnyPaths(filePaths, {
       inspectDocuments: (paths) => {
         const ext = path.extname(paths[0]).toLowerCase()
         if (AUDIO_MEDIA_EXTS.includes(ext)) throw new Error('音视频走播放器')
@@ -1123,6 +1114,44 @@ app.whenReady().then(async () => {
     })
     for (const mediaPath of split.media) userAuthorizedPaths.add(mediaPath)
     return split
+  }
+
+  ipcMain.handle('chat:open-any', async (event) => {
+    assertTrustedSender(event)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '打开文件（视频、音频、图片或文档）',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '所有支持的文件', extensions: [...new Set([...ALL_EXTS, ...SUPPORTED_EXTENSIONS].map((ext) => ext.slice(1)))] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled) return { media: [], documents: [] }
+    return splitAndApproveAny(result.filePaths)
+  })
+  // 首页“打开”：一个对话框同时接受文件与文件夹；文件按类型分流，文件夹授权并回报给媒体库
+  ipcMain.handle('home:open', async (event) => {
+    assertTrustedSender(event)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '打开（可选择文件或文件夹）',
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+      filters: [
+        { name: '所有支持的文件', extensions: [...new Set([...ALL_EXTS, ...SUPPORTED_EXTENSIONS].map((ext) => ext.slice(1)))] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled) return { media: [], documents: [], folders: [] }
+    const folders = []
+    const files = []
+    for (const filePath of result.filePaths.slice(0, 20)) {
+      try {
+        if (fs.statSync(filePath).isDirectory()) folders.push(path.resolve(filePath))
+        else files.push(filePath)
+      } catch { /* 路径失效时跳过 */ }
+    }
+    for (const folder of folders) authorizedFolders.add(folder)
+    const split = splitAndApproveAny(files)
+    return { ...split, folders }
   })
   ipcMain.handle('chat:attach-paths', (event, filePaths) => {
     assertTrustedSender(event)

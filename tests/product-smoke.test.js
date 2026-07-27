@@ -125,7 +125,7 @@ test('unified conversation opens any file and runs document tasks inline', () =>
   const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
   const globalTypes = fs.readFileSync(path.join(__dirname, '..', 'src', 'types', 'global.d.ts'), 'utf8')
   assert.match(main, /chat:open-any/)
-  assert.match(main, /splitOpenAnyPaths\(result\.filePaths/)
+  assert.match(main, /splitAndApproveAny\(result\.filePaths/)
   assert.match(main, /approvedDocumentSelections\.set\(token, \{ path: file\.path/)
   assert.match(preload, /openAny: \(\) => ipcRenderer\.invoke\('chat:open-any'\)/)
   assert.match(panel, /chat\?\.openAny/)
