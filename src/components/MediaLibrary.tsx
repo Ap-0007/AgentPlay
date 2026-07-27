@@ -133,8 +133,11 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   // 一个“打开”：文件按类型分流（视频进播放器、文档进对话附件），文件夹授权进媒体库
   // 拉片进对话流：粘贴链接即发全管道；本地视频打开后说“深度解剖”
   const openAnalysisChat = () => {
-    useAgentStore.getState().openPanel()
-    useAgentStore.getState().addMessage('agent', '把 B站/YouTube/抖音等视频链接粘贴发给我，就自动下载并开始拉片；也可以先用「打开」选一个本地视频，然后对我说“深度解剖这个视频”。')
+    const store = useAgentStore.getState()
+    store.openPanel()
+    if (store.messages.length === 0) {
+      store.addMessage('agent', '把 B站/YouTube/抖音等视频链接粘贴发给我，就自动下载并开始拉片；也可以先用「打开」选一个本地视频，然后对我说“深度解剖这个视频”。')
+    }
   }
 
   const handleOpen = async () => {

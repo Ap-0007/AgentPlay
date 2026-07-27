@@ -24,10 +24,23 @@ function extractUrl(text) {
   return match ? match[0] : ''
 }
 
+// 常见视频站域名：消息里带这些链接就视为视频下载/拉片意图（含分享口令格式）
+const VIDEO_SITE_HOSTS = ['bilibili.com', 'b23.tv', 'douyin.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'ixigua.com', 'kuaishou.com', 'xiaohongshu.com', 'v.qq.com', 'iqiyi.com', 'mgtv.com', 'youku.com', 'sohu.com']
+
+function isVideoSiteUrl(value) {
+  try {
+    const host = new URL(String(value || '').trim()).hostname.toLowerCase()
+    return VIDEO_SITE_HOSTS.some((site) => host === site || host.endsWith('.' + site))
+  } catch {
+    return false
+  }
+}
+
 function isDownloadIntent(text) {
   const url = extractUrl(text)
   if (!url) return false
   if (isMediaUrl(url)) return true
+  if (isVideoSiteUrl(url)) return true // 视频站链接（含分享口令）一律触发
   if (String(text || '').trim() === url) return true // 裸链接视为下载意图（站点页交给 yt-dlp 解析）
   return /下载|保存|拉片|解剖|分析|双语|字幕|转写|播放/i.test(String(text || ''))
 }
@@ -116,8 +129,10 @@ async function downloadRemoteMedia(url, { destDir, onProgress, signal, fetchImpl
 
 module.exports = {
   MAX_BYTES,
+  VIDEO_SITE_HOSTS,
   downloadRemoteMedia,
   extractUrl,
   isDownloadIntent,
-  isMediaUrl
+  isMediaUrl,
+  isVideoSiteUrl
 }

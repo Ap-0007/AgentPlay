@@ -50,6 +50,15 @@ test('media url and download intent detection', () => {
   assert.equal(isDownloadIntent('看一下 https://cdn.com/page'), false)
 })
 
+test('video site share text triggers intent, plain pages do not', () => {
+  assert.equal(isDownloadIntent('6.17 复制打开抖音，看看【曲率出逃的作品】揭秘企业AI服务 https://v.douyin.com/5zAOagRhFgY/ :9pm 09/19 w@F.UY gOx:/'), true)
+  assert.equal(isDownloadIntent('https://www.bilibili.com/video/BV1xx'), true)
+  assert.equal(isDownloadIntent('https://youtu.be/dQw4w9WgXcQ'), true)
+  assert.equal(isDownloadIntent('看看这个 https://example.com/news'), false)
+})
+
+const { isVideoSiteUrl } = require('../electron/media-download-service')
+
 test('download writes file atomically with progress and follows redirects', async () => {
   const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-dl-'))
   const fetchImpl = async (url) => {
