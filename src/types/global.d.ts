@@ -278,7 +278,7 @@ interface AiPlayerAPI {
     config: (role?: 'chat' | 'computerUse') => Promise<{ schemaVersion: number; role: 'chat' | 'computerUse'; providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean; keyStorage: string; capabilities: Record<string, boolean | number> }>
     save: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; baseUrl: string; apiKey?: string; clearApiKey?: boolean }) => Promise<{ providerId: string; model: string; baseUrl: string; hasApiKey: boolean }>
     list: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; baseUrl: string; apiKey?: string; useSavedKey?: boolean }) => Promise<{ success: boolean; models: string[]; error?: string }>
-    test: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; baseUrl: string; apiKey?: string; useSavedKey?: boolean }) => Promise<{ success: boolean; message: string }>
+    test: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; baseUrl: string; apiKey?: string; useSavedKey?: boolean }) => Promise<{ success: boolean; message: string; planDetected?: boolean; upgrade?: { providerId: string; baseUrl: string; model: string; models: string[] } }>
     discoverLocal: (role?: 'chat' | 'computerUse') => Promise<Array<{ id: string; role: 'chat' | 'computerUse'; name: string; providerId: string; baseUrl: string; status: 'ready'; models: string[] }>>
     bundledStatus: () => Promise<BundledModelStatus>
     startBundled: () => Promise<BundledModelStatus>

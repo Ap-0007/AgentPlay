@@ -50,6 +50,7 @@ export default function ModelCenter({ onClose }: Props) {
   const [downloadActive, setDownloadActive] = useState(false)
   const [downloadError, setDownloadError] = useState('')
   const [packBytes, setPackBytes] = useState(0)
+  const [planUpgrade, setPlanUpgrade] = useState<{ providerId: string; baseUrl: string; model: string; models: string[] } | null>(null)
 
   const roleProviders = useMemo(
     () => providers.filter((item) => item.roles.includes(role) && (!item.bundled || bundledStatus?.assetsPresent)),
@@ -273,9 +274,37 @@ export default function ModelCenter({ onClose }: Props) {
   const testConnection = async () => {
     setBusy(true)
     setStatus('正在测试连接…')
+    setPlanUpgrade(null)
     const result = await window.aiPlayer?.models?.test(connectionInput())
     setBusy(false)
+    if (result?.success && result.planDetected && result.upgrade) {
+      setPlanUpgrade(result.upgrade)
+      setStatus(`✓ ${result.message}`)
+      return
+    }
     setStatus(result?.success ? `✓ ${result.message}` : `连接失败：${result?.message || '未知错误'}`)
+  }
+
+  // 测试连接识别出 Coding Plan 套餐后，一键按套餐专用地址与模型列表接入
+  const applyPlanUpgrade = async () => {
+    if (!planUpgrade) return
+    setBusy(true)
+    try {
+      setProviderId(planUpgrade.providerId)
+      setBaseUrl(planUpgrade.baseUrl)
+      setModel(planUpgrade.model)
+      setRemoteModels(planUpgrade.models)
+      const keyToSave = apiKey
+      const saved = await window.aiPlayer?.models?.save({ role, providerId: planUpgrade.providerId, model: planUpgrade.model, baseUrl: planUpgrade.baseUrl, apiKey: keyToSave })
+      setHasApiKey(Boolean(saved?.hasApiKey))
+      setApiKey('')
+      setPlanUpgrade(null)
+      setStatus(`✓ 已按 Coding Plan 套餐接入：${planUpgrade.baseUrl} / ${planUpgrade.model}（可用 ${planUpgrade.models.length} 个套餐模型）`)
+    } catch (error) {
+      setStatus(`套餐接入失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const save = async () => {
@@ -446,6 +475,15 @@ export default function ModelCenter({ onClose }: Props) {
             <button disabled={busy || !model || !baseUrl} onClick={save} className="px-5 py-2 rounded-lg bg-player-accent hover:bg-blue-600 text-sm disabled:opacity-40">保存并启用</button>
             {hasApiKey && <button disabled={busy} onClick={clearKey} className="px-3 py-2 text-xs text-red-300 hover:text-red-200">清除已存 Key</button>}
           </div>
+
+          {planUpgrade && (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-emerald-100">
+                已识别 Coding Plan 套餐：专用地址 + 套餐内 {planUpgrade.models.length} 个模型（通用地址会失败或产生额外费用）
+              </div>
+              <button disabled={busy} onClick={() => void applyPlanUpgrade()} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-40">按套餐接入</button>
+            </div>
+          )}
 
           {status && <div className={`rounded-lg px-4 py-3 text-sm ${status.startsWith('✓') ? 'bg-emerald-500/10 text-emerald-300' : 'bg-white/5 text-gray-300'}`}>{status}</div>}
 

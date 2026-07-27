@@ -23,7 +23,7 @@ const log = require('./logger')
 const { analyzeDir, clusterByTag, findDuplicates, suggestClip } = require('./media-service')
 const { DlnaServer } = require('./dlna-server')
 const { listPlugins } = require('./plugin-service')
-const { PROVIDERS, listModels, probeConnection } = require('./model-providers')
+const { PROVIDERS, listModels, probeConnection, detectVolcenginePlan, VOLCENGINE_CODING_BASE_URL, VOLCENGINE_CODING_MODELS } = require('./model-providers')
 const { discoverLocalServices } = require('./local-model-discovery')
 const { ModelConfigStore } = require('./model-config-store')
 const { ComputerUseProvider } = require('./adapters/computer-use-provider')
@@ -929,6 +929,24 @@ app.whenReady().then(async () => {
       const saved = modelConfigStore.resolved(config.role || 'chat')
       const apiKey = config.apiKey || (config.useSavedKey && config.providerId === saved.providerId ? saved.apiKey : '')
       const localStatus = config.providerId === 'bundled-lite' ? await bundledRuntime.start() : null
+      // 火山方舟：先探测 Key 是否属于 Coding Plan 套餐，是则按套餐专用地址验证并给出修正建议
+      if (config.providerId === 'volcengine' && apiKey) {
+        const plan = await detectVolcenginePlan(apiKey)
+        if (plan.isPlan) {
+          const models = plan.models.length ? plan.models : VOLCENGINE_CODING_MODELS
+          return {
+            success: true,
+            planDetected: true,
+            upgrade: {
+              providerId: 'volcengine-coding',
+              baseUrl: VOLCENGINE_CODING_BASE_URL,
+              model: models.includes('ark-code-latest') ? 'ark-code-latest' : models[0],
+              models
+            },
+            message: `检测到你的 Key 属于 Coding Plan 套餐：必须用套餐专用地址（/api/coding/v3），用通用地址会失败或产生额外费用。套餐内可用 ${models.length} 个模型，点「按套餐接入」一键修正。`
+          }
+        }
+      }
       const result = await probeConnection({ ...config, apiKey, ...(localStatus ? { model: localStatus.model, baseUrl: localStatus.baseUrl } : {}) })
       const detail = result.generationVerified ? '，并已完成最小生成验证' : ''
       return { success: true, message: `连接成功，返回 ${result.models.length} 个可用模型${detail}` }

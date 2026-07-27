@@ -25,6 +25,7 @@ const RAW_PROVIDERS = [
   { id: 'moonshot', name: 'Moonshot / Kimi', region: '中国', protocol: 'openai', baseUrl: 'https://api.moonshot.cn/v1', models: ['kimi-k2.5', 'moonshot-v1-32k'], requiresKey: true },
   { id: 'zhipu', name: '智谱 BigModel', region: '中国', protocol: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: ['glm-5', 'glm-4.7'], requiresKey: true },
   { id: 'volcengine', name: '火山引擎方舟 / 豆包', region: '中国', protocol: 'openai', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', models: ['doubao-seed-1-6'], requiresKey: true, modelHint: '在方舟控制台“在线推理”创建推理接入点，把 ep- 开头的接入点 ID 填到上面“大模型型号”一栏；Coding Plan 等套餐同样按接入点使用。' },
+  { id: 'volcengine-coding', name: '火山方舟 Coding Plan（编程套餐）', region: '中国', protocol: 'openai', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', models: ['ark-code-latest', 'doubao-seed-2.1-turbo', 'doubao-seed-2.0-lite', 'minimax-m2.7', 'minimax-m3', 'glm-5.2', 'glm-latest', 'deepseek-v4-flash', 'deepseek-v4-pro', 'kimi-k2.6', 'kimi-k2.7-code'], requiresKey: true, modelHint: 'Coding Plan 套餐专用地址（/api/coding/v3），套餐内模型直接选；测试连接时会自动识别套餐 Key 并提示一键接入。' },
   { id: 'baidu', name: '百度千帆 / 文心', region: '中国', protocol: 'openai', baseUrl: 'https://qianfan.baidubce.com/v2', models: ['ernie-5.0', 'ernie-4.5-turbo'], requiresKey: true },
   { id: 'bundled-lite', name: '内置 Qwen2.5-0.5B（离线轻量版）', region: '本机内置', protocol: 'openai', baseUrl: 'http://127.0.0.1:11555/v1', models: ['ai-player-qwen2.5-0.5b'], requiresKey: false, localOnly: true, bundled: true, capabilities: { streaming: false, tools: false, maxConcurrency: 1 }, modelHint: '约 409MB，只用于字幕摘要和一般问答；播放器控制走毫秒级本地路由。默认 4 线程以内、2K 上下文，闲置 5 分钟自动释放。' },
   { id: 'ollama', name: 'Ollama（本机）', region: '本机', protocol: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', models: ['qwen3:8b', 'deepseek-r1:8b', 'llama3.3'], requiresKey: false, localOnly: true },
@@ -229,6 +230,30 @@ async function probeConnection(input, options = {}) {
   }
 }
 
+const VOLCENGINE_CODING_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
+const VOLCENGINE_CODING_MODELS = ['ark-code-latest', 'doubao-seed-2.1-turbo', 'doubao-seed-2.0-lite', 'minimax-m2.7', 'minimax-m3', 'glm-5.2', 'glm-latest', 'deepseek-v4-flash', 'deepseek-v4-pro', 'kimi-k2.6', 'kimi-k2.7-code']
+
+// 探测火山方舟 Key 是否为 Coding Plan 套餐：套餐 Key 在专用地址（/api/coding/v3）可列出模型。
+// 用通用地址（/api/v3）调套餐 Key 不走套餐额度，会失败或产生额外费用——这是"根本无法使用"的根因。
+async function detectVolcenginePlan(apiKey, options = {}) {
+  if (!apiKey) return { isPlan: false, models: [] }
+  const abort = createAbortContext(options.signal, options.timeoutMs || 8000)
+  try {
+    const { safeFetch } = require('./safe-fetch')
+    const probeConfig = { providerId: 'volcengine-coding', providerName: '火山方舟 Coding Plan', protocol: 'openai', baseUrl: VOLCENGINE_CODING_BASE_URL, apiKey }
+    const response = await safeFetch(probeConfig, `${VOLCENGINE_CODING_BASE_URL}/models`, { headers: authHeaders(probeConfig), signal: abort.signal }, options)
+    if (!response.ok) return { isPlan: false, models: [], status: response.status }
+    const body = await response.json().catch(() => null)
+    const items = Array.isArray(body) ? body : body?.data || body?.models || []
+    const models = items.map((item) => (typeof item === 'string' ? item : item.id || item.name)).filter(Boolean).map(String)
+    return { isPlan: true, models: models.length ? models.slice(0, 50) : [...VOLCENGINE_CODING_MODELS] }
+  } catch {
+    return { isPlan: false, models: [] }
+  } finally {
+    abort.dispose()
+  }
+}
+
 module.exports = {
   DEFAULT_CAPABILITIES,
   PROVIDERS,
@@ -239,5 +264,8 @@ module.exports = {
   authHeaders,
   createAbortContext,
   listModels,
-  probeConnection
+  probeConnection,
+  VOLCENGINE_CODING_BASE_URL,
+  VOLCENGINE_CODING_MODELS,
+  detectVolcenginePlan
 }
