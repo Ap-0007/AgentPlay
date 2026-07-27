@@ -100,11 +100,6 @@ function classifyTask(files, instruction, preferredOutput = 'auto') {
     return { kind: 'office-convert', outputFormat: 'pdf', requiresAi: false, summary: '调用本机 Office 引擎高保真转换' }
   }
   const languageRetarget = /改成|变成/.test(text) && /英文|英语|中文|汉语|日语|日文|韩语|法语|德语|西班牙语|俄语/.test(text)
-  const pureConversion = !languageRetarget && /转换|转成|转为|导出|改成|变成/.test(text) && !/改写|翻译|总结|提炼|补充|重组|生成|制作/.test(text)
-  const readable = files.every((file) => ['.txt', '.md', '.csv', '.json', '.srt', '.vtt', '.docx', '.doc', '.xlsx', '.pptx', '.pdf', '.odt', '.ods', '.odp', '.rtf', '.html', '.htm'].includes(path.extname(file.path).toLowerCase()))
-  if (files.length > 0 && pureConversion && readable) {
-    return { kind: 'convert', outputFormat, requiresAi: false, summary: `转换为 ${outputFormat.toUpperCase()}` }
-  }
   const bundleSet = new Set()
   if (/word|docx|报告/i.test(text)) bundleSet.add('docx')
   if (/excel|xlsx|分析表|工作簿|电子表格/i.test(text)) bundleSet.add('xlsx')
@@ -112,9 +107,17 @@ function classifyTask(files, instruction, preferredOutput = 'auto') {
   if (/pdf/i.test(text)) bundleSet.add('pdf')
   if (/markdown|\.md/i.test(text)) bundleSet.add('md')
   if (/txt|纯文本|文本文件/i.test(text)) bundleSet.add('txt')
-  const hasBundleConnector = /和|与|以及|并且|\+|、|，|,|再加|还要|同时|一套|成套|全家桶|打包|分别|全套/.test(text)
+  // 成套判断必须在纯转换之前："做成ppt，再转成PDF"是两种格式的成套任务，不能被"转成"劫走
+  const hasBundleConnector = /和|与|以及|并且|\+|、|，|,|再|然后|接着|随后|一并|再加|还要|同时|一套|成套|全家桶|打包|分别|全套/.test(text)
   if (bundleSet.size >= 2 && hasBundleConnector) {
     return { kind: 'ai-bundle', outputFormat: 'bundle', requiresAi: true, summary: `一次生成 ${[...bundleSet].map((format) => format.toUpperCase()).join('、')} 成套成果`, bundleFormats: [...bundleSet] }
+  }
+  // 内容级修改（改字体/样式/排版）不是纯转换，必须走模型生成
+  const contentRestyle = /字体|字号|加粗|斜体|排版|水印|页眉|页脚|行距|边距/.test(text)
+  const pureConversion = !languageRetarget && !contentRestyle && /转换|转成|转为|导出|改成|变成/.test(text) && !/改写|翻译|总结|提炼|补充|重组|生成|制作/.test(text)
+  const readable = files.every((file) => ['.txt', '.md', '.csv', '.json', '.srt', '.vtt', '.docx', '.doc', '.xlsx', '.pptx', '.pdf', '.odt', '.ods', '.odp', '.rtf', '.html', '.htm'].includes(path.extname(file.path).toLowerCase()))
+  if (files.length > 0 && pureConversion && readable) {
+    return { kind: 'convert', outputFormat, requiresAi: false, summary: `转换为 ${outputFormat.toUpperCase()}` }
   }
   return { kind: 'ai-generate', outputFormat, requiresAi: true, summary: files.length ? '根据文件和要求生成新成果' : '根据要求创建新成果' }
 }

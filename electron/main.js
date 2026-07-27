@@ -48,6 +48,7 @@ const { OfficeConvertService } = require('./office-convert-service')
 const { TranscriptionService } = require('./transcription-service')
 const { parseSrt, buildBilingualSrt, translateEntries, cuesToEntries, runLiveTranslation } = require('./subtitle-bilingual-service')
 const { splitOpenAnyPaths, isPathInsideRoots } = require('./open-any')
+const { downloadRemoteMedia, extractUrl, isDownloadIntent } = require('./media-download-service')
 const { rasterizePdfPages } = require('./pdf-rasterizer')
 const { LocalAiDownloadService } = require('./local-ai-download-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
@@ -81,6 +82,7 @@ const activeAiRequests = new Map()
 const activeComputerUseRequests = new Map()
 const activeDocumentRequests = new Map()
 const activeAnalysisRequests = new Map()
+const activeMediaDownloads = new Map()
 let liveSubtitleSession = null
 let llmComplete = null
 const approvedDocumentSelections = new Map()
@@ -820,6 +822,46 @@ app.whenReady().then(async () => {
     if (result.canceled) return []
     return approveDocumentPaths(result.filePaths.slice(0, 20))
   })
+  ipcMain.handle('media:download-detect', (event, text) => {
+    assertTrustedSender(event)
+    return { matched: isDownloadIntent(text), url: extractUrl(text) }
+  })
+  ipcMain.handle('media:download', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const url = extractUrl(input.url || input.text || '')
+    if (!url) return { success: false, error: '没有找到可下载的链接' }
+    const requestId = normalizeRequestId(input.requestId, 'media-dl')
+    activeMediaDownloads.get(requestId)?.abort()
+    const controller = new AbortController()
+    activeMediaDownloads.set(requestId, controller)
+    const sendStatus = (status) => {
+      if (!event.sender.isDestroyed()) event.sender.send('media:download-status', { requestId, status })
+    }
+    try {
+      sendStatus('正在校验链接')
+      const result = await downloadRemoteMedia(url, {
+        destDir: path.join(app.getPath('videos'), 'AgentPlay 下载'),
+        signal: controller.signal,
+        onProgress: ({ received, total }) => {
+          const mb = (value) => (value / 1024 / 1024).toFixed(1)
+          sendStatus(total ? `正在下载 ${mb(received)}/${mb(total)}MB` : `已下载 ${mb(received)}MB`)
+        }
+      })
+      userAuthorizedPaths.add(path.resolve(result.outputPath))
+      sendStatus('下载完成')
+      return { success: true, requestId, ...result }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      activeMediaDownloads.delete(requestId)
+    }
+  })
+  ipcMain.handle('media:download-cancel', (event, requestId) => {
+    assertTrustedSender(event)
+    const controller = activeMediaDownloads.get(String(requestId || ''))
+    controller?.abort()
+    return Boolean(controller)
+  })
   ipcMain.handle('documents:attach-paths', (event, filePaths) => {
     assertTrustedSender(event)
     // 拖入对话窗的文件等同用户显式授权（与系统选择框同级）
@@ -1475,6 +1517,21 @@ app.whenReady().then(async () => {
         return { success: true, action: `已用本机 ${printed.engine} 发送打印` }
       }
       return printFile(resolved)
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('print:html', async (event, html) => {
+    assertTrustedSender(event)
+    try {
+      const content = String(html || '')
+      if (!content.trim()) throw new Error('没有可打印的内容')
+      if (Buffer.byteLength(content, 'utf8') > 5 * 1024 * 1024) throw new Error('打印内容超过 5MB')
+      const win = new BrowserWindow({ show: false, sandbox: true, webPreferences: { contextIsolation: true, nodeIntegration: false } })
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(content))
+      win.webContents.print({ printBackground: true })
+      setTimeout(() => win.close(), 2000)
+      return { success: true, action: '已发送打印' }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }

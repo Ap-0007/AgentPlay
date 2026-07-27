@@ -78,6 +78,6 @@ test('paragraph-boundary truncation avoids mid-sentence cuts', () => {
 test('agent panel guards doc tasks against double submission', () => {
   const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
   assert.match(panel, /docBusyRef\.current\) return/)
-  assert.equal((panel.match(/docBusyRef\.current = true/g) || []).length, 2, '文档与解剖任务都应有同步防重')
-  assert.equal((panel.match(/docBusyRef\.current = false/g) || []).length, 2, '两个 finally 都应释放防重锁')
+  assert.equal((panel.match(/docBusyRef\.current = true/g) || []).length, 3, '文档/解剖/下载任务都应有同步防重')
+  assert.equal((panel.match(/docBusyRef\.current = false/g) || []).length, 3, '三个 finally 都应释放防重锁')
 })

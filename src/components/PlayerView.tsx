@@ -307,6 +307,13 @@ export default function PlayerView({ onBack }: Props) {
     void window.aiPlayer?.windowControls?.setPlaybackChromeVisible(true)
   }, [])
 
+  const handlePrint = async () => {
+    if (!videoSrc) return
+    if (fileType === 'text') await window.aiPlayer?.print?.text(videoSrc)
+    else if (fileType === 'office' && officeHtml) await window.aiPlayer?.print?.html(buildSecureOfficeDocument(officeHtml))
+    else await window.aiPlayer?.print?.file(videoSrc)
+  }
+
   const takeScreenshot = async () => {
     const fileBase = (mediaName || '视频').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_')
     if (useMpv) {
@@ -771,6 +778,16 @@ export default function PlayerView({ onBack }: Props) {
             </button>
           </div>
         )
+      )}
+      {isDesktop && videoSrc && ['image', 'pdf', 'text', 'office'].includes(fileType) && (fileType !== 'office' || officeHtml) && (
+        <button
+          onClick={() => void handlePrint()}
+          title="打印当前文件"
+          data-player-chrome="true"
+          className="absolute top-4 right-4 z-30 w-9 h-9 rounded-lg bg-player-surface/80 hover:bg-player-surface flex items-center justify-center text-base"
+        >
+          🖨️
+        </button>
       )}
       {fileType === 'none' && (
         <div className="text-gray-600 text-center">

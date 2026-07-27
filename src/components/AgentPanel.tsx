@@ -63,8 +63,9 @@ export default function AgentPanel() {
   const docBusyRef = useRef(false)
   const runDocTaskRef = useRef<(forceApprove?: boolean) => Promise<void>>(async () => {})
   const runAnalysisTaskRef = useRef<(forceApprove?: boolean) => Promise<void>>(async () => {})
+  const runDownloadTaskRef = useRef<(url: string, instruction: string) => Promise<void>>(async () => {})
   const routeTextSendRef = useRef<() => Promise<void>>(async () => {})
-  const pendingTaskRef = useRef<'doc' | 'analysis'>('doc')
+  const pendingTaskRef = useRef<'doc' | 'analysis' | 'download'>('doc')
   const docInstructionRef = useRef('')
   const analysisInstructionRef = useRef('')
   const analysisFormatRef = useRef('docx')
@@ -120,6 +121,13 @@ export default function AgentPanel() {
 
   useEffect(() => {
     const off = window.aiPlayer?.analysis?.onStatus((event) => {
+      if (event.requestId === docRequestIdRef.current) setDocStatus(event.status)
+    })
+    return off
+  }, [])
+
+  useEffect(() => {
+    const off = window.aiPlayer?.mediaDownload?.onStatus((event) => {
       if (event.requestId === docRequestIdRef.current) setDocStatus(event.status)
     })
     return off
@@ -318,6 +326,15 @@ export default function AgentPanel() {
   const routeTextSend = async () => {
     const text = inputText.trim()
     const { videoSrc } = usePlayerStore.getState()
+    if (text && window.aiPlayer?.mediaDownload) {
+      try {
+        const detection = await window.aiPlayer.mediaDownload.detect(text)
+        if (detection?.matched && detection.url) {
+          await runDownloadTask(detection.url, text)
+          return
+        }
+      } catch { /* 意图检测失败时按普通对话处理 */ }
+    }
     if (text && videoSrc && !/^(https?|blob):/i.test(videoSrc) && window.aiPlayer?.analysis) {
       try {
         const detection = await window.aiPlayer.analysis.detect(text)
@@ -331,6 +348,42 @@ export default function AgentPanel() {
     void send()
   }
   routeTextSendRef.current = routeTextSend
+
+  const downloadUrlRef = useRef('')
+  const runDownloadTask = async (url: string, instruction: string) => {
+    const api = window.aiPlayer?.mediaDownload
+    if (!api || docBusyRef.current) return
+    docBusyRef.current = true
+    downloadUrlRef.current = url
+    pendingTaskRef.current = 'download'
+    setTask({ kind: 'doc', label: '视频下载', error: '' })
+    if (instruction) {
+      addMessage('user', instruction)
+      setInputText('')
+    }
+    setDocBusy(true)
+    setDocStatus('正在校验链接')
+    setDocOutputs([])
+    try {
+      const requestId = `media-dl-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      docRequestIdRef.current = requestId
+      const result = await api.download({ url, requestId })
+      if (!result.success || !result.outputPath) throw new Error(result.error || '下载失败')
+      setDocOutputs([result.outputPath])
+      addMessage('agent', `视频已下载（${((result.bytes || 0) / 1024 / 1024).toFixed(1)}MB）：${result.outputPath}，正在为你播放`)
+      closePanel()
+      window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ error: message })
+      addMessage('agent', `[错误] ${message}`)
+    } finally {
+      docBusyRef.current = false
+      setDocBusy(false)
+      setDocStatus('')
+    }
+  }
+  runDownloadTaskRef.current = runDownloadTask
 
   const cancelDocTask = async () => {
     if (docRequestIdRef.current) await window.aiPlayer?.documents?.cancel(docRequestIdRef.current)
@@ -565,7 +618,7 @@ export default function AgentPanel() {
               {task.error && (
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <p className="min-w-0 text-xs text-red-300">{task.error}</p>
-                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
+                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, ''); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
                 </div>
               )}
               {docOutputs.length > 0 && <div className="mt-1 space-y-1">{docOutputs.map((output) => (

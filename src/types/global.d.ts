@@ -112,6 +112,12 @@ interface AiPlayerAPI {
     cancelDownload: () => Promise<boolean>
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
+  mediaDownload?: {
+    detect: (text: string) => Promise<{ matched: boolean; url: string }>
+    download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; finalUrl?: string }>
+    cancel: (requestId: string) => Promise<boolean>
+    onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
+  }
   translatePack?: {
     status: () => Promise<{ available: boolean; missing: string[]; reason: string; modelDir: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
     download: () => Promise<{ success: boolean; error?: string; availability?: unknown }>
@@ -316,6 +322,7 @@ interface AiPlayerAPI {
   print?: {
     file: (filePath: string) => Promise<{ success: boolean; action?: string; error?: string }>
     text: (filePath: string) => Promise<{ success: boolean; action?: string; error?: string }>
+    html: (html: string) => Promise<{ success: boolean; action?: string; error?: string }>
   }
   files?: {
     scan: (dir?: string) => Promise<Array<{ name: string; path: string; ext: string; size: number }>>
