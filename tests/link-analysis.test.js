@@ -1,0 +1,53 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const test = require('node:test')
+
+const YTDLP_PACK = require('../electron/ytdlp-pack-manifest')
+const { SiteVideoService } = require('../electron/site-video-service')
+const { isDownloadIntent, extractUrl } = require('../electron/media-download-service')
+
+test('pack manifest pins official yt-dlp and ffmpeg artifacts with inner-file hashes', () => {
+  assert.equal(YTDLP_PACK.assets.length, 2)
+  const ffmpeg = YTDLP_PACK.assets.find((a) => a.kind === 'zip')
+  assert.ok(ffmpeg, '缺少 ffmpeg zip 资产')
+  assert.equal(ffmpeg.url, 'https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-essentials_build.zip')
+  assert.equal(ffmpeg.sha256, 'e2aaeaa0fdbc397d4794828086424d4aaa2102cef1fb6874f6ffd29c0b88b673')
+  const exe = ffmpeg.files.find((f) => f.path.endsWith('bin/ffmpeg.exe'))
+  assert.equal(exe.size, 99264000)
+  assert.equal(exe.sha256, '5af82a0d4fe2b9eae211b967332ea97edfc51c6b328ca35b827e73eac560dc0d')
+})
+
+test('format selector prefers merged h264 with ffmpeg and single-file-with-audio without', () => {
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ffmpeg-bin-'))
+  fs.writeFileSync(path.join(fakeBin, 'ffmpeg.exe'), 'x')
+  const withFfmpeg = new SiteVideoService({ enginePath: process.execPath, ffmpegDir: fakeBin })
+  const withoutFfmpeg = new SiteVideoService({ enginePath: process.execPath, ffmpegDir: null })
+  assert.equal(withFfmpeg.availability().ffmpegOk, true)
+  assert.equal(withoutFfmpeg.availability().ffmpegOk, false)
+  const source = fs.readFileSync(path.join(__dirname, '..', 'electron', 'site-video-service.js'), 'utf8')
+  assert.match(source, /bv\*\[height<=1080\]\[vcodec\^=avc1\]\+ba/)
+  assert.match(source, /b\[acodec!=none\]\[vcodec!=none\]\[ext=mp4\]/)
+  assert.match(source, /--ffmpeg-location/)
+})
+
+test('download intent: bare link means full pipeline, explicit download means download only', () => {
+  assert.equal(isDownloadIntent('https://www.bilibili.com/video/BV1xx'), true)
+  assert.equal(isDownloadIntent('下载这个 https://cdn.com/v.mp4'), true)
+  assert.equal(isDownloadIntent('拉片 https://www.bilibili.com/video/BV1xx'), true)
+  assert.equal(extractUrl('拉片 https://www.bilibili.com/video/BV1xx 谢谢'), 'https://www.bilibili.com/video/BV1xx')
+})
+
+test('link analysis pipeline wiring: detect mode, IPC and approval-resume path', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  assert.match(main, /wantsAnalysis = \/拉片\|解剖\|分析\|解读\|讲解\//)
+  assert.match(main, /ipcMain\.handle\('media:link-analysis'/)
+  assert.match(main, /正在离线转写语音/)
+  assert.match(main, /正在生成拉片解剖报告/)
+  assert.match(main, /analysis\.requiresApproval/)
+  assert.match(panel, /runLinkAnalysisTask/)
+  assert.match(panel, /链接拉片/)
+  assert.match(panel, /linkAnalysisVideoRef/)
+})

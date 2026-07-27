@@ -120,8 +120,9 @@ interface AiPlayerAPI {
     onComponentProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
   mediaDownload?: {
-    detect: (text: string) => Promise<{ matched: boolean; url: string }>
+    detect: (text: string) => Promise<{ matched: boolean; url: string; direct?: boolean; mode?: 'analyze' | 'download' | null }>
     download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; finalUrl?: string }>
+    linkAnalysis: (input: { url?: string; videoPath?: string; instruction?: string; outputFormat?: string; cloudApproved?: boolean; requestId: string }) => Promise<{ success: boolean; error?: string; requiresApproval?: boolean; requestId?: string; videoPath?: string; info?: { title: string; duration: number; uploader: string }; outputs?: string[]; summary?: string; usedAi?: boolean; cueCount?: number; whispered?: boolean }>
     cancel: (requestId: string) => Promise<boolean>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
   }

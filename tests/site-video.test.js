@@ -20,8 +20,8 @@ function fakeSpawn(responder) {
 }
 
 test('pack manifest pins the official yt-dlp release hash', () => {
-  assert.equal(YTDLP_PACK.assets.length, 1)
-  const asset = YTDLP_PACK.assets[0]
+  const asset = YTDLP_PACK.assets.find((a) => a.id === 'yt-dlp-win-x64')
+  assert.ok(asset)
   assert.equal(asset.url, 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe')
   assert.equal(asset.size, 18226085)
   assert.equal(asset.sha256, '52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8')

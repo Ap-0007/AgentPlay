@@ -395,7 +395,8 @@ const ytdlpDownload = new LocalAiDownloadService({
   logger: log
 })
 const siteVideo = new SiteVideoService({
-  enginePath: path.join(app.getPath('userData'), 'yt-dlp', 'yt-dlp.exe')
+  enginePath: path.join(app.getPath('userData'), 'yt-dlp', 'yt-dlp.exe'),
+  ffmpegDir: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin')
 })
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
@@ -891,9 +892,95 @@ app.whenReady().then(async () => {
       activeMediaDownloads.delete(requestId)
     }
   })
+  ipcMain.handle('media:link-analysis', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'link-ana')
+    activeMediaDownloads.get(requestId)?.abort()
+    const controller = new AbortController()
+    activeMediaDownloads.set(requestId, controller)
+    const sendStatus = (status) => {
+      if (!event.sender.isDestroyed()) event.sender.send('media:download-status', { requestId, status })
+    }
+    try {
+      let videoPath = String(input.videoPath || '').trim()
+      let info = null
+      const url = extractUrl(input.url || '')
+      if (!videoPath && !url) return { success: false, error: '没有找到链接' }
+      const destDir = path.join(app.getPath('videos'), 'AgentPlay 下载')
+      if (!videoPath) {
+        if (isMediaUrl(url)) {
+          sendStatus('正在下载视频')
+          const result = await downloadRemoteMedia(url, {
+            destDir, signal: controller.signal,
+            onProgress: ({ received, total }) => sendStatus(total ? `正在下载 ${Math.round((received / total) * 100)}%` : `已下载 ${(received / 1024 / 1024).toFixed(1)}MB`)
+          })
+          videoPath = result.outputPath
+        } else {
+          if (!siteVideo.availability().available) {
+            sendStatus('首次使用站点视频，正在下载解析组件（约 18MB）')
+            await ytdlpDownload.start({})
+          }
+          sendStatus('正在解析视频页')
+          info = await siteVideo.resolve(url, { signal: controller.signal })
+          sendStatus(`正在下载：${info.title.slice(0, 40)}`)
+          const result = await siteVideo.download(url, {
+            destDir, signal: controller.signal,
+            onProgress: (progress) => sendStatus(`正在下载 ${progress.percent}%`)
+          })
+          videoPath = result.outputPath
+        }
+        userAuthorizedPaths.add(path.resolve(videoPath))
+      }
+      if (!fs.existsSync(videoPath)) throw new Error('视频文件不存在或已被移动')
+      // 转写：有组件才做；写出同名字幕，后续解剖与播放器共用
+      const whisperStatus = transcriptionService.availability()
+      if (whisperStatus.available) {
+        sendStatus('正在离线转写语音（CPU，约为音频时长数倍）')
+        const transcription = await transcriptionService.transcribe({ sourcePath: videoPath, lang: 'auto', timestamps: true })
+        if (String(transcription.text || '').trim()) {
+          const srtPath = path.join(path.dirname(videoPath), `${path.parse(videoPath).name}.srt`)
+          if (!fs.existsSync(srtPath)) fs.writeFileSync(srtPath, transcription.text, 'utf8')
+        }
+      }
+      // 拉片解剖（自动读取同名字幕证据）
+      sendStatus('正在生成拉片解剖报告')
+      const config = modelConfigStore.resolved('chat')
+      const requiresKey = config.requiresKey !== false
+      const analysis = await runChatAnalysis({
+        sourcePath: videoPath,
+        mediaName: info?.title || path.basename(videoPath),
+        duration: info?.duration,
+        instruction: input.instruction || '深度解剖这个视频',
+        outputFormat: input.outputFormat || resolveAnalysisOutput(input.instruction),
+        cloudApproved: input.cloudApproved === true,
+        signal: controller.signal,
+        onStatus: sendStatus,
+        workspace: documentWorkspace,
+        complete: llmComplete,
+        model: {
+          configured: Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey)),
+          local: isLocalModelConfig(config),
+          provider: config.providerName || config.providerId || '',
+          model: config.model || ''
+        }
+      })
+      if (analysis.requiresApproval) {
+        return { success: false, requiresApproval: true, requestId, videoPath, info }
+      }
+      return { success: true, requestId, videoPath, info, outputs: analysis.outputs, summary: analysis.summary, usedAi: analysis.usedAi, cueCount: analysis.cueCount, whispered: whisperStatus.available }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      activeMediaDownloads.delete(requestId)
+    }
+  })
   ipcMain.handle('media:download-detect', (event, text) => {
     assertTrustedSender(event)
-    return { matched: isDownloadIntent(text), url: extractUrl(text), direct: isMediaUrl(extractUrl(text)) }
+    const url = extractUrl(text)
+    const wantsAnalysis = /拉片|解剖|分析|解读|讲解/.test(String(text || ''))
+    const wantsDownloadOnly = /下载|保存/.test(String(text || '')) && !wantsAnalysis
+    const mode = wantsAnalysis ? 'analyze' : wantsDownloadOnly ? 'download' : isDownloadIntent(text) ? 'analyze' : null
+    return { matched: Boolean(mode), url, direct: isMediaUrl(url), mode }
   })
   ipcMain.handle('media:download', async (event, input = {}) => {
     assertTrustedSender(event)

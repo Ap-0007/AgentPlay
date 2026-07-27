@@ -232,6 +232,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   mediaDownload: {
     detect: (text) => ipcRenderer.invoke('media:download-detect', text),
     download: (input) => ipcRenderer.invoke('media:download', input),
+    linkAnalysis: (input) => ipcRenderer.invoke('media:link-analysis', input),
     cancel: (requestId) => ipcRenderer.invoke('media:download-cancel', requestId),
     onStatus: (cb) => {
       const handler = (_event, payload) => cb(payload)

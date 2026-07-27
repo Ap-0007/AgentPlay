@@ -30,8 +30,9 @@ function parseProgressLine(line) {
 }
 
 class SiteVideoService {
-  constructor({ enginePath, spawnImpl, resolveTimeoutMs, downloadTimeoutMs } = {}) {
+  constructor({ enginePath, ffmpegDir, spawnImpl, resolveTimeoutMs, downloadTimeoutMs } = {}) {
     this.enginePath = enginePath ? path.resolve(enginePath) : enginePath
+    this.ffmpegDir = ffmpegDir ? path.resolve(ffmpegDir) : null
     this.spawnImpl = spawnImpl || spawn
     this.resolveTimeoutMs = resolveTimeoutMs || RESOLVE_TIMEOUT_MS
     this.downloadTimeoutMs = downloadTimeoutMs || DOWNLOAD_TIMEOUT_MS
@@ -39,7 +40,8 @@ class SiteVideoService {
 
   availability() {
     const engineOk = Boolean(this.enginePath && fs.existsSync(this.enginePath))
-    return { available: engineOk, enginePath: this.enginePath, reason: engineOk ? '' : '站点视频解析组件未下载' }
+    const ffmpegOk = Boolean(this.ffmpegDir && fs.existsSync(path.join(this.ffmpegDir, 'ffmpeg.exe')))
+    return { available: engineOk, ffmpegOk, enginePath: this.enginePath, reason: engineOk ? '' : '站点视频解析组件未下载' }
   }
 
   exec(args, { timeoutMs, signal, onLine } = {}) {
@@ -110,9 +112,13 @@ class SiteVideoService {
     if (!status.available) throw new Error(status.reason)
     fs.mkdirSync(destDir, { recursive: true })
     // 优先 1080p 内 mp4 单文件（不依赖 ffmpeg 合并），取不到再退任意最佳单文件
-    const format = "bv*[height<=1080][ext=mp4]/b[ext=mp4]/bv*/b"
+    const { ffmpegOk } = this.availability()
+    const format = ffmpegOk
+      ? 'bv*[height<=1080][vcodec^=avc1]+ba/bv*[height<=1080]+ba/bv*/b'
+      : 'b[acodec!=none][vcodec!=none][ext=mp4]/b[acodec!=none][vcodec!=none]'
     const outTemplate = path.join(destDir, '%(title).80s-%(id)s.%(ext)s')
     const args = [
+      ...(ffmpegOk ? ['--ffmpeg-location', this.ffmpegDir] : []),
       '-f', format,
       '--no-playlist', '--no-warnings', '--newline',
       '-o', outTemplate,

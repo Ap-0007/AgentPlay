@@ -65,7 +65,7 @@ export default function AgentPanel() {
   const runAnalysisTaskRef = useRef<(forceApprove?: boolean) => Promise<void>>(async () => {})
   const runDownloadTaskRef = useRef<(url: string, instruction: string, direct?: boolean) => Promise<void>>(async () => {})
   const routeTextSendRef = useRef<() => Promise<void>>(async () => {})
-  const pendingTaskRef = useRef<'doc' | 'analysis' | 'download'>('doc')
+  const pendingTaskRef = useRef<'doc' | 'analysis' | 'download' | 'link-analysis'>('doc')
   const docInstructionRef = useRef('')
   const analysisInstructionRef = useRef('')
   const analysisFormatRef = useRef('docx')
@@ -330,7 +330,8 @@ export default function AgentPanel() {
       try {
         const detection = await window.aiPlayer.mediaDownload.detect(text)
         if (detection?.matched && detection.url) {
-          await runDownloadTask(detection.url, text)
+          if (detection.mode === 'analyze') await runLinkAnalysisTask(detection.url, text)
+          else await runDownloadTask(detection.url, text, detection.direct !== false)
           return
         }
       } catch { /* 意图检测失败时按普通对话处理 */ }
@@ -350,6 +351,9 @@ export default function AgentPanel() {
   routeTextSendRef.current = routeTextSend
 
   const downloadUrlRef = useRef('')
+  const linkAnalysisUrlRef = useRef('')
+  const linkAnalysisVideoRef = useRef('')
+  const runLinkAnalysisTaskRef = useRef<(url: string, instruction: string, forceApprove?: boolean) => Promise<void>>(async () => {})
   const downloadDirectRef = useRef(true)
   const runDownloadTask = async (url: string, instruction: string, direct = true) => {
     const api = window.aiPlayer?.mediaDownload
@@ -387,6 +391,52 @@ export default function AgentPanel() {
     }
   }
   runDownloadTaskRef.current = runDownloadTask
+
+  const runLinkAnalysisTask = async (url: string, instruction: string, forceApprove = false) => {
+    const api = window.aiPlayer?.mediaDownload
+    if (!api?.linkAnalysis || docBusyRef.current) return
+    docBusyRef.current = true
+    linkAnalysisUrlRef.current = url
+    pendingTaskRef.current = 'link-analysis'
+    setTask({ kind: 'analysis', label: '链接拉片', error: '' })
+    if (!forceApprove && instruction) {
+      addMessage('user', instruction)
+      setInputText('')
+    }
+    setDocBusy(true)
+    setDocStatus('正在准备')
+    setDocOutputs([])
+    try {
+      const requestId = `link-ana-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      docRequestIdRef.current = requestId
+      const result = await api.linkAnalysis({
+        url,
+        videoPath: forceApprove ? linkAnalysisVideoRef.current : undefined,
+        instruction,
+        cloudApproved: cloudApproved || forceApprove,
+        requestId
+      })
+      if (result.requiresApproval) {
+        linkAnalysisVideoRef.current = result.videoPath || ''
+        setNeedsApproval(true)
+        return
+      }
+      if (!result.success) throw new Error(result.error || '链接拉片失败')
+      setDocOutputs(result.outputs || [])
+      addMessage('agent', `${result.summary || '拉片完成'}${result.whispered ? '' : '（未装转写组件，报告仅基于基础结构）'}`)
+      closePanel()
+      if (result.videoPath) window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.videoPath }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ error: message })
+      addMessage('agent', `[错误] ${message}`)
+    } finally {
+      docBusyRef.current = false
+      setDocBusy(false)
+      setDocStatus('')
+    }
+  }
+  runLinkAnalysisTaskRef.current = runLinkAnalysisTask
 
   const cancelDocTask = async () => {
     if (docRequestIdRef.current) await window.aiPlayer?.documents?.cancel(docRequestIdRef.current)
@@ -540,7 +590,7 @@ export default function AgentPanel() {
               <input type="checkbox" checked={cloudApproved} onChange={(event) => setCloudApproved(event.target.checked)} />
               允许把本次任务的内容（文件正文或字幕）发送给当前云端模型
             </label>
-            <button disabled={!cloudApproved || docBusy} onClick={() => { setNeedsApproval(false); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(true); else void runDocTaskRef.current(true) }} className="rounded bg-amber-600 px-3 py-1 text-white disabled:opacity-40">继续执行</button>
+            <button disabled={!cloudApproved || docBusy} onClick={() => { setNeedsApproval(false); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(true); else if (pendingTaskRef.current === 'link-analysis') void runLinkAnalysisTaskRef.current(linkAnalysisUrlRef.current, '', true); else void runDocTaskRef.current(true) }} className="rounded bg-amber-600 px-3 py-1 text-white disabled:opacity-40">继续执行</button>
           </div>
         )}
 
@@ -621,7 +671,7 @@ export default function AgentPanel() {
               {task.error && (
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <p className="min-w-0 text-xs text-red-300">{task.error}</p>
-                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, '', downloadDirectRef.current); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
+                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, '', downloadDirectRef.current); else if (pendingTaskRef.current === 'link-analysis') void runLinkAnalysisTaskRef.current(linkAnalysisUrlRef.current, '', true); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
                 </div>
               )}
               {docOutputs.length > 0 && <div className="mt-1 space-y-1">{docOutputs.map((output) => (
