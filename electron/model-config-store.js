@@ -121,6 +121,41 @@ class ModelConfigStore {
     }
     return this.publicConfig(role)
   }
+
+  // 云端/本地一键切换：切走前把当前角色配置（含加密 Key）暂存到 stash，
+  // 切回时原样恢复——普通 save() 换厂商会清 Key，快速切换绝不能丢用户的云端 Key。
+  quickSwitchRole(role = 'chat', target = 'bundled') {
+    const selectedRole = normalizeRole(role)
+    const document = this.readDocument()
+    const stash = document.stash && typeof document.stash === 'object' ? { ...document.stash } : {}
+    const current = document.roles[selectedRole] || null
+    const now = new Date().toISOString()
+
+    if (target === 'bundled') {
+      if (current && current.providerId !== 'bundled-lite') stash[selectedRole] = current
+      document.roles[selectedRole] = { providerId: 'bundled-lite', updatedAt: now }
+    } else if (target === 'cloud') {
+      const stashed = stash[selectedRole]
+      if (!stashed) return { switched: false, reason: '没有可恢复的云端配置', config: this.publicConfig(selectedRole) }
+      document.roles[selectedRole] = { ...stashed, updatedAt: now }
+    } else {
+      throw new Error(`未知切换目标：${target}`)
+    }
+    document.stash = stash
+    document.schemaVersion = CONFIG_SCHEMA_VERSION
+    document.updatedAt = now
+
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
+    const temporary = `${this.filePath}.tmp`
+    fs.writeFileSync(temporary, JSON.stringify(document, null, 2), { mode: 0o600 })
+    try {
+      fs.renameSync(temporary, this.filePath)
+    } catch {
+      fs.copyFileSync(temporary, this.filePath)
+      fs.unlinkSync(temporary)
+    }
+    return { switched: true, config: this.publicConfig(selectedRole) }
+  }
 }
 
 module.exports = { CONFIG_SCHEMA_VERSION, SUPPORTED_ROLES, ModelConfigStore }

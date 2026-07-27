@@ -91,7 +91,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     discoverLocal: (role = 'chat') => ipcRenderer.invoke('models:discover-local', role),
     bundledStatus: () => ipcRenderer.invoke('models:bundled-status'),
     startBundled: () => ipcRenderer.invoke('models:start-bundled'),
-    stopBundled: () => ipcRenderer.invoke('models:stop-bundled')
+    stopBundled: () => ipcRenderer.invoke('models:stop-bundled'),
+    quickSwitch: (input) => ipcRenderer.invoke('models:quick-switch', input)
   },
   computerUse: {
     suggest: (task, requestId) => ipcRenderer.invoke('computerUse:suggest', task, requestId),

@@ -283,6 +283,7 @@ interface AiPlayerAPI {
     bundledStatus: () => Promise<BundledModelStatus>
     startBundled: () => Promise<BundledModelStatus>
     stopBundled: () => Promise<BundledModelStatus>
+    quickSwitch: (input: { role?: 'chat' | 'computerUse'; target: 'cloud' | 'bundled' }) => Promise<{ switched: boolean; needDownload?: boolean; reason?: string; config?: { providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean } }>
   }
   computerUse?: {
     suggest: (task: string, requestId: string) => Promise<{

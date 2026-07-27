@@ -64,6 +64,33 @@ export default function AgentPanel() {
   const [subtitleKey, setSubtitleKey] = useState(() => localStorage.getItem('aiplayer_subtitle_key') || '')
   const [showServiceEdit, setShowServiceEdit] = useState(false)
   const [modelLabel, setModelLabel] = useState('尚未配置模型')
+  const [modelMode, setModelMode] = useState<'cloud' | 'bundled'>('cloud')
+  const [modeSwitching, setModeSwitching] = useState(false)
+  const applyConfigLabel = (config: { providerId: string; providerName?: string; model: string; hasApiKey: boolean }) => {
+    setModelMode(config.providerId === 'bundled-lite' ? 'bundled' : 'cloud')
+    setModelLabel(`${config.providerName || config.providerId} / ${config.model}${config.hasApiKey ? ' · Key 已加密保存' : ''}`)
+  }
+  const switchModelMode = async (target: 'cloud' | 'bundled') => {
+    if (target === modelMode || modeSwitching) return
+    setModeSwitching(true)
+    try {
+      const result = await window.aiPlayer?.models?.quickSwitch({ role: 'chat', target })
+      if (!result) return
+      if (result.needDownload) {
+        addMessage('agent', '本地 AI 组件还没下载：到「模型接入中心」点「下载本地 AI 组件」（约 429MB，只下一次），装好就能一键切本地。')
+        window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'model-center' }))
+        return
+      }
+      if (!result.switched) {
+        addMessage('agent', `${result.reason || '切换失败'}：请先到「模型接入中心」保存一个云端模型。`)
+        return
+      }
+      if (result.config) applyConfigLabel(result.config)
+      addMessage('agent', target === 'bundled' ? '已切到本地模型：离线运行、内容不出机，速度取决于 CPU。' : '已切回云端模型。')
+    } finally {
+      setModeSwitching(false)
+    }
+  }
   const saveOtherServices = () => {
     localStorage.setItem('aiplayer_tmdb_key', tmdbKey)
     localStorage.setItem('aiplayer_subtitle_key', subtitleKey)
@@ -72,7 +99,7 @@ export default function AgentPanel() {
 
   useEffect(() => {
     window.aiPlayer?.models?.config('chat').then((config) => {
-      if (config) setModelLabel(`${config.providerId} / ${config.model}${config.hasApiKey ? ' · Key 已加密保存' : ''}`)
+      if (config) applyConfigLabel(config)
     })
   }, [])
 
@@ -301,7 +328,13 @@ export default function AgentPanel() {
         </div>
 
         <div className="px-4 py-2 border-b border-white/10 flex items-center justify-between gap-3">
-          <span className="text-xs text-gray-500 truncate">{modelLabel}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex shrink-0 overflow-hidden rounded border border-white/15 text-[11px]">
+              <button onClick={() => void switchModelMode('cloud')} disabled={modeSwitching} title="使用已配置的云端模型" className={`px-2 py-0.5 ${modelMode === 'cloud' ? 'bg-player-accent text-white' : 'text-gray-400 hover:text-white'}`}>云端</button>
+              <button onClick={() => void switchModelMode('bundled')} disabled={modeSwitching} title="使用本机内置离线模型" className={`px-2 py-0.5 ${modelMode === 'bundled' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'}`}>本地</button>
+            </div>
+            <span className="text-xs text-gray-500 truncate">{modelLabel}</span>
+          </div>
           <div className="flex items-center gap-3 shrink-0">
             <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'model-center' }))} className="text-xs text-player-accent">模型接入中心</button>
             <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'computer-use' }))} className="text-xs text-amber-400">电脑观察</button>

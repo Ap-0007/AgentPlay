@@ -902,6 +902,16 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     return modelConfigStore.save(config)
   })
+  ipcMain.handle('models:quick-switch', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const target = input.target === 'cloud' ? 'cloud' : 'bundled'
+    if (target === 'bundled') {
+      const status = await bundledRuntime.status()
+      if (!status.assetsPresent) return { switched: false, needDownload: true, reason: '本地 AI 组件未下载' }
+    }
+    const result = modelConfigStore.quickSwitchRole(input.role || 'chat', target)
+    return { ...result, bundled: await bundledRuntime.status() }
+  })
   ipcMain.handle('models:list', async (event, config = {}) => {
     assertTrustedSender(event)
     try {
