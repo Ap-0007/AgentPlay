@@ -48,7 +48,7 @@ const { OfficeConvertService } = require('./office-convert-service')
 const { TranscriptionService } = require('./transcription-service')
 const { parseSrt, buildBilingualSrt, translateEntries, cuesToEntries, runLiveTranslation } = require('./subtitle-bilingual-service')
 const { splitOpenAnyPaths, isPathInsideRoots } = require('./open-any')
-const { downloadRemoteMedia, extractUrl, isDownloadIntent } = require('./media-download-service')
+const { downloadRemoteMedia, extractUrl, isDownloadIntent, isMediaUrl } = require('./media-download-service')
 const { rasterizePdfPages } = require('./pdf-rasterizer')
 const { LocalAiDownloadService } = require('./local-ai-download-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
@@ -387,6 +387,16 @@ const whisperDownload = new LocalAiDownloadService({
   logger: log
 })
 const TRANSLATE_PACK = require('./translate-pack-manifest')
+const YTDLP_PACK = require('./ytdlp-pack-manifest')
+const { SiteVideoService } = require('./site-video-service')
+const ytdlpDownload = new LocalAiDownloadService({
+  installRoot: path.join(app.getPath('userData'), 'yt-dlp'),
+  manifest: YTDLP_PACK,
+  logger: log
+})
+const siteVideo = new SiteVideoService({
+  enginePath: path.join(app.getPath('userData'), 'yt-dlp', 'yt-dlp.exe')
+})
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
   manifest: TRANSLATE_PACK,
@@ -822,9 +832,68 @@ app.whenReady().then(async () => {
     if (result.canceled) return []
     return approveDocumentPaths(result.filePaths.slice(0, 20))
   })
+  // 站点视频（B站/YouTube/抖音等公开视频页）：解析组件缺失时先自动下载，再执行下载
+  ipcMain.handle('media:site-status', (event) => {
+    assertTrustedSender(event)
+    return { ...siteVideo.availability(), download: ytdlpDownload.status(), pack: ytdlpDownload.packInfo() }
+  })
+  ipcMain.handle('media:site-download-component', async (event) => {
+    assertTrustedSender(event)
+    try {
+      await ytdlpDownload.start({
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('media:site-component-progress', progress)
+        }
+      })
+      return { success: true, availability: siteVideo.availability() }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('media:site-cancel-component', (event) => {
+    assertTrustedSender(event)
+    return ytdlpDownload.cancel()
+  })
+  ipcMain.handle('media:site-download', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const url = String(input.url || '').trim()
+    if (!url) return { success: false, error: '没有找到链接' }
+    const requestId = normalizeRequestId(input.requestId, 'site-dl')
+    activeMediaDownloads.get(requestId)?.abort()
+    const controller = new AbortController()
+    activeMediaDownloads.set(requestId, controller)
+    const sendStatus = (status) => {
+      if (!event.sender.isDestroyed()) event.sender.send('media:download-status', { requestId, status })
+    }
+    try {
+      if (!siteVideo.availability().available) {
+        sendStatus('首次使用站点视频，正在下载解析组件（约 18MB）')
+        await ytdlpDownload.start({
+          onProgress: (progress) => {
+            if (progress.totalBytes) sendStatus(`下载解析组件 ${Math.round(((progress.presentBytes || progress.receivedBytes || 0) / progress.totalBytes) * 100)}%`)
+          }
+        })
+      }
+      sendStatus('正在解析视频页')
+      const info = await siteVideo.resolve(url, { signal: controller.signal })
+      sendStatus(`正在下载：${info.title.slice(0, 40)}`)
+      const result = await siteVideo.download(url, {
+        destDir: path.join(app.getPath('videos'), 'AgentPlay 下载'),
+        signal: controller.signal,
+        onProgress: (progress) => sendStatus(`正在下载 ${progress.percent}%`)
+      })
+      userAuthorizedPaths.add(path.resolve(result.outputPath))
+      sendStatus('下载完成')
+      return { success: true, requestId, info, ...result }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      activeMediaDownloads.delete(requestId)
+    }
+  })
   ipcMain.handle('media:download-detect', (event, text) => {
     assertTrustedSender(event)
-    return { matched: isDownloadIntent(text), url: extractUrl(text) }
+    return { matched: isDownloadIntent(text), url: extractUrl(text), direct: isMediaUrl(extractUrl(text)) }
   })
   ipcMain.handle('media:download', async (event, input = {}) => {
     assertTrustedSender(event)

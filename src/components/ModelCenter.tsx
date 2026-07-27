@@ -46,6 +46,8 @@ export default function ModelCenter({ onClose }: Props) {
   const [whisperError, setWhisperError] = useState('')
   const [translateStatus, setTranslateStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
   const [translateError, setTranslateError] = useState('')
+  const [siteStatus, setSiteStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
+  const [siteError, setSiteError] = useState('')
   const [downloadProgress, setDownloadProgress] = useState<LocalAiDownloadProgress | null>(null)
   const [downloadActive, setDownloadActive] = useState(false)
   const [downloadError, setDownloadError] = useState('')
@@ -99,7 +101,11 @@ export default function ModelCenter({ onClose }: Props) {
     const offTranslate = window.aiPlayer?.translatePack?.onProgress?.(() => {
       void window.aiPlayer?.translatePack?.status().then((status) => { if (active && status) setTranslateStatus(status) })
     })
-    return () => { active = false; offProgress?.(); offWhisper?.(); offTranslate?.() }
+    void window.aiPlayer?.siteVideo?.status().then((status) => { if (active && status) setSiteStatus(status) })
+    const offSite = window.aiPlayer?.siteVideo?.onComponentProgress?.(() => {
+      void window.aiPlayer?.siteVideo?.status().then((status) => { if (active && status) setSiteStatus(status) })
+    })
+    return () => { active = false; offProgress?.(); offWhisper?.(); offTranslate?.(); offSite?.() }
   }, [])
 
   const changeRole = async (nextRole: ModelRole) => {
@@ -231,6 +237,22 @@ export default function ModelCenter({ onClose }: Props) {
     } catch (error) {
       setTranslateError(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  const startSiteDownload = async () => {
+    setSiteError('')
+    try {
+      const result = await window.aiPlayer?.siteVideo?.downloadComponent()
+      if (!result?.success) throw new Error(result?.error || '下载失败')
+      const status = await window.aiPlayer?.siteVideo?.status()
+      if (status) setSiteStatus(status)
+    } catch (error) {
+      setSiteError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const cancelSiteDownload = async () => {
+    await window.aiPlayer?.siteVideo?.cancelComponent()
   }
 
   const cancelTranslateDownload = async () => {
@@ -422,6 +444,27 @@ export default function ModelCenter({ onClose }: Props) {
               <div className="mt-3">
                 <div className="h-2 overflow-hidden rounded-full bg-black/40"><div className="h-full bg-emerald-500 transition-all" style={{ width: `${Math.min(100, Math.round(((translateStatus.download.receivedBytes || 0) / (translateStatus.download.totalBytes || 1)) * 100))}%` }} /></div>
                 <div className="mt-1 text-xs text-gray-400">{translateStatus.download.currentFile || '下载中'} · {((translateStatus.download.receivedBytes || 0) / 1024 / 1024).toFixed(0)}/{((translateStatus.download.totalBytes || 0) / 1024 / 1024).toFixed(0)}MB</div>
+              </div>
+            )}
+          </div>}
+
+          {role === 'chat' && siteStatus && <div className="rounded-xl border border-orange-500/25 bg-orange-500/5 px-4 py-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm text-orange-100">站点视频解析组件 · yt-dlp 官方版</div>
+                <div className="mt-1 text-xs text-gray-500">约 {Math.round((siteStatus.pack?.totalBytes || 0) / 1024 / 1024)}MB · B站/YouTube/抖音等公开视频页解析下载；VIP/付费/DRM 内容不支持</div>
+                {!siteStatus.available && !siteStatus.download?.active && <div className="mt-2 text-xs text-amber-300">{siteStatus.reason}；首次粘贴站点链接时会自动下载，也可在此提前下载。</div>}
+                {siteStatus.available && <div className="mt-2 text-xs text-emerald-300">已就绪：对话窗粘贴站点视频链接即自动解析下载并播放。</div>}
+                {siteError && <div className="mt-2 text-xs text-red-300">{siteError}</div>}
+              </div>
+              {!siteStatus.available && (siteStatus.download?.active
+                ? <button onClick={() => void cancelSiteDownload()} className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15">取消下载</button>
+                : <button disabled={busy} onClick={() => void startSiteDownload()} className="rounded-lg bg-orange-600/80 px-4 py-2 text-sm hover:bg-orange-600 disabled:opacity-40">下载解析组件</button>)}
+            </div>
+            {siteStatus.download?.active && (
+              <div className="mt-3">
+                <div className="h-2 overflow-hidden rounded-full bg-black/40"><div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, Math.round(((siteStatus.download.receivedBytes || 0) / (siteStatus.download.totalBytes || 1)) * 100))}%` }} /></div>
+                <div className="mt-1 text-xs text-gray-400">{siteStatus.download.currentFile || '下载中'} · {((siteStatus.download.receivedBytes || 0) / 1024 / 1024).toFixed(0)}/{((siteStatus.download.totalBytes || 0) / 1024 / 1024).toFixed(0)}MB</div>
               </div>
             )}
           </div>}

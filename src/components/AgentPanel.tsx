@@ -63,7 +63,7 @@ export default function AgentPanel() {
   const docBusyRef = useRef(false)
   const runDocTaskRef = useRef<(forceApprove?: boolean) => Promise<void>>(async () => {})
   const runAnalysisTaskRef = useRef<(forceApprove?: boolean) => Promise<void>>(async () => {})
-  const runDownloadTaskRef = useRef<(url: string, instruction: string) => Promise<void>>(async () => {})
+  const runDownloadTaskRef = useRef<(url: string, instruction: string, direct?: boolean) => Promise<void>>(async () => {})
   const routeTextSendRef = useRef<() => Promise<void>>(async () => {})
   const pendingTaskRef = useRef<'doc' | 'analysis' | 'download'>('doc')
   const docInstructionRef = useRef('')
@@ -350,13 +350,14 @@ export default function AgentPanel() {
   routeTextSendRef.current = routeTextSend
 
   const downloadUrlRef = useRef('')
-  const runDownloadTask = async (url: string, instruction: string) => {
+  const downloadDirectRef = useRef(true)
+  const runDownloadTask = async (url: string, instruction: string, direct = true) => {
     const api = window.aiPlayer?.mediaDownload
     if (!api || docBusyRef.current) return
     docBusyRef.current = true
     downloadUrlRef.current = url
     pendingTaskRef.current = 'download'
-    setTask({ kind: 'doc', label: '视频下载', error: '' })
+    setTask({ kind: 'doc', label: direct ? '视频下载' : '站点视频下载', error: '' })
     if (instruction) {
       addMessage('user', instruction)
       setInputText('')
@@ -367,10 +368,12 @@ export default function AgentPanel() {
     try {
       const requestId = `media-dl-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       docRequestIdRef.current = requestId
-      const result = await api.download({ url, requestId })
+      const result = direct ? await api.download({ url, requestId }) : await window.aiPlayer?.siteVideo?.download({ url, requestId })
+      if (!result) throw new Error('站点下载接口不可用')
       if (!result.success || !result.outputPath) throw new Error(result.error || '下载失败')
       setDocOutputs([result.outputPath])
-      addMessage('agent', `视频已下载（${((result.bytes || 0) / 1024 / 1024).toFixed(1)}MB）：${result.outputPath}，正在为你播放`)
+      const infoTitle = !direct && 'info' in result && result.info?.title ? `，《${String(result.info.title).slice(0, 40)}》` : ''
+      addMessage('agent', `视频已下载（${((result.bytes || 0) / 1024 / 1024).toFixed(1)}MB${infoTitle}）：${result.outputPath}，正在为你播放`)
       closePanel()
       window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
     } catch (error) {
@@ -618,7 +621,7 @@ export default function AgentPanel() {
               {task.error && (
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <p className="min-w-0 text-xs text-red-300">{task.error}</p>
-                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, ''); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
+                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, '', downloadDirectRef.current); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
                 </div>
               )}
               {docOutputs.length > 0 && <div className="mt-1 space-y-1">{docOutputs.map((output) => (

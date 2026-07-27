@@ -28,6 +28,7 @@ function isDownloadIntent(text) {
   const url = extractUrl(text)
   if (!url) return false
   if (isMediaUrl(url)) return true
+  if (String(text || '').trim() === url) return true // 裸链接视为下载意图（站点页交给 yt-dlp 解析）
   return /下载|保存|拉片|解剖|分析|双语|字幕|转写|播放/i.test(String(text || ''))
 }
 

@@ -218,6 +218,17 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('transcribe:progress', handler)
     }
   },
+  siteVideo: {
+    status: () => ipcRenderer.invoke('media:site-status'),
+    downloadComponent: () => ipcRenderer.invoke('media:site-download-component'),
+    cancelComponent: () => ipcRenderer.invoke('media:site-cancel-component'),
+    download: (input) => ipcRenderer.invoke('media:site-download', input),
+    onComponentProgress: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('media:site-component-progress', handler)
+      return () => ipcRenderer.removeListener('media:site-component-progress', handler)
+    }
+  },
   mediaDownload: {
     detect: (text) => ipcRenderer.invoke('media:download-detect', text),
     download: (input) => ipcRenderer.invoke('media:download', input),
