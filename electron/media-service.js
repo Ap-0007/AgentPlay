@@ -57,7 +57,18 @@ function clusterByTag(files) {
   return groups
 }
 
-function findDuplicates(files) {
+// 异步流式哈希：同步 readSync 全文件会把主事件循环冻结数分钟（两组 4GB 视频的教训）
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256')
+    const stream = fs.createReadStream(filePath)
+    stream.on('error', reject)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('end', () => resolve(hash.digest('hex')))
+  })
+}
+
+async function findDuplicates(files) {
   const bySize = new Map()
   const dupes = []
   for (const file of files) {
@@ -73,7 +84,7 @@ function findDuplicates(files) {
     for (const file of group) {
       let hash
       try {
-        hash = hashFile(file.path)
+        hash = await hashFile(file.path)
       } catch {
         continue
       }
@@ -86,22 +97,6 @@ function findDuplicates(files) {
     }
   }
   return dupes
-}
-
-function hashFile(filePath) {
-  const hash = crypto.createHash('sha256')
-  const fd = fs.openSync(filePath, 'r')
-  const buffer = Buffer.allocUnsafe(1024 * 1024)
-  try {
-    let bytesRead
-    do {
-      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)
-      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead))
-    } while (bytesRead > 0)
-  } finally {
-    fs.closeSync(fd)
-  }
-  return hash.digest('hex')
 }
 
 function suggestClip(files) {

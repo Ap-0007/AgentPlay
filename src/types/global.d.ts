@@ -113,6 +113,7 @@ interface AiPlayerAPI {
     status: () => Promise<{ available: boolean; engineOk: boolean; modelOk: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
     download: () => Promise<{ success: boolean; error?: string; availability?: unknown }>
     cancelDownload: () => Promise<boolean>
+    blob: (input: { data: Uint8Array; ext?: string }) => Promise<{ success: boolean; text?: string; error?: string }>
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
   siteVideo?: {

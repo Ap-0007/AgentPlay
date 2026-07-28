@@ -309,9 +309,13 @@ export default function PlayerView({ onBack }: Props) {
 
   const handlePrint = async () => {
     if (!videoSrc) return
-    if (fileType === 'text') await window.aiPlayer?.print?.text(videoSrc)
-    else if (fileType === 'office' && officeHtml) await window.aiPlayer?.print?.html(buildSecureOfficeDocument(officeHtml))
-    else await window.aiPlayer?.print?.file(videoSrc)
+    const result = fileType === 'text'
+      ? await window.aiPlayer?.print?.text(videoSrc)
+      : fileType === 'office' && officeHtml
+        ? await window.aiPlayer?.print?.html(buildSecureOfficeDocument(officeHtml))
+        : await window.aiPlayer?.print?.file(videoSrc)
+    if (result && result.success === false) setPlaybackNotice(result.error || '打印失败')
+    else setPlaybackNotice('')
   }
 
   const takeScreenshot = async () => {
@@ -380,6 +384,7 @@ export default function PlayerView({ onBack }: Props) {
   }
 
   useEffect(() => {
+    ;(window as unknown as Record<string, unknown>).__playerActionMounted = true
     const menuHandler = (event: Event) => runPlayerAction((event as CustomEvent<string>).detail)
     const keyboardHandler = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -397,6 +402,7 @@ export default function PlayerView({ onBack }: Props) {
     window.addEventListener('ai-player-action', menuHandler)
     window.addEventListener('keydown', keyboardHandler)
     return () => {
+      delete (window as unknown as Record<string, unknown>).__playerActionMounted
       window.removeEventListener('ai-player-action', menuHandler)
       window.removeEventListener('keydown', keyboardHandler)
     }

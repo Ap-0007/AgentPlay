@@ -215,6 +215,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   transcribe: {
     status: () => ipcRenderer.invoke('transcribe:status'),
     download: () => ipcRenderer.invoke('transcribe:download'),
+    blob: (input) => ipcRenderer.invoke('transcribe:blob', input),
     cancelDownload: () => ipcRenderer.invoke('transcribe:cancel-download'),
     onProgress: (cb) => {
       const handler = (_event, payload) => cb(payload)

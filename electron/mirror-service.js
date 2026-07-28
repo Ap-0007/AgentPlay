@@ -193,7 +193,8 @@ class MirrorDiscovery {
   }
 
   listen(durationMs = 2500) {
-    this.found.clear()
+    // 每次扫描用局部 Map：旧 listen 的迟到 resolve 不能污染下一次结果
+    const found = new Map()
     return new Promise((resolve) => {
       const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
       this.socket = socket
@@ -201,12 +202,12 @@ class MirrorDiscovery {
       socket.on('message', (msg, rinfo) => {
         const beacon = parseBeacon(msg.toString())
         if (!beacon) return
-        this.found.set(`${rinfo.address}:${beacon.port}`, { name: beacon.name, host: rinfo.address, port: beacon.port })
+        found.set(`${rinfo.address}:${beacon.port}`, { name: beacon.name, host: rinfo.address, port: beacon.port })
       })
       socket.bind(DISCOVERY_PORT, () => {
         setTimeout(() => {
           this.stop()
-          resolve([...this.found.values()])
+          resolve([...found.values()])
         }, durationMs)
       })
     })

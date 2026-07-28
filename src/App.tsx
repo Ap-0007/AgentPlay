@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import PlayerView from './components/PlayerView'
 import MediaLibrary from './components/MediaLibrary'
 import AgentPanel from './components/AgentPanel'
-import VoiceWake from './components/VoiceWake'
 import { useAgentStore } from './stores/agentStore'
 import { usePlayerStore } from './stores/playerStore'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -17,16 +16,8 @@ function AppInner() {
   const [computerUseOpen, setComputerUseOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [analysisStudioOpen, setAnalysisStudioOpen] = useState(false)
-  const [voiceWakeEnabled, setVoiceWakeEnabled] = useState(() => localStorage.getItem('aiplayer_voice_wake_enabled') === 'true')
   const agentOpen = useAgentStore((s) => s.open)
 
-  const toggleVoiceWake = () => {
-    setVoiceWakeEnabled((enabled) => {
-      const next = !enabled
-      localStorage.setItem('aiplayer_voice_wake_enabled', String(next))
-      return next
-    })
-  }
 
   useEffect(() => {
     const legacyKey = localStorage.getItem('aiplayer_api_key')
@@ -49,6 +40,60 @@ function AppInner() {
       setView('player')
     })
     return off
+  }, [])
+
+  // 全局播放/窗口动作兜底：PlayerView 未挂载时（首页）菜单依然可用；挂载时让位给它
+  useEffect(() => {
+    const handler = (event: Event) => {
+      if ((window as unknown as Record<string, unknown>).__playerActionMounted) return
+      const action = (event as CustomEvent<string>).detail
+      if (!action) return
+      const state = usePlayerStore.getState()
+      const player = window.aiPlayer?.player
+      if (action.startsWith('window-')) {
+        void window.aiPlayer?.windowControls?.setPreset(action.slice(7) as 'original' | 'half' | 'fill' | 'fullscreen')
+        return
+      }
+      if (action === 'online-subtitle' || action === 'bilingual-subtitle' || action === 'live-translate-subtitle') {
+        if (state.videoSrc) {
+          setView('player')
+          setTimeout(() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action })), 300)
+        }
+        return
+      }
+      if (!player) return
+      if (action === 'play-toggle') {
+        const next = !state.isPlaying
+        state.togglePlay()
+        void (next ? player.play() : player.pause())
+      } else if (action === 'seek-backward' || action === 'seek-forward') {
+        const target = Math.max(0, Math.min(state.duration || Infinity, state.currentTime + (action === 'seek-forward' ? 10 : -10)))
+        state.seek(target)
+        void player.seek(target)
+      } else if (action === 'volume-up' || action === 'volume-down') {
+        const value = Math.max(0, Math.min(100, state.volume + (action === 'volume-up' ? 5 : -5)))
+        state.setVolume(value)
+        void player.setVolume(value)
+      } else if (action === 'mute-toggle') {
+        state.toggleMute()
+        void player.setVolume(usePlayerStore.getState().volume)
+      } else if (action === 'subtitle-toggle') {
+        state.toggleSubtitle()
+        void player.setSubtitleVisible(usePlayerStore.getState().subtitleVisible)
+      } else if (action.startsWith('speed-')) {
+        const rate = Number(action.slice(6))
+        state.setPlaybackRate(rate)
+        void player.setSpeed(rate)
+      } else if (action.startsWith('picture-')) {
+        const mode = action.slice(8) as 'original' | 'fit' | 'fill' | 'stretch'
+        state.setPictureMode(mode)
+        void player.setPictureMode(mode)
+      } else if (action === 'screenshot') {
+        void player.screenshot(`${state.mediaName || 'screenshot'}-${Date.now()}.png`)
+      }
+    }
+    window.addEventListener('ai-player-action', handler)
+    return () => window.removeEventListener('ai-player-action', handler)
   }, [])
 
   useEffect(() => {
@@ -89,7 +134,6 @@ function AppInner() {
         setAnalysisStudioOpen(false)
         useAgentStore.getState().openPanel()
       }
-      else if (action === 'voice-wake-toggle') toggleVoiceWake()
       else if (action === 'shortcuts') setShortcutsOpen(true)
       else if (action === 'open-file') {
         void window.aiPlayer?.dialog?.openFile().then((filePath) => {
@@ -130,7 +174,6 @@ function AppInner() {
       if (action === 'computer-use') setComputerUseOpen(true)
       if (action === 'analysis-studio') setAnalysisStudioOpen(true)
       if (action === 'document-workspace') useAgentStore.getState().openPanel()
-      if (action === 'voice-wake-toggle') toggleVoiceWake()
     }
     const playFileHandler = (event: Event) => {
       const filePath = (event as CustomEvent<string>).detail
@@ -159,16 +202,6 @@ function AppInner() {
         <MediaLibrary onPlay={playMedia} rootDir={libraryRoot} />
       ) : (
         <PlayerView onBack={() => setView('library')} />
-      )}
-      <VoiceWake enabled={voiceWakeEnabled} />
-      {voiceWakeEnabled && (
-        <button
-          onClick={toggleVoiceWake}
-          className="fixed left-3 bottom-3 z-[65] rounded-full bg-emerald-700/90 px-3 py-1.5 text-xs text-white shadow-lg"
-          title="点击关闭语音唤醒"
-        >
-          🎙 语音唤醒已开启
-        </button>
       )}
       {agentOpen && <AgentPanel />}
       {computerUseOpen && <ComputerUsePanel onClose={() => setComputerUseOpen(false)} />}

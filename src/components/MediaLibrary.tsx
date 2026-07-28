@@ -344,13 +344,12 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
 
   const PRINTABLE = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.pdf', '.srt', '.ass', '.vtt', '.txt', '.md', '.doc', '.docx', '.rtf', '.odt', '.xls', '.xlsx', '.csv', '.ods', '.ppt', '.pptx', '.odp', '.html', '.htm']
   const isPrintable = (ext: string) => PRINTABLE.includes(ext)
-  const handlePrint = (e: React.MouseEvent, path: string, ext: string) => {
+  const handlePrint = async (e: React.MouseEvent, path: string, ext: string) => {
     e.stopPropagation()
-    if (['.txt', '.md', '.srt', '.ass', '.vtt'].includes(ext)) {
-      window.aiPlayer?.print?.text(path)
-    } else {
-      window.aiPlayer?.print?.file(path)
-    }
+    const result = ['.txt', '.md', '.srt', '.ass', '.vtt'].includes(ext)
+      ? await window.aiPlayer?.print?.text(path)
+      : await window.aiPlayer?.print?.file(path)
+    if (result && result.success === false) setCastStatus({ deviceId: '', message: result.error || '打印失败', isError: true })
   }
 
   const fmtSize = (b: number) => {
@@ -451,46 +450,49 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
             {wifiUrl ? <>
               <p className="text-xs text-gray-500 mt-1">手机浏览器访问：{wifiUrl}</p>
               <p className="text-xs text-gray-500">配对 PIN：{wifiPin || '...'}</p>
-              <button onClick={() => void disableWifi()} className="mt-2 px-3 py-1 bg-white/10 rounded text-xs">停止共享</button>
-                    {castStatus && (
-            <div className="mb-6 bg-player-surface rounded-lg p-4 flex items-center gap-2">
-              <p className={castStatus.isError ? 'flex-1 text-xs text-red-300' : 'flex-1 text-xs text-emerald-300'}>{castStatus.message}</p>
-              {castStatus.deviceId && <button onClick={() => void stopCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>}
-              <button onClick={() => setCastStatus(null)} className="px-2 py-1 text-gray-500 text-xs">✕</button>
-            </div>
-          )}
-          <div className="mb-6 bg-player-surface rounded-lg p-4">
-            <p className="text-sm">🖥️ AgentPlay 互投（屏幕镜像）</p>
-            {mirrorRecv ? (
-              <div className="mt-1">
-                <p className="text-xs text-emerald-300">接收中 · PIN <span className="font-mono text-base tracking-widest">{mirrorRecv.pin}</span>（镜像窗已打开，等对方投过来）</p>
-                <button onClick={() => void stopMirrorRecv()} className="mt-2 px-3 py-1 bg-white/10 rounded text-xs">停止接收</button>
-              </div>
-            ) : (
-              <button onClick={() => void startMirrorRecv()} className="mt-2 px-3 py-1 bg-player-accent rounded text-xs">开启接收（显示 PIN）</button>
-            )}
-            {mirrorSending ? (
-              <div className="mt-2">
-                <p className="text-xs text-emerald-300">正在投屏到 {mirrorSending.host}:{mirrorSending.port}</p>
-                <button onClick={() => void stopMirrorSend()} className="mt-2 px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>
-              </div>
-            ) : (
-              <div className="mt-2">
-                <button onClick={() => void scanMirrorDevices()} className="px-3 py-1 bg-white/10 rounded text-xs">{mirrorScanning ? '扫描中…' : '扫描互投设备'}</button>
-                {mirrorDevices.map((d) => (
-                  <div key={d.host + ':' + d.port} className="mt-2 flex items-center gap-2 text-xs">
-                    <span className="flex-1 truncate">{d.name}（{d.host}:{d.port}）</span>
-                    <input value={mirrorPin} onChange={(e) => setMirrorPin(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="PIN" className="w-16 bg-black/30 rounded px-2 py-1 text-center font-mono" />
-                    <button onClick={() => void startMirrorSend(d)} className="px-3 py-1 bg-player-accent rounded">投屏</button>
-                  </div>
-                ))}
-                {mirrorDevices.length === 0 && !mirrorScanning && <p className="mt-2 text-xs text-gray-500">未发现：先在另一台电脑开启接收</p>}
-              </div>
-            )}
-            {mirrorError && <p className="text-xs text-red-300 mt-2">{mirrorError}</p>}
-          </div>
+              <button onClick={() => void disableWifi()} className="mt-2 px-3 py-1 bg-white/10 rounded text-xs">停止共享</button>
+                    
             </> : <button onClick={() => void enableWifi()} className="mt-2 px-3 py-1 bg-player-accent rounded text-xs">启用 WiFi 传文件</button>}
           </div>
+        )}
+        {showMore && castStatus && (
+                      <div className="mb-6 bg-player-surface rounded-lg p-4 flex items-center gap-2">
+                        <p className={castStatus.isError ? 'flex-1 text-xs text-red-300' : 'flex-1 text-xs text-emerald-300'}>{castStatus.message}</p>
+                        {castStatus.deviceId && <button onClick={() => void stopCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>}
+                        <button onClick={() => setCastStatus(null)} className="px-2 py-1 text-gray-500 text-xs">✕</button>
+                      </div>
+                    )}
+                  {showMore && (
+          <div className="mb-6 bg-player-surface rounded-lg p-4">
+                      <p className="text-sm">🖥️ AgentPlay 互投（屏幕镜像）</p>
+                      {mirrorRecv ? (
+                        <div className="mt-1">
+                          <p className="text-xs text-emerald-300">接收中 · PIN <span className="font-mono text-base tracking-widest">{mirrorRecv.pin}</span>（镜像窗已打开，等对方投过来）</p>
+                          <button onClick={() => void stopMirrorRecv()} className="mt-2 px-3 py-1 bg-white/10 rounded text-xs">停止接收</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => void startMirrorRecv()} className="mt-2 px-3 py-1 bg-player-accent rounded text-xs">开启接收（显示 PIN）</button>
+                      )}
+                      {mirrorSending ? (
+                        <div className="mt-2">
+                          <p className="text-xs text-emerald-300">正在投屏到 {mirrorSending.host}:{mirrorSending.port}</p>
+                          <button onClick={() => void stopMirrorSend()} className="mt-2 px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>
+                        </div>
+                      ) : (
+                        <div className="mt-2">
+                          <button onClick={() => void scanMirrorDevices()} className="px-3 py-1 bg-white/10 rounded text-xs">{mirrorScanning ? '扫描中…' : '扫描互投设备'}</button>
+                          {mirrorDevices.map((d) => (
+                            <div key={d.host + ':' + d.port} className="mt-2 flex items-center gap-2 text-xs">
+                              <span className="flex-1 truncate">{d.name}（{d.host}:{d.port}）</span>
+                              <input value={mirrorPin} onChange={(e) => setMirrorPin(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="PIN" className="w-16 bg-black/30 rounded px-2 py-1 text-center font-mono" />
+                              <button onClick={() => void startMirrorSend(d)} className="px-3 py-1 bg-player-accent rounded">投屏</button>
+                            </div>
+                          ))}
+                          {mirrorDevices.length === 0 && !mirrorScanning && <p className="mt-2 text-xs text-gray-500">未发现：先在另一台电脑开启接收</p>}
+                        </div>
+                      )}
+                      {mirrorError && <p className="text-xs text-red-300 mt-2">{mirrorError}</p>}
+                    </div>
         )}
         {showMore && (
           <div className="mb-6 bg-player-surface rounded-lg p-4">

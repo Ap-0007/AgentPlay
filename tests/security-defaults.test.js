@@ -31,14 +31,13 @@ test('LAN-facing services stay stopped until an explicit renderer request', () =
   assert.match(library, /启用接收投屏/)
 })
 
-test('voice wake is opt-in and visibly stoppable', () => {
+test('voice wake is removed because Electron lacks the Web Speech API', () => {
+  // 该功能依赖 webkitSpeechRecognition（Electron 没有），此前只能装死；已按审计结论下线
   const app = source('src/App.tsx')
-  const wake = source('src/components/VoiceWake.tsx')
-
-  assert.match(app, /localStorage\.getItem\('aiplayer_voice_wake_enabled'\) === 'true'/)
-  assert.match(app, /语音唤醒已开启/)
-  assert.match(wake, /if \(!enabled \|\| panelOpen\) return/)
-  assert.doesNotMatch(wake, /export default function VoiceWake\(\)/)
+  const panel = source('src/components/AgentPanel.tsx')
+  assert.doesNotMatch(app, /VoiceWake|aiplayer_voice_wake_enabled/)
+  assert.doesNotMatch(panel, /webkitSpeechRecognition|SpeechRecognitionInstance/)
+  assert.match(panel, /MediaRecorder/)
 })
 
 test('Office preview is sandboxed and spreadsheet cells are escaped', () => {
@@ -105,4 +104,35 @@ test('WiFi upload authenticates before multipart parsing and never renders the P
     wifi.stop()
     fs.rmSync(uploadDir, { recursive: true, force: true })
   }
+})
+
+test('every ipcMain.handle asserts a trusted sender before touching state', () => {
+  const main = source('electron/main.js')
+  const missing = []
+  for (const match of main.matchAll(/ipcMain\.handle\('([^']+)',\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{([\s\S]{0,120})/g)) {
+    const [, channel, head] = match
+    if (!head.includes('assertTrustedSender')) missing.push(channel)
+  }
+  assert.deepEqual(missing, [], `以下通道缺少 assertTrustedSender: ${missing.join(', ')}`)
+})
+
+test('shared path gate blocks sensitive files and executables', () => {
+  const main = source('electron/main.js')
+  assert.match(main, /SENSITIVE_FILE = .*\[\\\\\/\]\)\\\.env/)
+  assert.match(main, /EXECUTABLE_EXTS = new Set\(\['\.exe', '\.bat'/)
+  assert.match(main, /function assertAllowedPath\(/)
+  assert.match(main, /system:openPath[\s\S]{0,300}denyExecutable: true/)
+  assert.match(main, /files:readText[\s\S]{0,200}assertAllowedPath/)
+  assert.match(main, /docx:preview[\s\S]{0,150}assertAllowedPath/)
+  assert.match(main, /xlsx:preview[\s\S]{0,150}assertAllowedPath/)
+  assert.match(main, /cast:cast[\s\S]{0,300}assertAllowedPath/)
+  assert.match(main, /documents:attach-paths[\s\S]{0,400}assertAllowedPath/)
+})
+
+test('saved API key cannot be redirected to an attacker baseUrl', () => {
+  const main = source('electron/main.js')
+  // 用已存 Key 时必须钉死已存 baseUrl（models:list 与 models:test 各一处）
+  const pins = main.match(/钉死已存地址/g) || []
+  assert.ok(pins.length >= 2, 'models:list/test 都必须钉死已存地址')
+  assert.match(main, /baseUrl: saved\.baseUrl/)
 })

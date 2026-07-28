@@ -26,20 +26,7 @@ function kindLabel(kind: string) {
   return labels[kind] || kind
 }
 
-interface SpeechRecognitionResultEvent {
-  results: ArrayLike<ArrayLike<{ transcript: string }>>
-}
 
-interface SpeechRecognitionInstance {
-  lang: string
-  continuous: boolean
-  interimResults: boolean
-  onresult: ((event: SpeechRecognitionResultEvent) => void) | null
-  onerror: (() => void) | null
-  onend: (() => void) | null
-  start: () => void
-  stop: () => void
-}
 
 export default function AgentPanel() {
   const { messages, inputText, setInputText, send, cancel, thinking, closePanel, listening, toggleListening, setListening, addMessage } =
@@ -279,6 +266,7 @@ export default function AgentPanel() {
     docBusyRef.current = true
     const { videoSrc, mediaName, duration } = usePlayerStore.getState()
     if (!videoSrc || /^(https?|blob):/i.test(videoSrc)) {
+        docBusyRef.current = false
       addMessage('agent', '[错误] 当前没有可解剖的本地视频，请先打开一个视频文件。')
       return
     }
@@ -328,6 +316,20 @@ export default function AgentPanel() {
     const { videoSrc } = usePlayerStore.getState()
     if (/^去重|重复文件|查重/.test(text)) {
       await runDedupTask(text)
+      return
+    }
+    const libraryIntents: Array<[RegExp, string, string]> = [
+      [/屏幕录制|开始录制|录屏/, 'record', '已打开屏幕录制（在媒体库页操作）'],
+      [/整理建议|整理素材|素材整理/, 'organize', '正在生成素材整理建议'],
+      [/^插件|^插件管理/, 'plugins', '已打开插件列表'],
+      [/海报刮削|刮削海报|海报信息/, 'poster', '正在刮削海报信息'],
+    ]
+    const libraryHit = libraryIntents.find(([re]) => re.test(text))
+    if (libraryHit) {
+      addMessage('user', text)
+      setInputText('')
+      addMessage('agent', libraryHit[2])
+      window.dispatchEvent(new CustomEvent('ai-player-action', { detail: libraryHit[1] }))
       return
     }
     if (text && window.aiPlayer?.mediaDownload) {
@@ -504,7 +506,13 @@ export default function AgentPanel() {
   }
 
   const cancelDocTask = async () => {
-    if (docRequestIdRef.current) await window.aiPlayer?.documents?.cancel(docRequestIdRef.current)
+    const requestId = docRequestIdRef.current
+    if (!requestId) return
+    // 按任务类型分发取消：下载/链接拉片走 media 命名空间，视频解剖走 analysis，其余走文档
+    const pending = pendingTaskRef.current
+    if (pending === 'download' || pending === 'link-analysis') await window.aiPlayer?.mediaDownload?.cancel(requestId)
+    else if (pending === 'analysis') await window.aiPlayer?.analysis?.cancel(requestId)
+    else await window.aiPlayer?.documents?.cancel(requestId)
     setDocStatus('正在取消')
   }
 
@@ -518,36 +526,55 @@ export default function AgentPanel() {
 
   useEffect(() => {
     if (!listening) return
-    const speechWindow = window as typeof window & {
-      SpeechRecognition?: new () => SpeechRecognitionInstance
-      webkitSpeechRecognition?: new () => SpeechRecognitionInstance
-    }
-    const Recognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition
-    if (!Recognition) {
-      setListening(false)
-      return
-    }
-    const recognition = new Recognition()
-    recognition.lang = 'zh-CN'
-    recognition.continuous = false
-    recognition.interimResults = false
-    recognition.onresult = (event) => {
-      const text = event.results[0]?.[0]?.transcript?.trim()
-      if (text) {
-        useAgentStore.getState().setInputText(text)
-        if (attachmentsRef.current.length > 0) void runDocTaskRef.current()
-        else void routeTextSendRef.current()
+    let cancelled = false
+    let recorder: MediaRecorder | null = null
+    const chunks: Blob[] = []
+    const start = async () => {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        addMessage('agent', '[错误] 当前环境不支持录音')
+        setListening(false)
+        return
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
+        recorder = new MediaRecorder(stream)
+        recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data) }
+        recorder.onstop = async () => {
+          stream.getTracks().forEach((track) => track.stop())
+          const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' })
+          if (!blob.size) return
+          setDocStatus('正在离线转写语音…')
+          try {
+            const data = new Uint8Array(await blob.arrayBuffer())
+            const result = await window.aiPlayer?.transcribe?.blob({ data, ext: '.webm' })
+            if (result?.success && result.text) {
+              const text = result.text.trim()
+              if (text) {
+                setInputText(text)
+                if (attachmentsRef.current.length > 0) void runDocTaskRef.current()
+                else void routeTextSendRef.current()
+              }
+            } else {
+              addMessage('agent', `[错误] ${result?.error || '语音转写失败'}`)
+            }
+          } finally {
+            setDocStatus('')
+          }
+        }
+        recorder.start()
+      } catch (error) {
+        addMessage('agent', `[错误] 无法打开麦克风：${error instanceof Error ? error.message : String(error)}`)
+        setListening(false)
       }
     }
-    recognition.onerror = () => setListening(false)
-    recognition.onend = () => setListening(false)
-    try {
-      recognition.start()
-    } catch {
-      setListening(false)
-    }
+    void start()
     return () => {
-      try { recognition.stop() } catch { /* already stopped */ }
+      cancelled = true
+      try { recorder?.stop() } catch { /* 已停止 */ }
     }
   }, [listening, setListening])
 

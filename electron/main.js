@@ -91,6 +91,7 @@ const authorizedFolders = new Set()
 const userAuthorizedPaths = new Set()
 
 ipcMain.on('app:version', (event) => {
+  assertTrustedSender(event)
   event.returnValue = app.getVersion()
 })
 
@@ -324,8 +325,33 @@ function assertPrintablePath(filePath) {
   if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('打印路径无效')
   const resolved = path.resolve(filePath)
   if (userAuthorizedPaths.has(resolved)) return resolved
-  if (isPathInsideRoots(resolved, [...authorizedFolders], { realpathSync: (value) => fs.realpathSync(value) })) return resolved
-  throw new Error('只允许打印经你明确选择过的文件或媒体库内的文件')
+  // 媒体库扫描目录与常用目录内的文件同样可打印（此前只放行显式选过的路径，库里点打印必静默失败）
+  if (isPathInsideRoots(resolved, allowedRoots(), { realpathSync: (value) => fs.realpathSync(value) })) return resolved
+  throw new Error('只允许打印经你明确选择过、媒体库或常用目录内的文件')
+}
+
+// 共享路径门禁：授权过的路径、授权文件夹、默认媒体目录与常用用户目录内才放行；
+// 敏感凭证文件与（按需）可执行扩展名一律拒绝
+const SENSITIVE_FILE = /(?:^|[\\/])\.env(?:\.|$)|(?:^|[\\/])(?:id_rsa|id_ed25519|id_dsa|\.aws[\\/]credentials|\.npmrc|\.netrc)$/i
+const EXECUTABLE_EXTS = new Set(['.exe', '.bat', '.cmd', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.com', '.scr', '.pif', '.lnk', '.ps1', '.reg', '.dll'])
+
+function allowedRoots() {
+  const roots = new Set([...authorizedFolders])
+  for (const p of userAuthorizedPaths) roots.add(path.dirname(p))
+  for (const dir of [defaultVideoDir(), app.getPath('videos'), app.getPath('documents'), app.getPath('downloads'), app.getPath('desktop'), app.getPath('music')]) {
+    if (dir) roots.add(dir)
+  }
+  return [...roots]
+}
+
+function assertAllowedPath(filePath, { denyExecutable = false } = {}) {
+  if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('路径无效')
+  const resolved = path.resolve(filePath)
+  if (SENSITIVE_FILE.test(resolved)) throw new Error('该文件属于敏感凭证，禁止访问')
+  if (denyExecutable && EXECUTABLE_EXTS.has(path.extname(resolved).toLowerCase())) throw new Error('不允许打开可执行文件')
+  if (userAuthorizedPaths.has(resolved)) return resolved
+  if (isPathInsideRoots(resolved, allowedRoots(), { realpathSync: (value) => fs.realpathSync(value) })) return resolved
+  throw new Error('只允许访问你明确授权过、媒体库或常用目录内的文件')
 }
 
 async function chooseFile() {
@@ -847,27 +873,31 @@ app.whenReady().then(async () => {
 
   // IPC：渲染进程 -> mpv
   ipcMain.on('mpv:playerArea', (_e, rect) => {
+    assertTrustedSender(_e)
     playerArea = rect
     updateContainerBounds()
   })
-  ipcMain.on('mpv:showContainer', () => {
+  ipcMain.on('mpv:showContainer', (event) => {
+    assertTrustedSender(event)
     if (mpvContainer && !mpvContainer.isDestroyed()) mpvContainer.show()
   })
-  ipcMain.on('mpv:hideContainer', () => {
+  ipcMain.on('mpv:hideContainer', (event) => {
+    assertTrustedSender(event)
     if (mpvContainer && !mpvContainer.isDestroyed()) mpvContainer.hide()
   })
-  ipcMain.handle('mpv:info', () => ({ ready: mpvReady, embedded: mpvReady && !!mpvContainer, available: mpv.isAvailable() }))
-  ipcMain.handle('mpv:load', (_e, p) => mpvReady && mpv.loadFile(p))
-  ipcMain.handle('mpv:play', () => mpvReady && mpv.play())
-  ipcMain.handle('mpv:pause', () => mpvReady && mpv.pause())
-  ipcMain.handle('mpv:seek', (_e, s) => mpvReady && mpv.seek(s))
-  ipcMain.handle('mpv:volume', (_e, v) => mpvReady && mpv.setVolume(v))
-  ipcMain.handle('mpv:speed', (_e, v) => mpvReady && mpv.setSpeed(v))
-  ipcMain.handle('mpv:picture-mode', (_e, mode) => mpvReady && mpv.setPictureMode(mode))
-  ipcMain.handle('mpv:subtitle', (_e, p) => mpvReady && mpv.loadSubtitle(p))
-  ipcMain.handle('mpv:subtitle-visible', (_e, v) => mpvReady && mpv.setSubtitleVisible(v))
-  ipcMain.handle('mpv:stop', () => mpvReady && mpv.stopPlayback())
+  ipcMain.handle('mpv:info', (event) => { assertTrustedSender(event); return ({ ready: mpvReady, embedded: mpvReady && !!mpvContainer, available: mpv.isAvailable() }) })
+  ipcMain.handle('mpv:load', (_e, p) => { assertTrustedSender(_e); return mpvReady && mpv.loadFile(p) })
+  ipcMain.handle('mpv:play', (event) => { assertTrustedSender(event); return mpvReady && mpv.play() })
+  ipcMain.handle('mpv:pause', (event) => { assertTrustedSender(event); return mpvReady && mpv.pause() })
+  ipcMain.handle('mpv:seek', (_e, s) => { assertTrustedSender(_e); return mpvReady && mpv.seek(s) })
+  ipcMain.handle('mpv:volume', (_e, v) => { assertTrustedSender(_e); return mpvReady && mpv.setVolume(v) })
+  ipcMain.handle('mpv:speed', (_e, v) => { assertTrustedSender(_e); return mpvReady && mpv.setSpeed(v) })
+  ipcMain.handle('mpv:picture-mode', (_e, mode) => { assertTrustedSender(_e); return mpvReady && mpv.setPictureMode(mode) })
+  ipcMain.handle('mpv:subtitle', (_e, p) => { assertTrustedSender(_e); return mpvReady && mpv.loadSubtitle(p) })
+  ipcMain.handle('mpv:subtitle-visible', (_e, v) => { assertTrustedSender(_e); return mpvReady && mpv.setSubtitleVisible(v) })
+  ipcMain.handle('mpv:stop', (event) => { assertTrustedSender(event); return mpvReady && mpv.stopPlayback() })
   ipcMain.handle('mpv:screenshot', async (_e, suggestedName) => {
+    assertTrustedSender(_e)
     const result = await dialog.showSaveDialog(mainWindow, {
       defaultPath: path.join(app.getPath('pictures'), String(suggestedName || 'AI播放器截图.png')),
       filters: [{ name: 'PNG 图片', extensions: ['png'] }]
@@ -893,6 +923,7 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.on('context:show', (_event, state = {}) => {
+    assertTrustedSender(_event)
     const item = (label, action, extra = {}) => ({ label, click: () => sendAction(action), ...extra })
     const contextMenu = Menu.buildFromTemplate([
       item(state.isPlaying ? '暂停' : '播放', 'play-toggle', { enabled: !!state.hasMedia }),
@@ -920,8 +951,9 @@ app.whenReady().then(async () => {
     ])
     contextMenu.popup({ window: mainWindow })
   })
-  ipcMain.handle('window:setPreset', (_e, preset, mediaSize) => setWindowPreset(preset, mediaSize))
+  ipcMain.handle('window:setPreset', (_e, preset, mediaSize) => { assertTrustedSender(_e); return setWindowPreset(preset, mediaSize) })
   ipcMain.handle('window:setPlaybackChromeVisible', (_e, visible) => {
+    assertTrustedSender(_e)
     if (!mainWindow || mainWindow.isDestroyed()) return false
     if (process.platform !== 'darwin') {
       // 播放期间菜单栏全程隐藏（Alt 可唤出），不随控制栏显隐：
@@ -931,11 +963,13 @@ app.whenReady().then(async () => {
     }
     return true
   })
-  ipcMain.handle('window:isPlaybackChromeVisible', () => {
+  ipcMain.handle('window:isPlaybackChromeVisible', (event) => {
+    assertTrustedSender(event)
     if (!mainWindow || mainWindow.isDestroyed()) return false
     return process.platform === 'darwin' ? true : mainWindow.isMenuBarVisible()
   })
   ipcMain.handle('screenshot:save', async (_e, dataUrl, suggestedName) => {
+    assertTrustedSender(_e)
     try {
       const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''))
       if (!match) throw new Error('截图数据格式无效')
@@ -1251,11 +1285,20 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('documents:attach-paths', (event, filePaths) => {
     assertTrustedSender(event)
-    // 拖入对话窗的文件等同用户显式授权（与系统选择框同级）
+    // 拖入/粘贴的路径也必须在可授权范围内（媒体库/常用目录/已授权文件夹），防止自报授权绕过白名单
     const requested = Array.isArray(filePaths) ? filePaths.slice(0, 20) : []
     if (!requested.length) return []
+    const valid = requested.filter((p) => {
+      try {
+        assertAllowedPath(p)
+        return true
+      } catch {
+        return false
+      }
+    })
+    if (!valid.length) return { error: '路径不在可授权范围（媒体库/常用目录/已授权文件夹）' }
     try {
-      return approveDocumentPaths(requested)
+      return approveDocumentPaths(valid)
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }
     }
@@ -1419,6 +1462,8 @@ app.whenReady().then(async () => {
     try {
       const saved = modelConfigStore.resolved(config.role || 'chat')
       const apiKey = config.apiKey || (config.useSavedKey && config.providerId === saved.providerId ? saved.apiKey : '')
+      // 用已存 Key 时必须钉死已存地址，防止渲染器把 Key 带到任意 baseUrl（Key 外泄面）
+      if (!config.apiKey && config.useSavedKey && config.providerId === saved.providerId) config = { ...config, baseUrl: saved.baseUrl }
       const localStatus = config.providerId === 'bundled-lite' ? await bundledRuntime.start() : null
       return { success: true, models: await listModels({ ...config, apiKey, ...(localStatus ? { model: localStatus.model, baseUrl: localStatus.baseUrl } : {}) }) }
     } catch (error) {
@@ -1430,6 +1475,8 @@ app.whenReady().then(async () => {
     try {
       const saved = modelConfigStore.resolved(config.role || 'chat')
       const apiKey = config.apiKey || (config.useSavedKey && config.providerId === saved.providerId ? saved.apiKey : '')
+      // 用已存 Key 时必须钉死已存地址，防止渲染器把 Key 带到任意 baseUrl（Key 外泄面）
+      if (!config.apiKey && config.useSavedKey && config.providerId === saved.providerId) config = { ...config, baseUrl: saved.baseUrl }
       const localStatus = config.providerId === 'bundled-lite' ? await bundledRuntime.start() : null
       // 火山方舟：先探测 Key 是否属于 Coding Plan 套餐，是则按套餐专用地址验证并给出修正建议
       if (config.providerId === 'volcengine' && apiKey) {
@@ -1496,6 +1543,27 @@ app.whenReady().then(async () => {
       ...availability,
       download: whisperDownload.status(),
       pack: whisperDownload.packInfo()
+    }
+  })
+  // 对话窗麦克风：接收录音二进制 → 暂存 → 本地 whisper 离线转写 → 文本返回（不出机）
+  ipcMain.handle('transcribe:blob', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const status = transcriptionService.availability()
+    if (!status.available) return { success: false, error: '语音转写组件未下载：请到「模型接入中心」下载转写组件' }
+    const data = input.data
+    const byteLength = data && (data.byteLength ?? data.length) || 0
+    if (!byteLength) return { success: false, error: '没有收到音频数据' }
+    if (byteLength > 25 * 1024 * 1024) return { success: false, error: '录音超过 25MB 上限' }
+    const ext = /^\.(webm|ogg|wav|mp3|m4a)$/.test(String(input.ext || '')) ? String(input.ext) : '.webm'
+    const tmp = path.join(app.getPath('temp'), `agentplay-mic-${Date.now()}${ext}`)
+    try {
+      fs.writeFileSync(tmp, Buffer.from(data))
+      const transcription = await transcriptionService.transcribe({ sourcePath: tmp, lang: 'auto' })
+      return { success: true, text: String(transcription.text || '').trim() }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      try { fs.unlinkSync(tmp) } catch { /* 忽略 */ }
     }
   })
   ipcMain.handle('transcribe:download', async (event) => {
@@ -1608,6 +1676,10 @@ app.whenReady().then(async () => {
     const requestedSubtitle = String(input.subtitlePath || '').trim()
     const subtitlePath = requestedSubtitle && fs.existsSync(requestedSubtitle) ? requestedSubtitle : findAdjacentSubtitle(mediaPath)
     if (!subtitlePath) return { success: false, error: '没有找到可翻译的字幕：请先加载字幕，或用“生成双语字幕”先识别' }
+    // 显式指定的字幕文件与媒体文件同权校验，防止借字幕通道读任意文本送云端
+    if (requestedSubtitle && !userAuthorizedPaths.has(path.resolve(subtitlePath)) && !isPathInsideRoots(subtitlePath, allowedRoots(), { realpathSync: (value) => fs.realpathSync(value) })) {
+      return { success: false, error: '字幕文件不在授权范围内' }
+    }
     const ext = path.extname(subtitlePath).toLowerCase()
     if (!['.srt', '.vtt', '.ass', '.ssa'].includes(ext)) return { success: false, error: '字幕格式不支持（仅 srt/vtt/ass/ssa）' }
     const rawCues = parseSubtitleCues(fs.readFileSync(subtitlePath, 'utf8'), ext)
@@ -1891,28 +1963,32 @@ app.whenReady().then(async () => {
     return Boolean(controller)
   })
 
-  ipcMain.handle('files:scan', (_e, dir) => scanDir(dir || defaultVideoDir()))
-  ipcMain.handle('files:defaultDir', () => defaultVideoDir())
+  ipcMain.handle('files:scan', (_e, dir) => { assertTrustedSender(_e); return scanDir(dir || defaultVideoDir()) })
+  ipcMain.handle('files:defaultDir', (event) => { assertTrustedSender(event); return defaultVideoDir() })
   ipcMain.handle('files:readText', async (_e, filePath) => {
+    assertTrustedSender(_e)
     try {
-      const stat = fs.statSync(filePath)
-      const ext = path.extname(filePath).toLowerCase()
+      const resolved = assertAllowedPath(filePath)
+      const stat = fs.statSync(resolved)
+      const ext = path.extname(resolved).toLowerCase()
       if (!stat.isFile() || !['text', 'subtitle'].includes(getType(ext))) throw new Error('只允许读取支持的文本文件')
       if (stat.size > 2 * 1024 * 1024) throw new Error('文本文件超过 2MB 预览上限')
-      const content = fs.readFileSync(filePath, 'utf-8')
+      const content = fs.readFileSync(resolved, 'utf-8')
       return { success: true, content: content.slice(0, 100000) }
     } catch (e) {
       return { success: false, error: String(e) }
     }
   })
   ipcMain.handle('files:readDataUrl', async (_e, filePath) => {
+    assertTrustedSender(_e)
     try {
-      const stat = fs.statSync(filePath)
-      const type = getType(path.extname(filePath).toLowerCase())
+      const resolved = assertAllowedPath(filePath)
+      const stat = fs.statSync(resolved)
+      const type = getType(path.extname(resolved).toLowerCase())
       if (!stat.isFile() || !['image', 'pdf'].includes(type)) throw new Error('只允许读取图片或 PDF')
       if (stat.size > 50 * 1024 * 1024) throw new Error('文件超过 50MB 预览上限')
-      const buffer = fs.readFileSync(filePath)
-      const ext = path.extname(filePath).slice(1).toLowerCase()
+      const buffer = fs.readFileSync(resolved)
+      const ext = path.extname(resolved).slice(1).toLowerCase()
       const mimeMap = {
         jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
         bmp: 'image/bmp', webp: 'image/webp', svg: 'image/svg+xml', ico: 'image/x-icon',
@@ -1967,7 +2043,8 @@ app.whenReady().then(async () => {
       return { success: true, action: '已发送打印' }
     } catch (e) { return { success: false, error: String(e) } }
   })
-  ipcMain.handle('wifi:url', async () => {
+  ipcMain.handle('wifi:url', async (event) => {
+    assertTrustedSender(event)
     if (!wifiTransfer) return null
     try {
       if (!wifiTransfer.server) await wifiTransfer.start()
@@ -1977,24 +2054,30 @@ app.whenReady().then(async () => {
       return null
     }
   })
-  ipcMain.handle('wifi:pin', () => (wifiTransfer?.server ? wifiTransfer.getPin() : null))
-  ipcMain.handle('wifi:stop', () => { wifiTransfer?.stop(); return true })
-  ipcMain.handle('tmdb:search', (_e, name, apiKey) => searchMovie(name, apiKey || process.env.TMDB_API_KEY))
-  ipcMain.handle('subtitle:search', (_e, name, apiKey) => searchSubtitle(name, apiKey || process.env.OPENSUBTITLES_API_KEY))
-  ipcMain.handle('subtitle:download', (_e, fileId, apiKey) => downloadSubtitle(fileId, apiKey || process.env.OPENSUBTITLES_API_KEY))
+  ipcMain.handle('wifi:pin', (event) => { assertTrustedSender(event); return (wifiTransfer?.server ? wifiTransfer.getPin() : null) })
+  ipcMain.handle('wifi:stop', (event) => {
+    assertTrustedSender(event);
+    wifiTransfer?.stop(); return true })
+  ipcMain.handle('tmdb:search', (_e, name, apiKey) => { assertTrustedSender(_e); return searchMovie(name, apiKey || process.env.TMDB_API_KEY) })
+  ipcMain.handle('subtitle:search', (_e, name, apiKey) => { assertTrustedSender(_e); return searchSubtitle(name, apiKey || process.env.OPENSUBTITLES_API_KEY) })
+  ipcMain.handle('subtitle:download', (_e, fileId, apiKey) => { assertTrustedSender(_e); return downloadSubtitle(fileId, apiKey || process.env.OPENSUBTITLES_API_KEY) })
   ipcMain.handle('media:analyze', (_e, dir) => {
+    assertTrustedSender(_e)
     const files = analyzeDir(dir || defaultVideoDir())
     return { files, clusters: clusterByTag(files) }
   })
   ipcMain.handle('media:dedup', (_e, dir) => {
+    assertTrustedSender(_e)
     const files = analyzeDir(dir || defaultVideoDir())
     return findDuplicates(files)
   })
   ipcMain.handle('media:suggest', (_e, dir) => {
+    assertTrustedSender(_e)
     const files = analyzeDir(dir || defaultVideoDir())
     return suggestClip(files)
   })
-  ipcMain.handle('dlna:serverUrl', async () => {
+  ipcMain.handle('dlna:serverUrl', async (event) => {
+    assertTrustedSender(event)
     if (!dlnaServer) return null
     try {
       if (!dlnaServer.server) await dlnaServer.start(defaultVideoDir())
@@ -2004,8 +2087,11 @@ app.whenReady().then(async () => {
       return null
     }
   })
-  ipcMain.handle('dlna:serverStop', () => { dlnaServer?.stop(); return true })
-  ipcMain.handle('receiver:start', async () => {
+  ipcMain.handle('dlna:serverStop', (event) => {
+    assertTrustedSender(event);
+    dlnaServer?.stop(); return true })
+  ipcMain.handle('receiver:start', async (event) => {
+    assertTrustedSender(event)
     if (!dlnaReceiver) return false
     try {
       if (!dlnaReceiver.httpServer) await dlnaReceiver.start()
@@ -2015,29 +2101,62 @@ app.whenReady().then(async () => {
       return false
     }
   })
-  ipcMain.handle('receiver:stop', () => { dlnaReceiver?.stop(); return true })
-  ipcMain.handle('plugin:list', () => listPlugins())
-  ipcMain.handle('plugin:openFolder', async () => {
+  ipcMain.handle('receiver:stop', (event) => {
+    assertTrustedSender(event);
+    dlnaReceiver?.stop(); return true })
+  ipcMain.handle('plugin:list', (event) => { assertTrustedSender(event); return listPlugins() })
+  ipcMain.handle('plugin:openFolder', async (event) => {
+    assertTrustedSender(event)
     const { shell } = require('electron')
     const { PLUGIN_DIR } = require('./plugin-service')
     fs.mkdirSync(PLUGIN_DIR, { recursive: true })
     const error = await shell.openPath(PLUGIN_DIR)
     return error ? { success: false, error } : { success: true }
   })
-  ipcMain.handle('cast:scan', () => castService.scan())
-  ipcMain.handle('cast:cast', (_e, deviceId, filePath) => castService.cast(deviceId, filePath))
-  ipcMain.handle('cast:stop', (_e, deviceId) => castService.stopCast(deviceId))
-  ipcMain.handle('dialog:openFile', () => chooseFile())
-  ipcMain.handle('dialog:openFolder', async () => { const { dialog } = require('electron'); const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); if (r.canceled) return null; authorizedFolders.add(r.filePaths[0]); return r.filePaths[0] })
-  ipcMain.handle('system:openPath', async (_e, filePath) => {
-    const { shell } = require('electron')
-    if (!fs.existsSync(filePath)) return { success: false, error: '文件不存在' }
-    const error = await shell.openPath(filePath)
-    return error ? { success: false, error } : { success: true }
+  ipcMain.handle('cast:scan', (event) => { assertTrustedSender(event); return castService.scan() })
+  ipcMain.handle('cast:cast', (event, deviceId, filePath) => {
+    assertTrustedSender(event)
+    try {
+      return castService.cast(deviceId, assertAllowedPath(filePath))
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
-  ipcMain.handle('docx:preview', (_e, filePath) => previewDocx(filePath))
-  ipcMain.handle('xlsx:preview', (_e, filePath) => previewXlsx(filePath))
-  ipcMain.handle('sync:url', async () => {
+  ipcMain.handle('cast:stop', (_e, deviceId) => { assertTrustedSender(_e); return castService.stopCast(deviceId) })
+  ipcMain.handle('dialog:openFile', (event) => { assertTrustedSender(event); return chooseFile() })
+  ipcMain.handle('dialog:openFolder', async (event) => {
+    assertTrustedSender(event);
+    const { dialog } = require('electron'); const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); if (r.canceled) return null; authorizedFolders.add(r.filePaths[0]); return r.filePaths[0] })
+  ipcMain.handle('system:openPath', async (_e, filePath) => {
+    assertTrustedSender(_e)
+    const { shell } = require('electron')
+    try {
+      const resolved = assertAllowedPath(filePath, { denyExecutable: true })
+      if (!fs.existsSync(resolved)) return { success: false, error: '文件不存在' }
+      const error = await shell.openPath(resolved)
+      return error ? { success: false, error } : { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('docx:preview', (_e, filePath) => {
+    assertTrustedSender(_e)
+    try {
+      return previewDocx(assertAllowedPath(filePath))
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('xlsx:preview', (_e, filePath) => {
+    assertTrustedSender(_e)
+    try {
+      return previewXlsx(assertAllowedPath(filePath))
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('sync:url', async (event) => {
+    assertTrustedSender(event)
     if (!syncService) return null
     try {
       if (!syncService.server) await syncService.start()
@@ -2047,14 +2166,18 @@ app.whenReady().then(async () => {
       return null
     }
   })
-  ipcMain.handle('sync:stop', () => { syncService?.stop(); return true })
+  ipcMain.handle('sync:stop', (event) => {
+    assertTrustedSender(event);
+    syncService?.stop(); return true })
   ipcMain.handle('sync:setPeer', (_e, url) => {
+    assertTrustedSender(_e)
     return syncService?.setPeer(url) ?? false
   })
-  ipcMain.handle('sync:upload', () => syncService.upload())
-  ipcMain.handle('sync:download', () => syncService.download())
-  ipcMain.handle('sync:getProgress', (_e, key) => syncService.getProgress(key))
+  ipcMain.handle('sync:upload', (event) => { assertTrustedSender(event); return syncService.upload() })
+  ipcMain.handle('sync:download', (event) => { assertTrustedSender(event); return syncService.download() })
+  ipcMain.handle('sync:getProgress', (_e, key) => { assertTrustedSender(_e); return syncService.getProgress(key) })
   ipcMain.handle('sync:setProgress', (_e, key, position, preferences) => {
+    assertTrustedSender(_e)
     syncService.setProgress(key, position, preferences)
     return true
   })

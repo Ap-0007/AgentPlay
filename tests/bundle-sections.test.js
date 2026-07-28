@@ -79,5 +79,5 @@ test('agent panel guards doc tasks against double submission', () => {
   const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
   assert.match(panel, /docBusyRef\.current\) return/)
   assert.equal((panel.match(/docBusyRef\.current = true/g) || []).length, 5, '文档/解剖/下载/链接拉片/去重任务都应有同步防重')
-  assert.equal((panel.match(/docBusyRef\.current = false/g) || []).length, 5, '五个 finally 都应释放防重锁')
+  assert.equal((panel.match(/docBusyRef\.current = false/g) || []).length, 6, '五个 finally + 无本地视频提前返回点都应释放防重锁')
 })

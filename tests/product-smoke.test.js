@@ -168,7 +168,7 @@ test('printing routes office formats to the local engine and validates authorize
   const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'office-convert-service.js'), 'utf8')
   assert.match(main, /assertPrintablePath/)
   assert.match(main, /officeConvert\.printFile\(resolved\)/)
-  assert.match(main, /只允许打印经你明确选择过的文件或媒体库内的文件/)
+  assert.match(main, /只允许打印经你明确选择过、媒体库或常用目录内的文件/)
   assert.match(script, /if \(\$Print\)/)
   assert.match(script, /PrintOut/)
   assert.match(service, /async printFile\(sourcePath\)/)
@@ -427,12 +427,12 @@ test('player controls use the deterministic local fast path without starting a m
   }
 })
 
-test('exact duplicate content is found even when filenames differ', () => {
+test('exact duplicate content is found even when filenames differ', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-player-dedup-'))
   try {
     fs.writeFileSync(path.join(dir, 'first.mp4'), 'same-media-content')
     fs.writeFileSync(path.join(dir, 'renamed.mp4'), 'same-media-content')
-    const duplicates = findDuplicates(analyzeDir(dir))
+    const duplicates = await findDuplicates(analyzeDir(dir))
     assert.equal(duplicates.length, 1)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
