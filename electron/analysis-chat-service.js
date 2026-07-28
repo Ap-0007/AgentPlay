@@ -131,7 +131,10 @@ async function runChatAnalysis({
       let shots = []
       try {
         shots = await frames.extract({ sourcePath: resolved, durationSec: duration, outDir: path.join(os.tmpdir(), `agentplay-frames-${Date.now()}`) })
-      } catch { shots = [] }
+      } catch (error) {
+        onStatus(`关键帧抽取失败（${String(error?.message || '未知原因').slice(0, 60)}），本次仅基于字幕`)
+        shots = []
+      }
       if (shots.length) {
         onStatus(`AI 正在观看 ${shots.length} 张关键画面并拆解…`)
         try {

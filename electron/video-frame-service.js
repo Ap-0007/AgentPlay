@@ -115,17 +115,22 @@ class VideoFrameService {
     fs.rmSync(outDir, { recursive: true, force: true })
     fs.mkdirSync(outDir, { recursive: true })
 
-    // 第一遍：镜头切换帧（showinfo 在 select 之后，pts_time 与落盘文件一一对应）
-    const sceneFilter = `select='gt(scene,${SCENE_THRESHOLD})',showinfo,scale=${FRAME_WIDTH}:-2`
-    const { stderr } = await this.run([
-      '-hide_banner', '-nostdin', '-i', sourcePath,
-      '-vf', sceneFilter, '-fps_mode', 'vfr', '-frames:v', String(cap * 3), '-q:v', '4',
-      path.join(outDir, 'f%04d.jpg')
-    ])
+    // 第一遍：镜头切换帧（showinfo 在 select 之后，pts_time 与落盘文件一一对应）。
+    // format=yuvj420p 必带：抖音等 HEVC 窄色域(tv range)片源会让 mjpeg 编码器初始化直接失败
+    const sceneFilter = `select='gt(scene,${SCENE_THRESHOLD})',showinfo,scale=${FRAME_WIDTH}:-2,format=yuvj420p`
+    let stderr = ''
+    try {
+      const result = await this.run([
+        '-hide_banner', '-nostdin', '-i', sourcePath,
+        '-vf', sceneFilter, '-fps_mode', 'vfr', '-frames:v', String(cap * 3), '-q:v', '4',
+        path.join(outDir, 'f%04d.jpg')
+      ])
+      stderr = result.stderr
+    } catch { /* 场景抽帧硬失败也交给均匀采样兜底 */ }
     const times = [...stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number.parseFloat(m[1]))
-    let files = fs.readdirSync(outDir).filter((name) => name.endsWith('.jpg')).sort()
+    let files = fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((name) => name.endsWith('.jpg')).sort() : []
 
-    // 镜头切换帧太少（谈话头/幻灯片）→ 均匀采样兜底，时间戳按 fps 推导
+    // 镜头切换帧太少（谈话头/渐变/硬失败）→ 均匀采样兜底，时间戳按 fps 推导
     const minUseful = Math.min(8, Math.max(3, Math.ceil((duration || 60) / 20)))
     let usedUniform = false
     if (files.length < minUseful && duration > 0) {
@@ -134,7 +139,7 @@ class VideoFrameService {
       const fps = cap / duration
       await this.run([
         '-hide_banner', '-nostdin', '-i', sourcePath,
-        '-vf', `fps=${fps.toFixed(4)},scale=${FRAME_WIDTH}:-2`, '-frames:v', String(cap), '-q:v', '4',
+        '-vf', `fps=${fps.toFixed(4)},scale=${FRAME_WIDTH}:-2,format=yuvj420p`, '-frames:v', String(cap), '-q:v', '4',
         path.join(outDir, 'f%04d.jpg')
       ])
       times.length = 0

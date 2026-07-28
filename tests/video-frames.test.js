@@ -45,7 +45,7 @@ test('thinning keeps coverage from head to tail', () => {
   assert.equal(thinned.length <= 4, true)
 })
 
-function fakeFfmpeg({ sceneFrames = [], uniformFrames = 0, thumbs = [] } = {}) {
+function fakeFfmpeg({ sceneFrames = [], uniformFrames = 0, thumbs = [], sceneFails = false } = {}) {
   const { EventEmitter } = require('events')
   const calls = []
   const spawnImpl = (file, args) => {
@@ -63,6 +63,11 @@ function fakeFfmpeg({ sceneFrames = [], uniformFrames = 0, thumbs = [] } = {}) {
       }
       const outPattern = args[args.length - 1]
       const isUniform = args.some((a) => String(a).startsWith('fps='))
+      if (!isUniform && sceneFails) {
+        child.stderr.emit('data', Buffer.from('Conversion failed!\n'))
+        child.emit('exit', 1)
+        return
+      }
       const count = isUniform ? uniformFrames : sceneFrames.length
       for (let i = 0; i < count; i++) {
         fs.writeFileSync(outPattern.replace('%04d', String(i + 1).padStart(4, '0')), Buffer.from([i + 1]))
@@ -102,6 +107,20 @@ test('extract falls back to uniform sampling when scene detection under-produces
   assert.ok(frames.length > 8)
   assert.equal(frames[0].label, 't=00:00')
   assert.match(frames[frames.length - 1].label, /^t=00:2[0-9]$/)
+})
+
+test('scene pass hard failure (e.g. limited-range HEVC) still falls back to uniform', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frames-'))
+  const video = path.join(dir, 'v.mp4')
+  fs.writeFileSync(video, 'fake')
+  const { spawnImpl, calls } = fakeFfmpeg({ sceneFails: true, uniformFrames: 12, thumbs: Array.from({ length: 12 }, (_, i) => Buffer.alloc(256, i * 20)) })
+  const service = new VideoFrameService({ ffmpegPath: process.execPath, spawnImpl })
+  const frames = await service.extract({ sourcePath: video, durationSec: 30, outDir: path.join(dir, 'frames') })
+  assert.ok(calls.some((args) => args.some((a) => String(a).startsWith('fps='))), 'scene 硬失败必须退均匀采样')
+  assert.ok(frames.length > 0)
+  // 两路 jpeg 滤镜都必须带 format=yuvj420p，否则窄色域 HEVC 让 mjpeg 初始化失败
+  const jpegFilters = calls.filter((args) => args.some((a) => String(a).endsWith('%04d.jpg'))).map((args) => args[args.indexOf('-vf') + 1])
+  assert.ok(jpegFilters.every((f) => f.includes('format=yuvj420p')))
 })
 
 test('extract returns empty without ffmpeg or source', async () => {
