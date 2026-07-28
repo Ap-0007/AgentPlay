@@ -542,9 +542,20 @@ export default function AgentPanel() {
           return
         }
         recorder = new MediaRecorder(stream)
-        recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data) }
+        recorder.ondataavailable = (event) => {
+          if (!event.data.size) return
+          const total = chunks.reduce((sum, chunk) => sum + chunk.size, 0) + event.data.size
+          if (total > 25 * 1024 * 1024) {
+            addMessage('agent', '录音已达 25MB 上限，自动停止')
+            setListening(false)
+            try { recorder?.stop() } catch { /* 已停止 */ }
+            return
+          }
+          chunks.push(event.data)
+        }
         recorder.onstop = async () => {
           stream.getTracks().forEach((track) => track.stop())
+          if (cancelled) return
           const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' })
           if (!blob.size) return
           setDocStatus('正在离线转写语音…')

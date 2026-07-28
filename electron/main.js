@@ -330,26 +330,28 @@ function assertPrintablePath(filePath) {
   throw new Error('只允许打印经你明确选择过、媒体库或常用目录内的文件')
 }
 
-// 共享路径门禁：授权过的路径、授权文件夹、默认媒体目录与常用用户目录内才放行；
-// 敏感凭证文件与（按需）可执行扩展名一律拒绝
-const SENSITIVE_FILE = /(?:^|[\\/])\.env(?:\.|$)|(?:^|[\\/])(?:id_rsa|id_ed25519|id_dsa|\.aws[\\/]credentials|\.npmrc|\.netrc)$/i
+// 共享路径门禁：授权文件夹、默认媒体目录与常用用户目录内才放行；
+// 敏感凭证文件与（按需）可执行扩展名一律拒绝；先解析真实路径再校验，防软链绕过
+const SENSITIVE_FILE = /(?:^|[\\/])\.env(?:\.|$)|(?:^|[\\/])\.git-credentials$|(?:^|[\\/])\.ssh[\\/]|\.(?:pem|key|pfx|p12|pgpass|netrc|npmrc)$|(?:^|[\\/])web\.config$|(?:^|[\\/])(?:id_rsa|id_ed25519|id_dsa|\.aws[\\/]credentials)$/i
 const EXECUTABLE_EXTS = new Set(['.exe', '.bat', '.cmd', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.com', '.scr', '.pif', '.lnk', '.ps1', '.reg', '.dll'])
 
 function allowedRoots() {
   const roots = new Set([...authorizedFolders])
-  for (const p of userAuthorizedPaths) roots.add(path.dirname(p))
+  const home = path.resolve(os.homedir())
   for (const dir of [defaultVideoDir(), app.getPath('videos'), app.getPath('documents'), app.getPath('downloads'), app.getPath('desktop'), app.getPath('music')]) {
-    if (dir) roots.add(dir)
+    // defaultVideoDir 退化到整个 home 时不得整盘放开
+    if (dir && path.resolve(dir) !== home) roots.add(dir)
   }
   return [...roots]
 }
 
 function assertAllowedPath(filePath, { denyExecutable = false } = {}) {
   if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('路径无效')
-  const resolved = path.resolve(filePath)
+  let resolved = path.resolve(filePath)
+  try { resolved = fs.realpathSync(resolved) } catch { /* 文件不存在时按词法路径校验 */ }
   if (SENSITIVE_FILE.test(resolved)) throw new Error('该文件属于敏感凭证，禁止访问')
   if (denyExecutable && EXECUTABLE_EXTS.has(path.extname(resolved).toLowerCase())) throw new Error('不允许打开可执行文件')
-  if (userAuthorizedPaths.has(resolved)) return resolved
+  if (userAuthorizedPaths.has(resolved) || userAuthorizedPaths.has(path.resolve(filePath))) return resolved
   if (isPathInsideRoots(resolved, allowedRoots(), { realpathSync: (value) => fs.realpathSync(value) })) return resolved
   throw new Error('只允许访问你明确授权过、媒体库或常用目录内的文件')
 }
@@ -1285,18 +1287,20 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('documents:attach-paths', (event, filePaths) => {
     assertTrustedSender(event)
-    // 拖入/粘贴的路径也必须在可授权范围内（媒体库/常用目录/已授权文件夹），防止自报授权绕过白名单
+    // 拖入/粘贴等同用户显式授权（恢复产品本意）；但敏感凭证类文件永远拒绝附加
     const requested = Array.isArray(filePaths) ? filePaths.slice(0, 20) : []
     if (!requested.length) return []
     const valid = requested.filter((p) => {
       try {
-        assertAllowedPath(p)
-        return true
+        let real = path.resolve(String(p || ''))
+        if (!fs.existsSync(real)) return false
+        try { real = fs.realpathSync(real) } catch { /* 按词法路径校验 */ }
+        return !SENSITIVE_FILE.test(real)
       } catch {
         return false
       }
     })
-    if (!valid.length) return { error: '路径不在可授权范围（媒体库/常用目录/已授权文件夹）' }
+    if (!valid.length) return { error: '没有可处理的文件（敏感凭证类文件不允许附加）' }
     try {
       return approveDocumentPaths(valid)
     } catch (error) {
@@ -1551,13 +1555,16 @@ app.whenReady().then(async () => {
     const status = transcriptionService.availability()
     if (!status.available) return { success: false, error: '语音转写组件未下载：请到「模型接入中心」下载转写组件' }
     const data = input.data
-    const byteLength = data && (data.byteLength ?? data.length) || 0
-    if (!byteLength) return { success: false, error: '没有收到音频数据' }
-    if (byteLength > 25 * 1024 * 1024) return { success: false, error: '录音超过 25MB 上限' }
+    const isBinary = Boolean(data) && (ArrayBuffer.isView(data) || data instanceof ArrayBuffer)
+    if (!isBinary) return { success: false, error: '音频数据格式无效' }
+    const buffer = Buffer.from(data)
+    // 大小以转换后的真实字节数为准（byteLength/length 属性可被伪造）
+    if (!buffer.length) return { success: false, error: '没有收到音频数据' }
+    if (buffer.length > 25 * 1024 * 1024) return { success: false, error: '录音超过 25MB 上限' }
     const ext = /^\.(webm|ogg|wav|mp3|m4a)$/.test(String(input.ext || '')) ? String(input.ext) : '.webm'
-    const tmp = path.join(app.getPath('temp'), `agentplay-mic-${Date.now()}${ext}`)
+    const tmp = path.join(app.getPath('temp'), `agentplay-mic-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`)
     try {
-      fs.writeFileSync(tmp, Buffer.from(data))
+      fs.writeFileSync(tmp, buffer)
       const transcription = await transcriptionService.transcribe({ sourcePath: tmp, lang: 'auto' })
       return { success: true, text: String(transcription.text || '').trim() }
     } catch (error) {
@@ -1963,7 +1970,14 @@ app.whenReady().then(async () => {
     return Boolean(controller)
   })
 
-  ipcMain.handle('files:scan', (_e, dir) => { assertTrustedSender(_e); return scanDir(dir || defaultVideoDir()) })
+  ipcMain.handle('files:scan', (_e, dir) => {
+    assertTrustedSender(_e)
+    try {
+      return scanDir(dir ? assertAllowedPath(dir) : defaultVideoDir())
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
   ipcMain.handle('files:defaultDir', (event) => { assertTrustedSender(event); return defaultVideoDir() })
   ipcMain.handle('files:readText', async (_e, filePath) => {
     assertTrustedSender(_e)
@@ -2063,18 +2077,30 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle:download', (_e, fileId, apiKey) => { assertTrustedSender(_e); return downloadSubtitle(fileId, apiKey || process.env.OPENSUBTITLES_API_KEY) })
   ipcMain.handle('media:analyze', (_e, dir) => {
     assertTrustedSender(_e)
-    const files = analyzeDir(dir || defaultVideoDir())
-    return { files, clusters: clusterByTag(files) }
+    try {
+      const files = analyzeDir(dir ? assertAllowedPath(dir) : defaultVideoDir())
+      return { files, clusters: clusterByTag(files) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle('media:dedup', (_e, dir) => {
     assertTrustedSender(_e)
-    const files = analyzeDir(dir || defaultVideoDir())
-    return findDuplicates(files)
+    try {
+      const files = analyzeDir(dir ? assertAllowedPath(dir) : defaultVideoDir())
+      return findDuplicates(files)
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle('media:suggest', (_e, dir) => {
     assertTrustedSender(_e)
-    const files = analyzeDir(dir || defaultVideoDir())
-    return suggestClip(files)
+    try {
+      const files = analyzeDir(dir ? assertAllowedPath(dir) : defaultVideoDir())
+      return suggestClip(files)
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle('dlna:serverUrl', async (event) => {
     assertTrustedSender(event)

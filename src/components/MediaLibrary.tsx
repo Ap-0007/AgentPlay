@@ -455,7 +455,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
             </> : <button onClick={() => void enableWifi()} className="mt-2 px-3 py-1 bg-player-accent rounded text-xs">启用 WiFi 传文件</button>}
           </div>
         )}
-        {showMore && castStatus && (
+        {castStatus && (
                       <div className="mb-6 bg-player-surface rounded-lg p-4 flex items-center gap-2">
                         <p className={castStatus.isError ? 'flex-1 text-xs text-red-300' : 'flex-1 text-xs text-emerald-300'}>{castStatus.message}</p>
                         {castStatus.deviceId && <button onClick={() => void stopCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>}

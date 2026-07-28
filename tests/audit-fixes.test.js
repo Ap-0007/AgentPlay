@@ -36,7 +36,7 @@ test('mirror card and cast status are not nested inside the wifi-enabled branch'
   const wifiStart = library.indexOf('📱 WiFi 传文件')
   const wifiEnd = library.indexOf('启用 WiFi 传文件')
   const mirrorIdx = library.indexOf('AgentPlay 互投（屏幕镜像）')
-  const castIdx = library.indexOf('{showMore && castStatus && (')
+  const castIdx = library.indexOf('{castStatus && (')
   assert.ok(mirrorIdx > wifiEnd, '互投卡片必须在 WiFi 启用分支之外')
   assert.ok(castIdx > wifiEnd, '投屏状态条必须在 WiFi 启用分支之外')
   assert.ok(mirrorIdx > wifiStart)
@@ -86,4 +86,54 @@ test('duplicate scan hashes files asynchronously', () => {
   assert.match(media, /createReadStream\(filePath\)/)
   assert.doesNotMatch(media, /fs\.readSync\(/)
   assert.match(media, /async function findDuplicates/)
+})
+
+test('allowed roots never expand to whole home or per-file parent dirs', () => {
+  const main = source('electron/main.js')
+  const rootsBlock = main.slice(main.indexOf('function allowedRoots()'), main.indexOf('function assertAllowedPath('))
+  assert.doesNotMatch(rootsBlock, /path\.dirname\(/, '不得把每个授权文件的父目录整体授权')
+  assert.match(rootsBlock, /path\.resolve\(dir\) !== home/, 'defaultVideoDir 退化到 home 时不得整盘放开')
+})
+
+test('sensitive blacklist covers git/ssh/key-material and is checked on the real path', () => {
+  const main = source('electron/main.js')
+  assert.match(main, /\.git-credentials/)
+  assert.match(main, /\.ssh\[\\\\\/\]\|/)
+  assert.match(main, /pem\|key\|pfx\|p12/)
+  assert.match(main, /web\\\.config/)
+  const gate = main.slice(main.indexOf('function assertAllowedPath('), main.indexOf('function assertAllowedPath(') + 700)
+  assert.ok(gate.indexOf('realpathSync') < gate.indexOf('SENSITIVE_FILE.test'), '必须先解析真实路径再做黑名单校验')
+})
+
+test('scan and media analysis channels reject arbitrary directory enumeration', () => {
+  const main = source('electron/main.js')
+  for (const ch of ['files:scan', 'media:analyze', 'media:dedup', 'media:suggest']) {
+    const block = main.slice(main.indexOf(`ipcMain.handle('${ch}'`), main.indexOf(`ipcMain.handle('${ch}'`) + 300)
+    assert.match(block, /assertAllowedPath\(dir\)/, `${ch} 必须校验目录`)
+  }
+})
+
+test('drag-in attachment allows user files anywhere but keeps the sensitive blacklist', () => {
+  const main = source('electron/main.js')
+  const block = main.slice(main.indexOf("ipcMain.handle('documents:attach-paths'"), main.indexOf("ipcMain.handle('documents:attach-paths'") + 900)
+  assert.doesNotMatch(block, /assertAllowedPath/, '拖入不再强制白名单根目录（用户手势即授权）')
+  assert.match(block, /SENSITIVE_FILE\.test/)
+  assert.match(block, /realpathSync/)
+})
+
+test('mic blob channel validates binary type, real size and unique temp names', () => {
+  const main = source('electron/main.js')
+  const block = main.slice(main.indexOf("ipcMain.handle('transcribe:blob'"), main.indexOf("ipcMain.handle('transcribe:blob'") + 1200)
+  assert.match(block, /ArrayBuffer\.isView\(data\)/)
+  assert.match(block, /Buffer\.from\(data\)/)
+  assert.match(block, /crypto\.randomUUID\(\)/)
+  const panel = source('src/components/AgentPanel.tsx')
+  assert.match(panel, /if \(cancelled\) return/, '关面板后不得继续转写发送')
+  assert.match(panel, /25 \* 1024 \* 1024/, '录音必须有累积上限')
+})
+
+test('cast status bar renders without requiring the wifi/more section', () => {
+  const library = source('src/components/MediaLibrary.tsx')
+  assert.match(library, /\{castStatus && \(/)
+  assert.doesNotMatch(library, /\{showMore && castStatus && \(/)
 })

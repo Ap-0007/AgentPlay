@@ -126,7 +126,6 @@ test('shared path gate blocks sensitive files and executables', () => {
   assert.match(main, /docx:preview[\s\S]{0,150}assertAllowedPath/)
   assert.match(main, /xlsx:preview[\s\S]{0,150}assertAllowedPath/)
   assert.match(main, /cast:cast[\s\S]{0,300}assertAllowedPath/)
-  assert.match(main, /documents:attach-paths[\s\S]{0,400}assertAllowedPath/)
 })
 
 test('saved API key cannot be redirected to an attacker baseUrl', () => {
