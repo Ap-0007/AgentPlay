@@ -893,7 +893,7 @@ app.whenReady().then(async () => {
         })
       }
       sendStatus('正在解析视频页')
-      const info = await siteVideo.resolve(url, { signal: controller.signal })
+      const info = await siteVideo.resolve(url, { signal: controller.signal, onRetryNote: (note) => sendStatus(note) })
       sendStatus(`正在下载：${info.title.slice(0, 40)}`)
       const result = await siteVideo.download(url, {
         destDir: path.join(app.getPath('videos'), 'AgentPlay 下载'),
@@ -939,7 +939,7 @@ app.whenReady().then(async () => {
             await ytdlpDownload.start({})
           }
           sendStatus('正在解析视频页')
-          info = await siteVideo.resolve(url, { signal: controller.signal })
+          info = await siteVideo.resolve(url, { signal: controller.signal, onRetryNote: (note) => sendStatus(note) })
           sendStatus(`正在下载：${info.title.slice(0, 40)}`)
           const result = await siteVideo.download(url, {
             destDir, signal: controller.signal,

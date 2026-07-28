@@ -86,10 +86,35 @@ class SiteVideoService {
     })
   }
 
-  async resolve(url, { signal } = {}) {
+
+  // 匿名→chrome→edge 的 Cookies 尝试链；浏览器锁住库时给可执行提示
+  async attemptWithCookies(run, { signal, onRetryNote } = {}) {
+    const attempts = [null, 'chrome', 'edge']
+    let lastError = null
+    for (const browser of attempts) {
+      if (browser) onRetryNote?.(`需要登录态，正在用本机 ${browser} 浏览器 Cookies 重试`)
+      try {
+        return await run(browser)
+      } catch (error) {
+        lastError = error
+        if (signal?.aborted) throw error
+        const message = String(error.message || '')
+        if (/Could not copy .*cookie database/i.test(message)) {
+          throw new Error('浏览器正在运行并锁住了 Cookies 文件：请完全退出 Chrome/Edge 后点重试（或先不登录直接用公开视频）')
+        }
+        if (!/fresh cookies|login|登录|cookie|会员|VIP|注册/i.test(message)) break
+      }
+    }
+    throw lastError
+  }
+
+  async resolve(url, { signal, onRetryNote } = {}) {
     const target = assertHttpUrl(url)
     if (!this.availability().available) throw new Error('站点视频解析组件未下载')
-    const { stdout } = await this.exec(['--dump-single-json', '--no-playlist', '--no-warnings', target], { timeoutMs: this.resolveTimeoutMs, signal })
+    const { stdout } = await this.attemptWithCookies(
+      (browser) => this.exec([...(browser ? ['--cookies-from-browser', browser] : []), '--dump-single-json', '--no-playlist', '--no-warnings', target], { timeoutMs: this.resolveTimeoutMs, signal }),
+      { signal, onRetryNote }
+    )
     let info
     try {
       info = JSON.parse(stdout.trim().split(/\r?\n/).filter(Boolean).pop() || '{}')
@@ -125,21 +150,10 @@ class SiteVideoService {
       '--print', 'after_move:filepath',
       target
     ]
-    // 需要登录态的站点（如抖音部分视频）：匿名失败后自动用本机浏览器 Cookies 重试（只读、不出机）
-    const attempts = [null, 'chrome', 'edge']
-    let lastError = null
-    for (const browser of attempts) {
-      if (browser) onRetryNote?.(`需要登录态，正在用本机 ${browser} 浏览器 Cookies 重试`)
-      const args = browser ? [...baseArgs, '--cookies-from-browser', browser] : baseArgs
-      try {
-        return await this.runDownload(args, destDir, onProgress, signal)
-      } catch (error) {
-        lastError = error
-        if (signal?.aborted) throw error
-        if (!/fresh cookies|login|登录|cookie|会员|VIP|注册/i.test(String(error.message))) break
-      }
-    }
-    throw lastError
+    return this.attemptWithCookies(
+      (browser) => this.runDownload(browser ? [...baseArgs, '--cookies-from-browser', browser] : baseArgs, destDir, onProgress, signal),
+      { signal, onRetryNote }
+    )
   }
 
   async runDownload(args, destDir, onProgress, signal) {

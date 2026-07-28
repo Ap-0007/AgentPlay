@@ -114,6 +114,24 @@ test('download retries with browser cookies on login-required errors', async () 
   assert.ok(notes.some((n) => n.includes('Cookies 重试')))
 })
 
+test('cookie database lock surfaces an actionable message instead of raw yt-dlp error', async () => {
+  const service = new SiteVideoService({
+    enginePath: process.execPath,
+    spawnImpl: fakeSpawn(({ child, args }) => {
+      if (!args.includes('--cookies-from-browser')) {
+        child.stderr.emit('data', Buffer.from('ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed'))
+      } else {
+        child.stderr.emit('data', Buffer.from('ERROR: Could not copy Chrome cookie database'))
+      }
+      child.emit('exit', 1)
+    })
+  })
+  await assert.rejects(
+    service.resolve('https://v.douyin.com/abc', {}),
+    /浏览器正在运行并锁住了 Cookies 文件.*完全退出 Chrome\/Edge/
+  )
+})
+
 test('editable fields get system edit menu and messages are selectable', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
