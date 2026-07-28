@@ -195,6 +195,24 @@ test('JSON cookie exports (J2TEAM / Cookie-Editor) normalize to Netscape format'
   assert.equal(normalizeCookiesText('.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\ta1'), '.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\ta1')
 })
 
+test('re-download of an already-fetched video reuses the existing file instead of failing', async () => {
+  const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-dl-'))
+  const existing = path.join(destDir, '老视频-BV1.mp4')
+  fs.writeFileSync(existing, 'x'.repeat(50))
+  const old = new Date(Date.now() - 60 * 60 * 1000)
+  fs.utimesSync(existing, old, old)
+  const service = new SiteVideoService({
+    enginePath: process.execPath,
+    spawnImpl: fakeSpawn(({ child }) => {
+      child.stdout.emit('data', Buffer.from(`[download] ${existing} has already been downloaded\n`))
+      child.emit('exit', 0)
+    })
+  })
+  const result = await service.download('https://v.douyin.com/abc', { destDir })
+  assert.equal(result.outputPath, existing)
+  assert.equal(result.bytes, 50)
+})
+
 test('editable fields get system edit menu and messages are selectable', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')

@@ -241,6 +241,7 @@ class SiteVideoService {
   }
 
   async runDownload(args, destDir, onProgress, signal) {
+    const startedAt = Date.now()
     let finalPath = ''
     const { stdout, stderr } = await this.exec(args, {
       timeoutMs: this.downloadTimeoutMs,
@@ -252,9 +253,14 @@ class SiteVideoService {
     })
     const printed = stdout.trim().split(/\r?\n/).filter(Boolean).pop() || ''
     if (printed && fs.existsSync(printed)) finalPath = printed
+    // 同一视频重复下载时 yt-dlp 直接跳过（exit 0、不打印路径），从跳过消息里把已有文件捞回来
+    if (!finalPath) {
+      const skipped = /\[download\]\s+(.+?)\s+has already been downloaded/i.exec(stdout)
+      if (skipped && fs.existsSync(skipped[1])) finalPath = skipped[1]
+    }
     if (!finalPath) {
       const candidates = fs.readdirSync(destDir).map((name) => path.join(destDir, name))
-        .filter((file) => fs.statSync(file).isFile() && Date.now() - fs.statSync(file).mtimeMs < 10 * 60 * 1000)
+        .filter((file) => fs.statSync(file).isFile() && fs.statSync(file).mtimeMs >= startedAt - 5 * 60 * 1000)
         .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
       finalPath = candidates[0] || ''
     }
