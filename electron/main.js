@@ -1,7 +1,7 @@
 // AI播放器 Electron 主进程
 // dev: 加载 Vite dev server；prod: 加载构建产物
 // 集成 mpv sidecar，IPC 桥接渲染进程
-const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session, desktopCapturer } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -391,6 +391,7 @@ const TRANSLATE_PACK = require('./translate-pack-manifest')
 const YTDLP_PACK = require('./ytdlp-pack-manifest')
 const { SiteVideoService, detectCookiesDomain, normalizeCookiesText, cookiesFileForUrl } = require('./site-video-service')
 const { SiteLoginService } = require('./site-login-service')
+const { MirrorReceiver, MirrorSender, MirrorDiscovery } = require('./mirror-service')
 const { VideoFrameService } = require('./video-frame-service')
 const ytdlpDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'yt-dlp'),
@@ -699,7 +700,124 @@ app.whenReady().then(async () => {
   dlnaReceiver = new DlnaReceiver()
   dlnaReceiver.onPlay = (url) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('receiver:play', url)
+
   }
+  // AgentPlay 互投（屏幕镜像）：接收端开 TCP+UDP 广播并弹镜像窗；发送端采集全屏推流
+  let mirrorReceiver = null
+  let mirrorSender = null
+  let mirrorCaptureTimer = null
+  let mirrorWindow = null
+  let mirrorDiscovery = null
+
+  const closeMirrorWindow = () => {
+    try { mirrorWindow?.close() } catch { /* 忽略 */ }
+    mirrorWindow = null
+  }
+  const stopMirrorReceiver = () => {
+    mirrorReceiver?.stop()
+    mirrorReceiver = null
+    closeMirrorWindow()
+  }
+  const stopMirrorSender = async () => {
+    if (mirrorCaptureTimer) clearInterval(mirrorCaptureTimer)
+    mirrorCaptureTimer = null
+    mirrorSender?.close()
+    mirrorSender = null
+  }
+  const openMirrorWindow = (pin, name) => {
+    closeMirrorWindow()
+    mirrorWindow = new BrowserWindow({
+      width: 960,
+      height: 600,
+      backgroundColor: '#000000',
+      autoHideMenuBar: true,
+      title: `AgentPlay 互投接收 - ${name}`,
+      webPreferences: { preload: path.join(__dirname, 'mirror-preload.js'), sandbox: true }
+    })
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      html,body{margin:0;height:100%;background:#000;overflow:hidden}
+      #v{width:100%;height:100%;object-fit:contain;display:block}
+      #pin{position:fixed;top:12px;right:12px;background:rgba(0,0,0,.72);color:#4ade80;font:600 22px/1.5 monospace;padding:8px 14px;border-radius:8px;letter-spacing:4px}
+      #tip{position:fixed;left:12px;top:12px;background:rgba(0,0,0,.72);color:#aaa;font:13px/1.5 system-ui;padding:8px 12px;border-radius:8px}
+    </style></head><body>
+    <img id="v" alt="">
+    <div id="pin">PIN ${pin}</div>
+    <div id="tip">等待发送端连接…（在另一台电脑的 AgentPlay「设备、投屏与同步」里扫描并输入 PIN）</div>
+    <script>
+      const img = document.getElementById('v')
+      window.mirrorView.onFrame((b64) => {
+        img.src = 'data:image/jpeg;base64,' + b64
+        const tip = document.getElementById('tip')
+        if (tip) tip.remove()
+      })
+    </script></body></html>`
+    mirrorWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+    mirrorWindow.on('closed', () => {
+      mirrorWindow = null
+      stopMirrorReceiver()
+    })
+  }
+
+  ipcMain.handle('mirror:start-receiver', async (event) => {
+    assertTrustedSender(event)
+    stopMirrorReceiver()
+    const receiver = new MirrorReceiver({
+      name: os.hostname(),
+      onFrame: (jpeg) => {
+        if (mirrorWindow && !mirrorWindow.isDestroyed()) mirrorWindow.webContents.send('mirror:frame', jpeg.toString('base64'))
+      }
+    })
+    const info = await receiver.start()
+    mirrorReceiver = receiver
+    openMirrorWindow(info.pin, info.name)
+    return { success: true, ...info }
+  })
+  ipcMain.handle('mirror:stop-receiver', (event) => {
+    assertTrustedSender(event)
+    stopMirrorReceiver()
+    return true
+  })
+  ipcMain.handle('mirror:scan', async (event) => {
+    assertTrustedSender(event)
+    mirrorDiscovery?.stop()
+    mirrorDiscovery = new MirrorDiscovery()
+    return mirrorDiscovery.listen(2500)
+  })
+  ipcMain.handle('mirror:start-sender', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const host = String(input.host || '').trim()
+    const port = Number(input.port)
+    const pin = String(input.pin || '').trim()
+    if (!host || !Number.isInteger(port) || port <= 0 || !/^\d{6}$/.test(pin)) return { success: false, error: '目标地址或 PIN 无效' }
+    await stopMirrorSender()
+    const sender = new MirrorSender({ host, port, pin })
+    try {
+      await sender.connect()
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+    mirrorSender = sender
+    mirrorCaptureTimer = setInterval(async () => {
+      try {
+        const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 720 } })
+        const shot = sources[0]?.thumbnail
+        if (shot && !shot.isEmpty()) sender.sendJpeg(shot.toJPEG(70))
+      } catch { /* 单帧失败不中断推流 */ }
+    }, 350)
+    return { success: true }
+  })
+  ipcMain.handle('mirror:stop-sender', async (event) => {
+    assertTrustedSender(event)
+    await stopMirrorSender()
+    return true
+  })
+  ipcMain.handle('mirror:status', (event) => {
+    assertTrustedSender(event)
+    return {
+      receiving: mirrorReceiver ? mirrorReceiver.info() : null,
+      sending: mirrorSender ? { host: mirrorSender.host, port: mirrorSender.port } : null
+    }
+  })
 
   // mpv 事件转发渲染进程
   mpv.on((event, data) => {

@@ -235,6 +235,14 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('media:site-component-progress', handler)
     }
   },
+  mirror: {
+    startReceiver: () => ipcRenderer.invoke('mirror:start-receiver'),
+    stopReceiver: () => ipcRenderer.invoke('mirror:stop-receiver'),
+    scan: () => ipcRenderer.invoke('mirror:scan'),
+    startSender: (input) => ipcRenderer.invoke('mirror:start-sender', input),
+    stopSender: () => ipcRenderer.invoke('mirror:stop-sender'),
+    status: () => ipcRenderer.invoke('mirror:status')
+  },
   mediaDownload: {
     detect: (text) => ipcRenderer.invoke('media:download-detect', text),
     download: (input) => ipcRenderer.invoke('media:download', input),

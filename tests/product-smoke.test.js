@@ -334,7 +334,9 @@ test('model API keys are encrypted at rest and never returned to the renderer', 
 
 test('every main-process event sent to the renderer has a preload listener', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
+  // 互投接收窗用独立的 mirror-preload.js（data-URL 页，非主渲染器），监听器一并扫描
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'electron', 'mirror-preload.js'), 'utf8')
   const sent = [...main.matchAll(/webContents\.send\(['"]([^'"]+)['"]/g)].map((m) => m[1])
   const listened = new Set(
     [...preload.matchAll(/ipcRenderer\.on\(['"]([^'"]+)['"]/g)].map((m) => m[1])

@@ -125,6 +125,14 @@ interface AiPlayerAPI {
     login: (input: { domain?: string }) => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; file?: string }>
     onComponentProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
+  mirror?: {
+    startReceiver: () => Promise<{ success: boolean; port?: number; pin?: string; name?: string; error?: string }>
+    stopReceiver: () => Promise<boolean>
+    scan: () => Promise<Array<{ name: string; host: string; port: number }>>
+    startSender: (input: { host: string; port: number; pin: string }) => Promise<{ success: boolean; error?: string }>
+    stopSender: () => Promise<boolean>
+    status: () => Promise<{ receiving: { port: number; pin: string; name: string } | null; sending: { host: string; port: number } | null }>
+  }
   mediaDownload?: {
     detect: (text: string) => Promise<{ matched: boolean; url: string; direct?: boolean; mode?: 'analyze' | 'download' | null }>
     download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; finalUrl?: string }>
