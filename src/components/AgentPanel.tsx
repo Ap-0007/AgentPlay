@@ -638,7 +638,7 @@ export default function AgentPanel() {
           <div className="flex items-center gap-2 border-b border-amber-400/20 bg-amber-400/[0.06] px-4 py-2 text-xs text-amber-100">
             <label className="flex flex-1 cursor-pointer items-center gap-2">
               <input type="checkbox" checked={cloudApproved} onChange={(event) => setCloudApproved(event.target.checked)} />
-              允许把本次任务的内容（文件正文或字幕）发送给当前云端模型
+              允许把本次任务的内容（文件正文、字幕或视频关键画面截图）发送给当前云端模型
             </label>
             <button disabled={!cloudApproved || docBusy} onClick={() => { setNeedsApproval(false); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(true); else if (pendingTaskRef.current === 'link-analysis') void runLinkAnalysisTaskRef.current(linkAnalysisUrlRef.current, '', true); else void runDocTaskRef.current(true) }} className="rounded bg-amber-600 px-3 py-1 text-white disabled:opacity-40">继续执行</button>
           </div>

@@ -85,6 +85,7 @@ const activeAnalysisRequests = new Map()
 const activeMediaDownloads = new Map()
 let liveSubtitleSession = null
 let llmComplete = null
+let llmCompleteVisionMulti = null
 const approvedDocumentSelections = new Map()
 const authorizedFolders = new Set()
 const userAuthorizedPaths = new Set()
@@ -389,6 +390,7 @@ const whisperDownload = new LocalAiDownloadService({
 const TRANSLATE_PACK = require('./translate-pack-manifest')
 const YTDLP_PACK = require('./ytdlp-pack-manifest')
 const { SiteVideoService, detectCookiesDomain, normalizeCookiesText } = require('./site-video-service')
+const { VideoFrameService } = require('./video-frame-service')
 const ytdlpDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'yt-dlp'),
   manifest: YTDLP_PACK,
@@ -398,6 +400,11 @@ const siteVideo = new SiteVideoService({
   enginePath: path.join(app.getPath('userData'), 'yt-dlp', 'yt-dlp.exe'),
   ffmpegDir: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin'),
   cookiesDir: path.join(app.getPath('userData'), 'site-cookies')
+})
+// 拉片关键帧：复用 yt-dlp 组件包里的 ffmpeg/ffprobe，组件未下载时优雅降级为纯字幕分析
+const videoFrames = new VideoFrameService({
+  ffmpegPath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffmpeg.exe'),
+  ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
@@ -592,6 +599,17 @@ app.whenReady().then(async () => {
     } finally {
       if (usesBundledRuntime) bundledRuntime.release()
     }
+  }
+  // 多图视觉调用（拉片关键帧）：images = [{ dataUrl, label }]，走当前云端模型
+  llmCompleteVisionMulti = async ({ systemPrompt, prompt, images, signal, timeoutMs }) => {
+    return agentEngine.completeVisionMulti({
+      prompt,
+      systemPrompt,
+      imageDataUrls: images.map((image) => image.dataUrl),
+      labels: images.map((image) => image.label),
+      signal,
+      timeoutMs: timeoutMs || 240000
+    })
   }
   // 图片理解：优先已配置云端视觉模型；不行就本机 WinRT OCR 兜底（本地模型与零配置场景也能答）
   const describeImage = async (imagePath, instruction, { signal } = {}) => {
@@ -1012,6 +1030,8 @@ app.whenReady().then(async () => {
         onStatus: sendStatus,
         workspace: documentWorkspace,
         complete: llmComplete,
+        completeVisionMulti: llmCompleteVisionMulti,
+        frames: videoFrames,
         model: {
           configured: Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey)),
           local: isLocalModelConfig(config),
@@ -1563,6 +1583,8 @@ app.whenReady().then(async () => {
         onStatus: sendStatus,
         workspace: documentWorkspace,
         complete: llmComplete,
+        completeVisionMulti: llmCompleteVisionMulti,
+        frames: videoFrames,
         model: {
           configured: Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey)),
           local: isLocalModelConfig(config),

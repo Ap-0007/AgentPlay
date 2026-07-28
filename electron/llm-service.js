@@ -585,17 +585,24 @@ class AgentEngine {
     }
   }
 
-  // 图片理解：携带一张图片(dataURL)的视觉调用，三协议分支与创作服务同构
-  async completeVision({ prompt, imageDataUrl, apiKey = null, systemPrompt, signal, timeoutMs } = {}) {
+  // 多图视觉调用：拉片关键帧等场景一次携带多张图片，labels 与图片一一对应（如 t=MM:SS）
+  async completeVisionMulti({ prompt, imageDataUrls = [], labels = [], apiKey = null, systemPrompt, signal, timeoutMs, maxTokens = 4096 } = {}) {
     const resolved = this.resolveProvider(apiKey)
     const { base, key, model, protocol, requiresKey = true } = resolved
     if (!base || !model || (!key && requiresKey)) {
       throw new Error('尚未配置可用模型，请先到“功能 → 模型接入中心”保存连接')
     }
-    const dataUrl = String(imageDataUrl || '')
-    if (!/^data:image\/(png|jpe?g|webp|gif|bmp);base64,/.test(dataUrl)) throw new Error('图片数据格式无效')
-    const base64 = dataUrl.split(',', 2)[1]
-    const mimeType = dataUrl.slice(5, dataUrl.indexOf(';'))
+    const images = imageDataUrls.map((dataUrl, index) => {
+      const value = String(dataUrl || '')
+      if (!/^data:image\/(png|jpe?g|webp|gif|bmp);base64,/.test(value)) throw new Error('图片数据格式无效')
+      return {
+        dataUrl: value,
+        base64: value.split(',', 2)[1],
+        mimeType: value.slice(5, value.indexOf(';')),
+        label: labels[index] || ''
+      }
+    })
+    if (!images.length) throw new Error('没有可发送的图片')
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal?.addEventListener('abort', abort, { once: true })
@@ -604,26 +611,41 @@ class AgentEngine {
     try {
       let response
       if (protocol === 'anthropic') {
+        const content = [{ type: 'text', text: prompt }]
+        for (const image of images) {
+          if (image.label) content.push({ type: 'text', text: image.label })
+          content.push({ type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.base64 } })
+        }
         response = await safeFetch(resolved, `${base}/v1/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
           body: JSON.stringify({
-            model, max_tokens: 2048, system: systemPrompt || '你是 AgentPlay 的图片理解助手。',
-            messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } }, { type: 'text', text: prompt }] }]
+            model, max_tokens: maxTokens, system: systemPrompt || '你是 AgentPlay 的图片理解助手。',
+            messages: [{ role: 'user', content }]
           }),
           signal: controller.signal
         })
       } else if (protocol === 'gemini') {
+        const parts = [{ text: prompt }]
+        for (const image of images) {
+          if (image.label) parts.push({ text: image.label })
+          parts.push({ inlineData: { mimeType: image.mimeType, data: image.base64 } })
+        }
         response = await safeFetch(resolved, `${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt || '你是 AgentPlay 的图片理解助手。' }] },
-            contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType, data: base64 } }] }]
+            contents: [{ role: 'user', parts }]
           }),
           signal: controller.signal
         })
       } else {
+        const content = [{ type: 'text', text: prompt }]
+        for (const image of images) {
+          if (image.label) content.push({ type: 'text', text: image.label })
+          content.push({ type: 'image_url', image_url: { url: image.dataUrl } })
+        }
         const headers = { 'Content-Type': 'application/json' }
         if (key) headers.Authorization = `Bearer ${key}`
         response = await safeFetch(resolved, `${base}/chat/completions`, {
@@ -633,9 +655,9 @@ class AgentEngine {
             model,
             messages: [
               { role: 'system', content: systemPrompt || '你是 AgentPlay 的图片理解助手。' },
-              { role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: dataUrl } }] }
+              { role: 'user', content }
             ],
-            max_tokens: 2048,
+            max_tokens: maxTokens,
             temperature: 0.2
           }),
           signal: controller.signal
@@ -657,6 +679,11 @@ class AgentEngine {
       clearTimeout(timer)
       signal?.removeEventListener('abort', abort)
     }
+  }
+
+  // 图片理解：携带一张图片(dataURL)的视觉调用，委托多图版本
+  async completeVision({ prompt, imageDataUrl, apiKey = null, systemPrompt, signal, timeoutMs } = {}) {
+    return this.completeVisionMulti({ prompt, imageDataUrls: [imageDataUrl], apiKey, systemPrompt, signal, timeoutMs, maxTokens: 2048 })
   }
 
   async chat(messages, apiKey = null, context = null, options = {}) {
