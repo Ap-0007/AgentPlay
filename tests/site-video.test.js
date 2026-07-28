@@ -213,6 +213,27 @@ test('re-download of an already-fetched video reuses the existing file instead o
   assert.equal(result.bytes, 50)
 })
 
+test('yt-dlp GBK console output with Chinese path decodes to the real file', async () => {
+  const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-dl-'))
+  const produced = path.join(destDir, '视频-BV1.mp4')
+  fs.writeFileSync(produced, 'x'.repeat(10))
+  // 中文版 Windows 控制台是 GBK 字节流：视=CA D3、频=C6 B5
+  const gbkLine = Buffer.concat([
+    Buffer.from(destDir + '\\', 'utf8'),
+    Buffer.from([0xca, 0xd3, 0xc6, 0xb5]),
+    Buffer.from('-BV1.mp4\r\n', 'utf8')
+  ])
+  const service = new SiteVideoService({
+    enginePath: process.execPath,
+    spawnImpl: fakeSpawn(({ child }) => {
+      child.stdout.emit('data', gbkLine)
+      child.emit('exit', 0)
+    })
+  })
+  const result = await service.download('https://www.bilibili.com/video/BV1', { destDir })
+  assert.equal(result.outputPath, produced)
+})
+
 test('editable fields get system edit menu and messages are selectable', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')

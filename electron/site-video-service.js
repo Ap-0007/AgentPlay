@@ -4,6 +4,17 @@ const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 
+// Windows 中文版 yt-dlp 控制台输出是 GBK 字节流：按 UTF-8 解码会把中文路径变成乱码，
+// 之后 existsSync(打印路径) 永远失败（"下载成功却报没有产出文件"的真凶）。
+// 策略：能按 UTF-8 解就 UTF-8，解不了退 GBK（纯 ASCII 两种都正确）。
+function decodeConsole(buffer) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+  } catch {
+    return new TextDecoder('gbk').decode(buffer)
+  }
+}
+
 const RESOLVE_TIMEOUT_MS = 60 * 1000
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000
 
@@ -125,8 +136,8 @@ class SiteVideoService {
   exec(args, { timeoutMs, signal, onLine } = {}) {
     return new Promise((resolve, reject) => {
       const child = this.spawnImpl(this.enginePath, args, { windowsHide: true, shell: false })
-      let stdout = ''
-      let stderr = ''
+      const stdoutChunks = []
+      const stderrChunks = []
       let lineBuffer = ''
       const timer = setTimeout(() => {
         try { child.kill() } catch { /* 已退出 */ }
@@ -144,20 +155,18 @@ class SiteVideoService {
       }
       signal?.addEventListener('abort', onAbort, { once: true })
       child.stdout?.on('data', (chunk) => {
-        const text = chunk.toString('utf8')
-        stdout += text
-        lineBuffer += text
+        stdoutChunks.push(chunk)
+        lineBuffer += chunk.toString('utf8')
         const lines = lineBuffer.split(/\r?\n/)
         lineBuffer = lines.pop() || ''
         for (const line of lines) if (line.trim()) onLine?.(line)
       })
-      child.stderr?.on('data', (chunk) => {
-        const text = chunk.toString('utf8')
-        stderr = (stderr + text).slice(-8000)
-      })
+      child.stderr?.on('data', (chunk) => { stderrChunks.push(chunk) })
       child.once('error', (error) => finish(reject, error))
       child.once('exit', (code) => {
         signal?.removeEventListener('abort', onAbort)
+        const stdout = decodeConsole(Buffer.concat(stdoutChunks))
+        const stderr = decodeConsole(Buffer.concat(stderrChunks)).slice(-8000)
         if (code === 0) finish(resolve, { stdout, stderr })
         else finish(reject, new Error(stderr.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ') || `yt-dlp 退出码 ${code}`))
       })
@@ -279,5 +288,6 @@ module.exports = {
   cookiesFileForUrl,
   detectCookiesDomain,
   normalizeCookiesText,
-  stripHashFromName
+  stripHashFromName,
+  decodeConsole
 }
