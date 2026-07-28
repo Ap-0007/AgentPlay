@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { SiteVideoService, parseProgressLine, sanitizeTitle } = require('../electron/site-video-service')
+const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain } = require('../electron/site-video-service')
 const YTDLP_PACK = require('../electron/ytdlp-pack-manifest')
 
 function fakeSpawn(responder) {
@@ -88,15 +88,18 @@ test('download returns produced file and surfaces yt-dlp failures honestly', asy
   await assert.rejects(failing.download('https://example.com/vip', { destDir }), /only available for registered users/)
 })
 
-test('download retries with browser cookies on login-required errors', async () => {
+test('download retries with imported cookies.txt on login-required errors', async () => {
   const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-dl-'))
+  const cookiesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-cookies-'))
+  fs.writeFileSync(path.join(cookiesDir, 'douyin.com.txt'), '# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\tabc\n')
   const seen = []
   const notes = []
   const service = new SiteVideoService({
     enginePath: process.execPath,
+    cookiesDir,
     spawnImpl: fakeSpawn(({ child, args }) => {
       seen.push(args)
-      if (!args.includes('--cookies-from-browser')) {
+      if (!args.includes('--cookies')) {
         child.stderr.emit('data', Buffer.from('ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed'))
         child.emit('exit', 1)
       } else {
@@ -109,27 +112,51 @@ test('download retries with browser cookies on login-required errors', async () 
   })
   const result = await service.download('https://v.douyin.com/abc', { destDir, onRetryNote: (n) => notes.push(n) })
   assert.ok(result.outputPath.endsWith('视频-BV1.mp4'))
-  assert.ok(seen[0] && !seen[0].includes('--cookies-from-browser'), '首次应匿名尝试')
-  assert.ok(seen.some((args) => args.includes('--cookies-from-browser')), '登录态错误后应带浏览器 Cookies 重试')
-  assert.ok(notes.some((n) => n.includes('Cookies 重试')))
+  assert.ok(seen[0] && !seen[0].includes('--cookies'), '首次应匿名尝试')
+  assert.ok(seen.some((args) => args.includes('--cookies') && args.some((a) => a.endsWith('douyin.com.txt'))), '登录态错误后应带导入的 Cookies 重试')
+  assert.ok(notes.some((n) => n.includes('已导入')))
 })
 
-test('cookie database lock surfaces an actionable message instead of raw yt-dlp error', async () => {
+test('missing imported cookies surfaces an actionable import guide', async () => {
   const service = new SiteVideoService({
     enginePath: process.execPath,
-    spawnImpl: fakeSpawn(({ child, args }) => {
-      if (!args.includes('--cookies-from-browser')) {
-        child.stderr.emit('data', Buffer.from('ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed'))
-      } else {
-        child.stderr.emit('data', Buffer.from('ERROR: Could not copy Chrome cookie database'))
-      }
+    cookiesDir: fs.mkdtempSync(path.join(os.tmpdir(), 'site-cookies-')),
+    spawnImpl: fakeSpawn(({ child }) => {
+      child.stderr.emit('data', Buffer.from('ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed'))
       child.emit('exit', 1)
     })
   })
   await assert.rejects(
     service.resolve('https://v.douyin.com/abc', {}),
-    /浏览器正在运行并锁住了 Cookies 文件.*完全退出 Chrome\/Edge/
+    /需要浏览器登录态 Cookies.*导入 Cookies/
   )
+})
+
+test('stale imported cookies get a re-import guide', async () => {
+  const cookiesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-cookies-'))
+  fs.writeFileSync(path.join(cookiesDir, 'douyin.com.txt'), '.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\tabc\n')
+  const service = new SiteVideoService({
+    enginePath: process.execPath,
+    cookiesDir,
+    spawnImpl: fakeSpawn(({ child }) => {
+      child.stderr.emit('data', Buffer.from('ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed'))
+      child.emit('exit', 1)
+    })
+  })
+  await assert.rejects(service.resolve('https://v.douyin.com/abc', {}), /已导入的 Cookies 失效.*重新导出/)
+})
+
+test('cookies file mapping and domain detection', () => {
+  assert.equal(cookiesFileForUrl('/ck', 'https://v.douyin.com/abc'), path.join('/ck', 'douyin.com.txt'))
+  assert.equal(cookiesFileForUrl('/ck', 'https://www.bilibili.com/video/BV1'), path.join('/ck', 'bilibili.com.txt'))
+  assert.equal(cookiesFileForUrl('/ck', 'https://b23.tv/xyz'), path.join('/ck', 'bilibili.com.txt'))
+  assert.equal(cookiesFileForUrl('/ck', 'https://youtu.be/xyz'), path.join('/ck', 'youtube.com.txt'))
+  assert.equal(cookiesFileForUrl('', 'https://v.douyin.com/abc'), '')
+  const sample = '# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\ta1\nwww.douyin.com\tFALSE\t/\tTRUE\t0\t__ac_nonce\tn1\n.bilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\ts1\n'
+  const detected = detectCookiesDomain(sample)
+  assert.equal(detected.domain, 'douyin.com')
+  assert.equal(detected.count, 2)
+  assert.equal(detectCookiesDomain('not a cookie file'), null)
 })
 
 test('editable fields get system edit menu and messages are selectable', () => {
@@ -149,6 +176,7 @@ test('site video wiring: auto component download, chat route and model center ca
   const center = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'ModelCenter.tsx'), 'utf8')
   const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'media-download-service.js'), 'utf8')
   assert.match(main, /ipcMain\.handle\('media:site-download'/)
+  assert.match(main, /ipcMain\.handle\('media:site-import-cookies'/)
   assert.match(main, /首次使用站点视频，正在下载解析组件/)
   assert.match(panel, /siteVideo\?\.download/)
   assert.match(panel, /站点视频下载/)

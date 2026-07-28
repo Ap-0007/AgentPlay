@@ -14,6 +14,49 @@ function assertHttpUrl(value) {
   return text
 }
 
+// 短链域名 → cookies 文件主域（导入的 cookies.txt 按主域命名存放）
+const SITE_ALIASES = {
+  'b23.tv': 'bilibili.com',
+  'youtu.be': 'youtube.com'
+}
+
+function registrableDomain(hostname) {
+  const parts = String(hostname || '').toLowerCase().split('.').filter(Boolean)
+  return parts.slice(-2).join('.')
+}
+
+// 由链接推导出对应的 cookies.txt 路径（如 v.douyin.com → <cookiesDir>/douyin.com.txt）
+function cookiesFileForUrl(cookiesDir, url) {
+  if (!cookiesDir) return ''
+  try {
+    const base = registrableDomain(new URL(url).hostname)
+    const domain = SITE_ALIASES[base] || base
+    if (!/^[a-z0-9.-]+$/.test(domain) || !domain.includes('.')) return ''
+    return path.join(cookiesDir, `${domain}.txt`)
+  } catch {
+    return ''
+  }
+}
+
+// 从 cookies.txt 内容识别主域（取出现次数最多的注册域），用于导入时命名
+function detectCookiesDomain(text) {
+  const counts = new Map()
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line || line.startsWith('#')) continue
+    const cols = line.split('\t')
+    if (cols.length < 7) continue
+    const base = SITE_ALIASES[registrableDomain(cols[0])] || registrableDomain(cols[0])
+    if (!/^[a-z0-9.-]+$/.test(base) || !base.includes('.')) continue
+    counts.set(base, (counts.get(base) || 0) + 1)
+  }
+  let domain = ''
+  let count = 0
+  for (const [name, n] of counts) {
+    if (n > count) { domain = name; count = n }
+  }
+  return domain ? { domain, count } : null
+}
+
 function sanitizeTitle(title) {
   const cleaned = String(title || '').split('').map((ch) => {
     const code = ch.codePointAt(0)
@@ -30,12 +73,13 @@ function parseProgressLine(line) {
 }
 
 class SiteVideoService {
-  constructor({ enginePath, ffmpegDir, spawnImpl, resolveTimeoutMs, downloadTimeoutMs } = {}) {
+  constructor({ enginePath, ffmpegDir, spawnImpl, resolveTimeoutMs, downloadTimeoutMs, cookiesDir } = {}) {
     this.enginePath = enginePath ? path.resolve(enginePath) : enginePath
     this.ffmpegDir = ffmpegDir ? path.resolve(ffmpegDir) : null
     this.spawnImpl = spawnImpl || spawn
     this.resolveTimeoutMs = resolveTimeoutMs || RESOLVE_TIMEOUT_MS
     this.downloadTimeoutMs = downloadTimeoutMs || DOWNLOAD_TIMEOUT_MS
+    this.cookiesDir = cookiesDir || ''
   }
 
   availability() {
@@ -87,23 +131,28 @@ class SiteVideoService {
   }
 
 
-  // 匿名→chrome→edge 的 Cookies 尝试链；浏览器锁住库时给可执行提示
-  async attemptWithCookies(run, { signal, onRetryNote } = {}) {
-    const attempts = [null, 'chrome', 'edge']
+  // 匿名 → 已导入 cookies.txt 的尝试链。
+  // --cookies-from-browser 在本机不可用：浏览器运行时独占锁定 Cookies 库，且新版 Chrome/Edge 为 ABE 加密，
+  // 因此只认用户主动导入的 cookies.txt；链路保持「先匿名、被站点拒绝后带凭证重试」。
+  async attemptWithCookies(run, { signal, onRetryNote, target } = {}) {
+    const cookiesFile = cookiesFileForUrl(this.cookiesDir, target || '')
+    const hasFile = Boolean(cookiesFile && fs.existsSync(cookiesFile))
+    const attempts = hasFile ? [null, cookiesFile] : [null]
     let lastError = null
-    for (const browser of attempts) {
-      if (browser) onRetryNote?.(`需要登录态，正在用本机 ${browser} 浏览器 Cookies 重试`)
+    for (const attempt of attempts) {
+      if (attempt) onRetryNote?.('匿名访问被站点拒绝，正在用已导入的浏览器 Cookies 重试')
       try {
-        return await run(browser)
+        return await run(attempt)
       } catch (error) {
         lastError = error
         if (signal?.aborted) throw error
-        const message = String(error.message || '')
-        if (/Could not copy .*cookie database/i.test(message)) {
-          throw new Error('浏览器正在运行并锁住了 Cookies 文件：请完全退出 Chrome/Edge 后点重试（或先不登录直接用公开视频）')
-        }
-        if (!/fresh cookies|login|登录|cookie|会员|VIP|注册/i.test(message)) break
+        if (!/fresh cookies|login|登录|cookie|会员|VIP|注册/i.test(String(error.message || ''))) break
       }
+    }
+    const message = String(lastError?.message || '')
+    if (/fresh cookies|login required|需要登录/i.test(message)) {
+      if (hasFile) throw new Error('已导入的 Cookies 失效或站点仍拒绝：请重新导出本站 cookies.txt 后再导入（VIP/付费/DRM 内容不支持）')
+      throw new Error('该站点需要浏览器登录态 Cookies：在 Edge/Chrome 安装扩展「Get cookies.txt LOCALLY」，打开本站页面后导出 cookies.txt，然后点下方「导入 Cookies」')
     }
     throw lastError
   }
@@ -112,8 +161,8 @@ class SiteVideoService {
     const target = assertHttpUrl(url)
     if (!this.availability().available) throw new Error('站点视频解析组件未下载')
     const { stdout } = await this.attemptWithCookies(
-      (browser) => this.exec([...(browser ? ['--cookies-from-browser', browser] : []), '--dump-single-json', '--no-playlist', '--no-warnings', target], { timeoutMs: this.resolveTimeoutMs, signal }),
-      { signal, onRetryNote }
+      (cookiesFile) => this.exec([...(cookiesFile ? ['--cookies', cookiesFile] : []), '--dump-single-json', '--no-playlist', '--no-warnings', target], { timeoutMs: this.resolveTimeoutMs, signal }),
+      { signal, onRetryNote, target }
     )
     let info
     try {
@@ -151,8 +200,8 @@ class SiteVideoService {
       target
     ]
     return this.attemptWithCookies(
-      (browser) => this.runDownload(browser ? [...baseArgs, '--cookies-from-browser', browser] : baseArgs, destDir, onProgress, signal),
-      { signal, onRetryNote }
+      (cookiesFile) => this.runDownload(cookiesFile ? [...baseArgs, '--cookies', cookiesFile] : baseArgs, destDir, onProgress, signal),
+      { signal, onRetryNote, target }
     )
   }
 
@@ -184,5 +233,7 @@ class SiteVideoService {
 module.exports = {
   SiteVideoService,
   parseProgressLine,
-  sanitizeTitle
+  sanitizeTitle,
+  cookiesFileForUrl,
+  detectCookiesDomain
 }

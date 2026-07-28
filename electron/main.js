@@ -388,7 +388,7 @@ const whisperDownload = new LocalAiDownloadService({
 })
 const TRANSLATE_PACK = require('./translate-pack-manifest')
 const YTDLP_PACK = require('./ytdlp-pack-manifest')
-const { SiteVideoService } = require('./site-video-service')
+const { SiteVideoService, detectCookiesDomain } = require('./site-video-service')
 const ytdlpDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'yt-dlp'),
   manifest: YTDLP_PACK,
@@ -396,7 +396,8 @@ const ytdlpDownload = new LocalAiDownloadService({
 })
 const siteVideo = new SiteVideoService({
   enginePath: path.join(app.getPath('userData'), 'yt-dlp', 'yt-dlp.exe'),
-  ffmpegDir: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin')
+  ffmpegDir: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin'),
+  cookiesDir: path.join(app.getPath('userData'), 'site-cookies')
 })
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
@@ -871,6 +872,40 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:site-cancel-component', (event) => {
     assertTrustedSender(event)
     return ytdlpDownload.cancel()
+  })
+  // 导入浏览器导出的 cookies.txt（站点风控/登录态用；浏览器锁库与 ABE 使直读浏览器库不可行）
+  ipcMain.handle('media:site-import-cookies', async (event) => {
+    assertTrustedSender(event)
+    const picked = await dialog.showOpenDialog({
+      title: '选择导出的 cookies.txt',
+      properties: ['openFile'],
+      filters: [{ name: 'Cookies 文件', extensions: ['txt'] }]
+    })
+    if (picked.canceled || !picked.filePaths.length) return { success: false, canceled: true }
+    try {
+      const source = picked.filePaths[0]
+      const text = fs.readFileSync(source, 'utf8')
+      const detected = detectCookiesDomain(text)
+      if (!detected) return { success: false, error: '不是有效的 Netscape cookies.txt（没有识别到任何 Cookie 条目）' }
+      const dir = path.join(app.getPath('userData'), 'site-cookies')
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, `${detected.domain}.txt`), text)
+      return { success: true, domain: detected.domain, count: detected.count }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('media:site-cookies-status', (event) => {
+    assertTrustedSender(event)
+    const dir = path.join(app.getPath('userData'), 'site-cookies')
+    try {
+      return fs.readdirSync(dir).filter((name) => name.endsWith('.txt')).map((name) => ({
+        domain: name.replace(/\.txt$/, ''),
+        updatedAt: fs.statSync(path.join(dir, name)).mtimeMs
+      }))
+    } catch {
+      return []
+    }
   })
   ipcMain.handle('media:site-download', async (event, input = {}) => {
     assertTrustedSender(event)

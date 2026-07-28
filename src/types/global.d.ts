@@ -120,6 +120,8 @@ interface AiPlayerAPI {
     downloadComponent: () => Promise<{ success: boolean; error?: string; availability?: unknown }>
     cancelComponent: () => Promise<boolean>
     download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; info?: { title: string; duration: number; uploader: string; extractor: string } }>
+    importCookies: () => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; count?: number }>
+    cookiesStatus: () => Promise<Array<{ domain: string; updatedAt: number }>>
     onComponentProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
   mediaDownload?: {

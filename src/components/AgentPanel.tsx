@@ -394,7 +394,22 @@ export default function AgentPanel() {
       setDocStatus('')
     }
   }
-  runDownloadTaskRef.current = runDownloadTask
+  runDownloadTaskRef.current = runDownloadTask
+  const importSiteCookies = async () => {
+    const api = window.aiPlayer?.siteVideo
+    if (!api?.importCookies) return
+    try {
+      const result = await api.importCookies()
+      if (result.success && result.domain) {
+        addMessage('agent', `已导入 ${result.domain} 的 Cookies（${result.count || 0} 条），点「重试」继续`)
+      } else if (!result.canceled) {
+        addMessage('agent', `[错误] ${result.error || 'Cookies 文件无效'}`)
+      }
+    } catch (error) {
+      addMessage('agent', `[错误] ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
 
   const runLinkAnalysisTask = async (url: string, instruction: string, forceApprove = false) => {
     const api = window.aiPlayer?.mediaDownload
@@ -706,7 +721,12 @@ export default function AgentPanel() {
               {task.error && (
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <p className="min-w-0 text-xs text-red-300">{task.error}</p>
-                  <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, '', downloadDirectRef.current); else if (pendingTaskRef.current === 'link-analysis') void runLinkAnalysisTaskRef.current(linkAnalysisUrlRef.current, '', true); else void runDocTaskRef.current() }} className="shrink-0 rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {/cookies|登录态/i.test(task.error) && (
+                      <button onClick={() => void importSiteCookies()} className="rounded bg-orange-500/20 px-3 py-1 text-xs text-orange-100 hover:bg-orange-500/30">导入 Cookies</button>
+                    )}
+                    <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, '', downloadDirectRef.current); else if (pendingTaskRef.current === 'link-analysis') void runLinkAnalysisTaskRef.current(linkAnalysisUrlRef.current, '', true); else void runDocTaskRef.current() }} className="rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
+                  </div>
                 </div>
               )}
               {docOutputs.length > 0 && <div className="mt-1 space-y-1">{docOutputs.map((output) => (
