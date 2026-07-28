@@ -45,7 +45,7 @@ test('thinning keeps coverage from head to tail', () => {
   assert.equal(thinned.length <= 4, true)
 })
 
-function fakeFfmpeg({ sceneFrames = [], uniformFrames = 0, thumbs = [], sceneFails = false } = {}) {
+function fakeFfmpeg({ sceneFrames = [], uniformFrames = 0, thumbs = [], uniformThumbs = null, sceneFails = false } = {}) {
   const { EventEmitter } = require('events')
   const calls = []
   const spawnImpl = (file, args) => {
@@ -57,7 +57,8 @@ function fakeFfmpeg({ sceneFrames = [], uniformFrames = 0, thumbs = [], sceneFai
     process.nextTick(() => {
       if (args.includes('-f') && args.includes('rawvideo')) {
         const outPath = args[args.length - 1]
-        fs.writeFileSync(outPath, Buffer.concat(thumbs))
+        const isUniformThumbs = String(args[args.indexOf('-vf') + 1] || '').startsWith('fps=')
+        fs.writeFileSync(outPath, Buffer.concat(isUniformThumbs && uniformThumbs ? uniformThumbs : thumbs))
         child.emit('exit', 0)
         return
       }
@@ -107,6 +108,23 @@ test('extract falls back to uniform sampling when scene detection under-produces
   assert.ok(frames.length > 8)
   assert.equal(frames[0].label, 't=00:00')
   assert.match(frames[frames.length - 1].label, /^t=00:2[0-9]$/)
+})
+
+test('scene frames collapsing under dedup (noise-triggered) also falls back to uniform', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frames-'))
+  const video = path.join(dir, 'v.mp4')
+  fs.writeFileSync(video, 'fake')
+  // scene 产出 60 帧但缩略图几乎全同（噪点/闪动误触发），去重后只剩 1
+  const { spawnImpl, calls } = fakeFfmpeg({
+    sceneFrames: Array.from({ length: 60 }, (_, i) => i * 0.2),
+    uniformFrames: 20,
+    thumbs: Array.from({ length: 60 }, () => Buffer.alloc(256, 7)),
+    uniformThumbs: Array.from({ length: 20 }, (_, i) => Buffer.alloc(256, i * 12))
+  })
+  const service = new VideoFrameService({ ffmpegPath: process.execPath, spawnImpl })
+  const frames = await service.extract({ sourcePath: video, durationSec: 1500, outDir: path.join(dir, 'frames') })
+  assert.ok(calls.some((args) => args.some((a) => String(a).startsWith('fps='))), '去重塌缩必须退均匀采样')
+  assert.ok(frames.length >= 8, `塌缩后应补足帧数，实际 ${frames.length}`)
 })
 
 test('scene pass hard failure (e.g. limited-range HEVC) still falls back to uniform', async () => {

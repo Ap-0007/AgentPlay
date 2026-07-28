@@ -106,34 +106,52 @@ class VideoFrameService {
     }
   }
 
-  // 抽取关键帧：scene-change 优先，产出不足退回均匀采样；返回 [{ path, tSec, label }]
+  // 抽取关键帧：scene-change 优先，产出不足或去重塌缩都退均匀采样；返回 [{ path, tSec, label }]
   async extract({ sourcePath, durationSec = 0, outDir, budget } = {}) {
     if (!this.availability().available) return []
     if (!sourcePath || !fs.existsSync(sourcePath)) return []
     const duration = Number(durationSec) > 0 ? Number(durationSec) : await this.probeDuration(sourcePath)
     const cap = Math.min(Number(budget) > 0 ? Number(budget) : frameBudget(duration), MAX_FRAMES)
-    fs.rmSync(outDir, { recursive: true, force: true })
-    fs.mkdirSync(outDir, { recursive: true })
+
+    const readFiles = () => (fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((name) => name.endsWith('.jpg')).sort() : [])
+    const loadThumbs = async (vf, count) => {
+      const rawPath = path.join(outDir, 'thumbs.raw')
+      await this.run(['-hide_banner', '-nostdin', '-i', sourcePath, '-vf', vf, '-frames:v', String(count), '-f', 'rawvideo', rawPath])
+      const raw = fs.readFileSync(rawPath)
+      const size = THUMB * THUMB
+      const thumbs = []
+      for (let offset = 0; offset + size <= raw.length && thumbs.length < count; offset += size) {
+        thumbs.push(raw.subarray(offset, offset + size))
+      }
+      return thumbs
+    }
 
     // 第一遍：镜头切换帧（showinfo 在 select 之后，pts_time 与落盘文件一一对应）。
     // format=yuvj420p 必带：抖音等 HEVC 窄色域(tv range)片源会让 mjpeg 编码器初始化直接失败
-    const sceneFilter = `select='gt(scene,${SCENE_THRESHOLD})',showinfo,scale=${FRAME_WIDTH}:-2,format=yuvj420p`
+    fs.rmSync(outDir, { recursive: true, force: true })
+    fs.mkdirSync(outDir, { recursive: true })
     let stderr = ''
     try {
       const result = await this.run([
         '-hide_banner', '-nostdin', '-i', sourcePath,
-        '-vf', sceneFilter, '-fps_mode', 'vfr', '-frames:v', String(cap * 3), '-q:v', '4',
+        '-vf', `select='gt(scene,${SCENE_THRESHOLD})',showinfo,scale=${FRAME_WIDTH}:-2,format=yuvj420p`,
+        '-fps_mode', 'vfr', '-frames:v', String(cap * 3), '-q:v', '4',
         path.join(outDir, 'f%04d.jpg')
       ])
       stderr = result.stderr
     } catch { /* 场景抽帧硬失败也交给均匀采样兜底 */ }
-    const times = [...stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number.parseFloat(m[1]))
-    let files = fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((name) => name.endsWith('.jpg')).sort() : []
+    let times = [...stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number.parseFloat(m[1]))
+    let files = readFiles()
+    let thumbs = []
+    if (files.length) {
+      try { thumbs = await loadThumbs(`select='gt(scene,${SCENE_THRESHOLD})',scale=${THUMB}:${THUMB},format=gray`, files.length) } catch { thumbs = [] }
+    }
+    let keep = thumbs.length === files.length && files.length > 0 ? dedupeThumbs(thumbs) : files.map((_, i) => i)
 
-    // 镜头切换帧太少（谈话头/渐变/硬失败）→ 均匀采样兜底，时间戳按 fps 推导
-    const minUseful = Math.min(8, Math.max(3, Math.ceil((duration || 60) / 20)))
-    let usedUniform = false
-    if (files.length < minUseful && duration > 0) {
+    // scene 帧太少（谈话头/渐变/硬失败），或看似很多却被去重塌成个位数（噪点/闪动误触发场景切换）
+    // → 均匀采样兜底，时间戳按 fps 推导；短视频两张有效帧即可，别为小片反复重抽
+    const minUseful = duration <= 60 ? 2 : Math.min(8, Math.max(3, Math.ceil(duration / 20)))
+    if (keep.length < minUseful && duration > 0) {
       fs.rmSync(outDir, { recursive: true, force: true })
       fs.mkdirSync(outDir, { recursive: true })
       const fps = cap / duration
@@ -142,31 +160,17 @@ class VideoFrameService {
         '-vf', `fps=${fps.toFixed(4)},scale=${FRAME_WIDTH}:-2,format=yuvj420p`, '-frames:v', String(cap), '-q:v', '4',
         path.join(outDir, 'f%04d.jpg')
       ])
-      times.length = 0
-      files = fs.readdirSync(outDir).filter((name) => name.endsWith('.jpg')).sort()
-      for (let i = 0; i < files.length; i++) times.push(i / fps)
-      usedUniform = true
+      files = readFiles()
+      times = files.map((_, i) => i / fps)
+      thumbs = []
+      if (files.length) {
+        try { thumbs = await loadThumbs(`fps=${fps.toFixed(4)},scale=${THUMB}:${THUMB},format=gray`, files.length) } catch { thumbs = [] }
+      }
+      keep = thumbs.length === files.length && files.length > 0 ? dedupeThumbs(thumbs) : files.map((_, i) => i)
     }
     if (!files.length) return []
 
-    // 第二遍：同滤镜 16x16 灰度缩略图做去重（同一输入同一 select，帧序确定一致）
-    let thumbs = []
-    try {
-      const thumbFilter = usedUniform
-        ? `fps=${(cap / duration).toFixed(4)},scale=${THUMB}:${THUMB},format=gray`
-        : `select='gt(scene,${SCENE_THRESHOLD})',scale=${THUMB}:${THUMB},format=gray`
-      const rawPath = path.join(outDir, 'thumbs.raw')
-      await this.run(['-hide_banner', '-nostdin', '-i', sourcePath, '-vf', thumbFilter, '-frames:v', String(files.length), '-f', 'rawvideo', rawPath])
-      const raw = fs.readFileSync(rawPath)
-      const size = THUMB * THUMB
-      for (let offset = 0; offset + size <= raw.length && thumbs.length < files.length; offset += size) {
-        thumbs.push(raw.subarray(offset, offset + size))
-      }
-    } catch { /* 缩略图失败则跳过去重 */ }
-
-    let keep = files.map((_, i) => i)
-    if (thumbs.length === files.length) keep = thinToBudget(dedupeThumbs(thumbs), cap)
-    else keep = thinToBudget(keep, cap)
+    keep = thinToBudget(keep, cap)
     const keepSet = new Set(keep)
     for (let i = 0; i < files.length; i++) {
       if (!keepSet.has(i)) {

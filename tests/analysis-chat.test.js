@@ -294,3 +294,19 @@ test('main process vision wrappers always forward the resolved model config', ()
   assert.match(main, /llmCompleteVisionMulti = async[\s\S]{0,400}?modelConfigStore\.resolved\('chat'\)[\s\S]{0,400}?apiKey: config/)
   assert.match(main, /completeVision\(\{[\s\S]{0,200}?apiKey: config/)
 })
+
+test('missing duration is probed via ffprobe so reports never show 00:00:00', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-chat-'))
+  const videoPath = makeVideoWithSubtitle(root)
+  const result = await runChatAnalysis({
+    sourcePath: videoPath, mediaName: '样片.mp4', duration: 0,
+    instruction: '深度解剖这个视频', outputFormat: 'md',
+    workspace: makeWorkspace(root),
+    model: { configured: false },
+    frames: { probeDuration: async () => 156, extract: async () => [] }
+  })
+  assert.equal(result.success, true)
+  const content = fs.readFileSync(result.outputs[0], 'utf8')
+  assert.match(content, /00:02:36/)
+  assert.doesNotMatch(content, /00:00:00/)
+})

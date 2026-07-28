@@ -115,6 +115,10 @@ async function runChatAnalysis({
   const resolved = assertAnalyzableVideo(sourcePath)
   const format = outputFormat && outputFormat !== 'auto' ? outputFormat : resolveAnalysisOutput(instruction)
   const displayName = mediaName || path.basename(resolved)
+  // 部分站点解析不带时长：用 ffprobe 补上，否则报告显示 00:00:00
+  if (!(Number(duration) > 0) && frames?.probeDuration) {
+    try { duration = await frames.probeDuration(resolved) || duration } catch { /* 保留原值 */ }
+  }
   onStatus('正在读取字幕与上下文')
   const context = loadAnalysisContext(resolved)
   const offlineDraft = buildOfflineAnalysis({ mediaName: displayName, duration, markers: [], cues: context.cues })
