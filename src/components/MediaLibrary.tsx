@@ -135,6 +135,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   const [mirrorError, setMirrorError] = useState('')
   const [castDevices, setCastDevices] = useState<Array<{ id: string; name: string }>>([])
   const [castFile, setCastFile] = useState<string | null>(null)
+  const [castStatus, setCastStatus] = useState<{ deviceId: string; message: string; isError?: boolean } | null>(null)
   const [scanning, setScanning] = useState(false)
   const [syncUrl, setSyncUrl] = useState<string | null>(null)
   const [dlnaServerUrl, setDlnaServerUrl] = useState<string | null>(null)
@@ -263,9 +264,16 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
 
   const doCast = async (deviceId: string) => {
     if (!castFile) return
-    await window.aiPlayer?.cast?.cast(deviceId, castFile)
+    const result = await window.aiPlayer?.cast?.cast(deviceId, castFile)
     setCastFile(null)
     setCastDevices([])
+    if (result?.success) setCastStatus({ deviceId, message: result.action || '已投屏' })
+    else setCastStatus({ deviceId: '', message: result?.error || result?.action || '投屏失败', isError: true })
+  }
+
+  const stopCastNow = async () => {
+    if (castStatus?.deviceId) await window.aiPlayer?.cast?.stop(castStatus.deviceId)
+    setCastStatus(null)
   }
 
   const removeNetworkSource = (url: string) => {
@@ -444,6 +452,13 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
               <p className="text-xs text-gray-500 mt-1">手机浏览器访问：{wifiUrl}</p>
               <p className="text-xs text-gray-500">配对 PIN：{wifiPin || '...'}</p>
               <button onClick={() => void disableWifi()} className="mt-2 px-3 py-1 bg-white/10 rounded text-xs">停止共享</button>
+                    {castStatus && (
+            <div className="mb-6 bg-player-surface rounded-lg p-4 flex items-center gap-2">
+              <p className={castStatus.isError ? 'flex-1 text-xs text-red-300' : 'flex-1 text-xs text-emerald-300'}>{castStatus.message}</p>
+              {castStatus.deviceId && <button onClick={() => void stopCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>}
+              <button onClick={() => setCastStatus(null)} className="px-2 py-1 text-gray-500 text-xs">✕</button>
+            </div>
+          )}
           <div className="mb-6 bg-player-surface rounded-lg p-4">
             <p className="text-sm">🖥️ AgentPlay 互投（屏幕镜像）</p>
             {mirrorRecv ? (

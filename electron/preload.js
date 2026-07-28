@@ -125,7 +125,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   cast: {
     scan: () => ipcRenderer.invoke('cast:scan'),
-    cast: (deviceId, filePath) => ipcRenderer.invoke('cast:cast', deviceId, filePath)
+    cast: (deviceId, filePath) => ipcRenderer.invoke('cast:cast', deviceId, filePath),
+    stop: (deviceId) => ipcRenderer.invoke('cast:stop', deviceId)
   },
   tmdb: {
     search: (name, apiKey) => ipcRenderer.invoke('tmdb:search', name, apiKey)

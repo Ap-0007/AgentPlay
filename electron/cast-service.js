@@ -5,6 +5,14 @@ const os = require('os')
 const path = require('path')
 const crypto = require('crypto')
 
+function xmlEscapeLite(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
 class CastService {
   constructor() {
     this.devices = []
@@ -128,6 +136,20 @@ class CastService {
     return `http://${this.getLanIp()}:${this.fileServerPort}/media/${token}/${encodeURIComponent(path.basename(resolved))}`
   }
 
+  // 不少电视拒绝空元数据：DIDL-Lite 里带 protocolInfo 的 res 才肯播
+  buildDidlLite(mediaUrl, title, mime) {
+    return (
+      '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ' +
+      'xmlns:dc="http://purl.org/dc/elements/1.1/" ' +
+      'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">' +
+      '<item id="0" parentID="-1" restricted="1">' +
+      `<dc:title>${xmlEscapeLite(title)}</dc:title>` +
+      `<res protocolInfo="http-get:*:${mime}:*">${xmlEscapeLite(mediaUrl)}</res>` +
+      '<upnp:class>object.item.videoItem</upnp:class>' +
+      '</item></DIDL-Lite>'
+    )
+  }
+
   async cast(deviceId, filePath) {
     const device = this.devices.find((d) => d.id === deviceId)
     if (!device) {
@@ -141,6 +163,8 @@ class CastService {
       return { success: false, error: String(e) }
     }
     const xmlMediaUrl = mediaUrl.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    const didl = this.buildDidlLite(mediaUrl, path.basename(filePath), this.mimeType(filePath))
+    const xmlDidl = didl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
     const body =
       '<?xml version="1.0"?>' +
       '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
@@ -149,7 +173,7 @@ class CastService {
       '<u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">' +
       '<InstanceID>0</InstanceID>' +
       `<CurrentURI>${xmlMediaUrl}</CurrentURI>` +
-      '<CurrentURIMetaData></CurrentURIMetaData>' +
+      `<CurrentURIMetaData>${xmlDidl}</CurrentURIMetaData>` +
       '</u:SetAVTransportURI></s:Body></s:Envelope>'
     try {
       const resp = await fetch(device.controlUrl, {
@@ -169,6 +193,36 @@ class CastService {
         success: resp.ok,
         action: resp.ok ? `已投屏到 ${device.name}` : `投屏失败 ${resp.status}`
       }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async soap(device, action, innerBody) {
+    const body =
+      '<?xml version="1.0"?>' +
+      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
+      's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
+      '<s:Body>' +
+      `<u:${action} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">` +
+      `<InstanceID>0</InstanceID>${innerBody}</u:${action}>` +
+      '</s:Body></s:Envelope>'
+    return fetch(device.controlUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml; charset="utf-8"',
+        SOAPAction: `"urn:schemas-upnp-org:service:AVTransport:1#${action}"`
+      },
+      body
+    })
+  }
+
+  async stopCast(deviceId) {
+    const device = this.devices.find((d) => d.id === deviceId)
+    if (!device) return { success: false, error: '设备未找到，请先扫描' }
+    try {
+      const resp = await this.soap(device, 'Stop', '')
+      return { success: resp.ok, action: resp.ok ? `已停止 ${device.name} 的播放` : `停止失败 ${resp.status}` }
     } catch (e) {
       return { success: false, error: String(e) }
     }

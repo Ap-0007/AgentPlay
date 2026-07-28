@@ -2026,6 +2026,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('cast:scan', () => castService.scan())
   ipcMain.handle('cast:cast', (_e, deviceId, filePath) => castService.cast(deviceId, filePath))
+  ipcMain.handle('cast:stop', (_e, deviceId) => castService.stopCast(deviceId))
   ipcMain.handle('dialog:openFile', () => chooseFile())
   ipcMain.handle('dialog:openFolder', async () => { const { dialog } = require('electron'); const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); if (r.canceled) return null; authorizedFolders.add(r.filePaths[0]); return r.filePaths[0] })
   ipcMain.handle('system:openPath', async (_e, filePath) => {

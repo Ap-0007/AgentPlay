@@ -186,6 +186,7 @@ interface AiPlayerAPI {
   cast?: {
     scan: () => Promise<Array<{ id: string; name: string; location: string; controlUrl: string }>>
     cast: (deviceId: string, filePath: string) => Promise<{ success: boolean; action?: string; error?: string }>
+    stop: (deviceId: string) => Promise<{ success: boolean; action?: string; error?: string }>
   }
   tmdb?: {
     search: (name: string, apiKey?: string) => Promise<{ success: boolean; data?: { title: string; poster: string | null; overview: string; year: string | null }; error?: string }>
