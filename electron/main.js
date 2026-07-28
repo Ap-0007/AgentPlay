@@ -1,7 +1,7 @@
 // AI播放器 Electron 主进程
 // dev: 加载 Vite dev server；prod: 加载构建产物
 // 集成 mpv sidecar，IPC 桥接渲染进程
-const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -389,17 +389,47 @@ const whisperDownload = new LocalAiDownloadService({
 })
 const TRANSLATE_PACK = require('./translate-pack-manifest')
 const YTDLP_PACK = require('./ytdlp-pack-manifest')
-const { SiteVideoService, detectCookiesDomain, normalizeCookiesText } = require('./site-video-service')
+const { SiteVideoService, detectCookiesDomain, normalizeCookiesText, cookiesFileForUrl } = require('./site-video-service')
+const { SiteLoginService } = require('./site-login-service')
 const { VideoFrameService } = require('./video-frame-service')
 const ytdlpDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'yt-dlp'),
   manifest: YTDLP_PACK,
   logger: log
 })
+// 站点登录态：App 内扫码一次，持久分区自持，cookies 过期时隐藏窗静默续期
+const SITE_COOKIES_DIR = path.join(app.getPath('userData'), 'site-cookies')
+const siteSessionCookies = () => session.fromPartition('persist:site-login').cookies.get({})
+const siteLogin = new SiteLoginService({
+  cookiesDir: SITE_COOKIES_DIR,
+  createWindow: ({ show }) => {
+    const win = new BrowserWindow({
+      show,
+      width: 480,
+      height: 760,
+      autoHideMenuBar: true,
+      webPreferences: { partition: 'persist:site-login', sandbox: true, contextIsolation: true }
+    })
+    return {
+      loadURL: (url, ua) => {
+        win.webContents.setUserAgent(ua)
+        return win.loadURL(url, { userAgent: ua })
+      },
+      getCookies: () => win.webContents.session.cookies.get({}),
+      close: () => { if (!win.isDestroyed()) win.close() },
+      onClosed: (fn) => win.on('closed', fn)
+    }
+  }
+})
 const siteVideo = new SiteVideoService({
   enginePath: path.join(app.getPath('userData'), 'yt-dlp', 'yt-dlp.exe'),
   ffmpegDir: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin'),
-  cookiesDir: path.join(app.getPath('userData'), 'site-cookies')
+  cookiesDir: SITE_COOKIES_DIR,
+  refreshCookies: (target) => {
+    const file = cookiesFileForUrl(SITE_COOKIES_DIR, target)
+    const domain = file ? path.basename(file, '.txt') : ''
+    return domain ? siteLogin.silentRefresh(domain, siteSessionCookies) : false
+  }
 })
 // 拉片关键帧：复用 yt-dlp 组件包里的 ffmpeg/ffprobe，组件未下载时优雅降级为纯字幕分析
 const videoFrames = new VideoFrameService({
@@ -925,6 +955,12 @@ app.whenReady().then(async () => {
     } catch {
       return []
     }
+  })
+  // App 内扫码登录（抖音等需要登录态的站点）：一次登录，分区自持+静默续期
+  ipcMain.handle('media:site-login', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const domain = /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(input.domain || '')) ? String(input.domain) : 'douyin.com'
+    return siteLogin.openLogin(domain, siteSessionCookies)
   })
   ipcMain.handle('media:site-download', async (event, input = {}) => {
     assertTrustedSender(event)

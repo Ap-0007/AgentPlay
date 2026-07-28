@@ -128,7 +128,7 @@ test('missing imported cookies surfaces an actionable import guide', async () =>
   })
   await assert.rejects(
     service.resolve('https://v.douyin.com/abc', {}),
-    /需要浏览器登录态 Cookies.*导入 Cookies/
+    /需要登录态.*扫码登录/
   )
 })
 
@@ -143,7 +143,37 @@ test('stale imported cookies get a re-import guide', async () => {
       child.emit('exit', 1)
     })
   })
-  await assert.rejects(service.resolve('https://v.douyin.com/abc', {}), /已导入的 Cookies 失效.*重新导出/)
+  await assert.rejects(service.resolve('https://v.douyin.com/abc', {}), /已导入的 Cookies 失效.*扫码登录/)
+})
+
+test('expired cookies trigger silent refresh from the logged-in partition before giving up', async () => {
+  const cookiesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-cookies-'))
+  const seen = []
+  const notes = []
+  const service = new SiteVideoService({
+    enginePath: process.execPath,
+    cookiesDir,
+    refreshCookies: async () => {
+      fs.writeFileSync(path.join(cookiesDir, 'douyin.com.txt'), '.douyin.com\tTRUE\t/\tFALSE\t0\ttwid\tfresh\n')
+      return true
+    },
+    spawnImpl: fakeSpawn(({ child, args }) => {
+      seen.push(args)
+      if (!args.includes('--cookies') || !args.some((a) => a.endsWith('douyin.com.txt'))) {
+        child.stderr.emit('data', Buffer.from('ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed'))
+        child.emit('exit', 1)
+      } else {
+        child.stdout.emit('data', Buffer.from('{"title":"renewed","duration":10}\n'))
+        child.emit('exit', 0)
+      }
+    })
+  })
+  const info = await service.resolve('https://v.douyin.com/abc', { onRetryNote: (n) => notes.push(n) })
+  assert.equal(info.title, 'renewed')
+  assert.ok(notes.some((n) => n.includes('自动续期')))
+  assert.equal(seen.length, 2)
+  assert.ok(!seen[0].includes('--cookies'), '首次匿名')
+  assert.ok(seen[1].includes('--cookies'), '静默续期后带新凭证')
 })
 
 test('cookies file mapping and domain detection', () => {
@@ -252,6 +282,7 @@ test('site video wiring: auto component download, chat route and model center ca
   const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'media-download-service.js'), 'utf8')
   assert.match(main, /ipcMain\.handle\('media:site-download'/)
   assert.match(main, /ipcMain\.handle\('media:site-import-cookies'/)
+  assert.match(main, /ipcMain\.handle\('media:site-login'/)
   assert.match(main, /首次使用站点视频，正在下载解析组件/)
   assert.match(panel, /siteVideo\?\.download/)
   assert.match(panel, /站点视频下载/)

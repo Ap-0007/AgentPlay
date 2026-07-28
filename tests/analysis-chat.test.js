@@ -157,6 +157,25 @@ test('chat analysis propagates non-image vision errors instead of masking them',
   )
 })
 
+test('vision timeout propagates fast instead of paying a second text round', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-chat-'))
+  const videoPath = makeVideoWithSubtitle(root)
+  let textCalled = 0
+  await assert.rejects(
+    runChatAnalysis({
+      sourcePath: videoPath, mediaName: '样片.mp4', duration: 12,
+      instruction: '深度解剖这个视频', outputFormat: 'md', cloudApproved: true,
+      workspace: makeWorkspace(root),
+      model: { configured: true, local: false, provider: 'p', model: 'm' },
+      frames: makeFrames(root),
+      completeVisionMulti: async () => { throw new Error('图片理解超时') },
+      complete: async () => { textCalled += 1; return { text: 'x' } }
+    }),
+    /图片理解超时/
+  )
+  assert.equal(textCalled, 0, '超时不得再触发纯文本兜底')
+})
+
 test('local model skips frames entirely and uses text path', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-chat-'))
   const videoPath = makeVideoWithSubtitle(root)

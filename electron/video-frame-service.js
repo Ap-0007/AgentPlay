@@ -8,13 +8,14 @@ const SCENE_THRESHOLD = 0.3
 const FRAME_WIDTH = 512
 const THUMB = 16
 const DEDUP_THRESHOLD = 2.0
-const MAX_FRAMES = 40
+const MAX_FRAMES = 20
 
-// 帧预算：短视密、长视稀，硬顶 MAX_FRAMES（一次视觉请求的图片上限）
+// 帧预算：短视密、长视稀，硬顶 MAX_FRAMES。
+// 注意图片是视觉请求的主要耗时来源：实测火山 Coding Plan 端点 30+ 张会拖到超时，20 以内稳妥。
 function frameBudget(durationSec) {
   const d = Number(durationSec) || 0
-  if (d <= 30) return 24
-  if (d <= 60) return 32
+  if (d <= 30) return 12
+  if (d <= 60) return 16
   return MAX_FRAMES
 }
 

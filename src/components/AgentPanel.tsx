@@ -408,6 +408,21 @@ export default function AgentPanel() {
     } catch (error) {
       addMessage('agent', `[错误] ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+  const loginSite = async () => {
+    const api = window.aiPlayer?.siteVideo
+    if (!api?.login) return
+    addMessage('agent', '已打开站点登录窗口，请扫码或登录（只需这一次，以后自动续期）…')
+    try {
+      const result = await api.login({ domain: 'douyin.com' })
+      if (result.success) {
+        addMessage('agent', '登录成功，站点凭证已保存，之后过期会自动续期，点「重试」继续')
+      } else if (!result.canceled) {
+        addMessage('agent', `[错误] ${result.error || '登录未完成'}`)
+      }
+    } catch (error) {
+      addMessage('agent', `[错误] ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
 
@@ -723,7 +738,7 @@ export default function AgentPanel() {
                   <p className="min-w-0 text-xs text-red-300">{task.error}</p>
                   <div className="flex shrink-0 items-center gap-2">
                     {/cookies|登录态/i.test(task.error) && (
-                      <button onClick={() => void importSiteCookies()} className="rounded bg-orange-500/20 px-3 py-1 text-xs text-orange-100 hover:bg-orange-500/30">导入 Cookies</button>
+                      <><button onClick={() => void loginSite()} className="rounded bg-emerald-500/20 px-3 py-1 text-xs text-emerald-100 hover:bg-emerald-500/30">扫码登录</button><button onClick={() => void importSiteCookies()} className="rounded bg-orange-500/20 px-3 py-1 text-xs text-orange-100 hover:bg-orange-500/30">导入 Cookies</button></>
                     )}
                     <button onClick={() => { setTask({ error: '' }); if (pendingTaskRef.current === 'analysis') void runAnalysisTaskRef.current(); else if (pendingTaskRef.current === 'download') void runDownloadTaskRef.current(downloadUrlRef.current, '', downloadDirectRef.current); else if (pendingTaskRef.current === 'link-analysis') void runLinkAnalysisTaskRef.current(linkAnalysisUrlRef.current, '', true); else void runDocTaskRef.current() }} className="rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20">重试</button>
                   </div>

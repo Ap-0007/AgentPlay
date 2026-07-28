@@ -148,7 +148,8 @@ async function runChatAnalysis({
           frameCount = shots.length
         } catch (error) {
           const message = String(error?.message || '')
-          if (/image|vision|图片|multimodal|unsupported|invalid|不支持|不接受/i.test(message)) {
+          // 只有"模型能力上不收图"才降级纯文本；超时/网络错误直接抛出，不再白等一轮
+          if (/multimodal|does not support|unsupported.*(image|vision|media| modality)|invalid.*(image|image_url|content)|image.*(unsupported|invalid|not supported)|(不支持|不接受).{0,4}(图|图片|图像|多模态)/i.test(message)) {
             visionNote = '当前模型不支持图片输入，本次仅基于字幕与结构线索（想看画面：到模型接入中心换视觉模型，如 doubao-vision 系列）'
             onStatus(`${visionNote}，退回纯文本解剖`)
           } else {

@@ -13,11 +13,11 @@ const {
   thinToBudget
 } = require('../electron/video-frame-service')
 
-test('frame budget scales with duration and caps at 40', () => {
-  assert.equal(frameBudget(10), 24)
-  assert.equal(frameBudget(45), 32)
-  assert.equal(frameBudget(120), 40)
-  assert.equal(frameBudget(3600), 40)
+test('frame budget scales with duration and caps at 20', () => {
+  assert.equal(frameBudget(10), 12)
+  assert.equal(frameBudget(45), 16)
+  assert.equal(frameBudget(120), 20)
+  assert.equal(frameBudget(3600), 20)
 })
 
 test('timestamp formatting is mm:ss', () => {
@@ -94,7 +94,7 @@ test('extract falls back to uniform sampling when scene detection under-produces
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frames-'))
   const video = path.join(dir, 'v.mp4')
   fs.writeFileSync(video, 'fake')
-  const { spawnImpl, calls } = fakeFfmpeg({ sceneFrames: [0.5], uniformFrames: 24, thumbs: Array.from({ length: 24 }, (_, i) => Buffer.alloc(256, i * 10)) })
+  const { spawnImpl, calls } = fakeFfmpeg({ sceneFrames: [0.5], uniformFrames: 12, thumbs: Array.from({ length: 12 }, (_, i) => Buffer.alloc(256, i * 20)) })
   const service = new VideoFrameService({ ffmpegPath: process.execPath, spawnImpl })
   const outDir = path.join(dir, 'frames')
   const frames = await service.extract({ sourcePath: video, durationSec: 30, outDir })

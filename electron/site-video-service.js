@@ -118,13 +118,14 @@ function parseProgressLine(line) {
 }
 
 class SiteVideoService {
-  constructor({ enginePath, ffmpegDir, spawnImpl, resolveTimeoutMs, downloadTimeoutMs, cookiesDir } = {}) {
+  constructor({ enginePath, ffmpegDir, spawnImpl, resolveTimeoutMs, downloadTimeoutMs, cookiesDir, refreshCookies } = {}) {
     this.enginePath = enginePath ? path.resolve(enginePath) : enginePath
     this.ffmpegDir = ffmpegDir ? path.resolve(ffmpegDir) : null
     this.spawnImpl = spawnImpl || spawn
     this.resolveTimeoutMs = resolveTimeoutMs || RESOLVE_TIMEOUT_MS
     this.downloadTimeoutMs = downloadTimeoutMs || DOWNLOAD_TIMEOUT_MS
     this.cookiesDir = cookiesDir || ''
+    this.refreshCookies = refreshCookies || null
   }
 
   availability() {
@@ -194,8 +195,25 @@ class SiteVideoService {
     }
     const message = String(lastError?.message || '')
     if (/fresh cookies|login required|需要登录/i.test(message)) {
-      if (hasFile) throw new Error('已导入的 Cookies 失效或站点仍拒绝：请重新导出本站 cookies.txt 后再导入（VIP/付费/DRM 内容不支持）')
-      throw new Error('该站点需要浏览器登录态 Cookies：在 Edge/Chrome 安装扩展「Get cookies.txt LOCALLY」，打开本站页面后导出 cookies.txt，然后点下方「导入 Cookies」')
+      // 内置登录态静默续期：分区里扫码登录过，隐藏窗重取最新 cookies 再试一次，用户无感
+      if (this.refreshCookies) {
+        onRetryNote?.('站点凭证过期，正在用已登录的内置账号自动续期')
+        try {
+          if (await this.refreshCookies(target)) {
+            const freshFile = cookiesFileForUrl(this.cookiesDir, target || '')
+            if (freshFile && fs.existsSync(freshFile)) {
+              try {
+                return await run(freshFile)
+              } catch (error) {
+                if (signal?.aborted) throw error
+                lastError = error
+              }
+            }
+          }
+        } catch { /* 刷新失败走原报错 */ }
+      }
+      if (hasFile) throw new Error('已导入的 Cookies 失效或站点仍拒绝：点下方「扫码登录」一次即可自动续期，或重新导出 cookies.txt 导入（VIP/付费/DRM 内容不支持）')
+      throw new Error('该站点需要登录态：点下方「扫码登录」一次（推荐，以后自动续期）；或用浏览器扩展导出本站 cookies.txt 后点「导入 Cookies」')
     }
     throw lastError
   }

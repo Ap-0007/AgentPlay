@@ -228,6 +228,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     download: (input) => ipcRenderer.invoke('media:site-download', input),
     importCookies: () => ipcRenderer.invoke('media:site-import-cookies'),
     cookiesStatus: () => ipcRenderer.invoke('media:site-cookies-status'),
+    login: (input) => ipcRenderer.invoke('media:site-login', input),
     onComponentProgress: (cb) => {
       const handler = (_event, payload) => cb(payload)
       ipcRenderer.on('media:site-component-progress', handler)

@@ -122,6 +122,7 @@ interface AiPlayerAPI {
     download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; info?: { title: string; duration: number; uploader: string; extractor: string } }>
     importCookies: () => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; count?: number }>
     cookiesStatus: () => Promise<Array<{ domain: string; updatedAt: number }>>
+    login: (input: { domain?: string }) => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; file?: string }>
     onComponentProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
   mediaDownload?: {
