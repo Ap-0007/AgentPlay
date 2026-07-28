@@ -638,7 +638,7 @@ app.whenReady().then(async () => {
       imageDataUrls: images.map((image) => image.dataUrl),
       labels: images.map((image) => image.label),
       signal,
-      timeoutMs: timeoutMs || 240000
+      timeoutMs: timeoutMs || 300000
     })
   }
   // 图片理解：优先已配置云端视觉模型；不行就本机 WinRT OCR 兜底（本地模型与零配置场景也能答）

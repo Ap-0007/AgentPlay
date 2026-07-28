@@ -136,7 +136,7 @@ async function runChatAnalysis({
         shots = []
       }
       if (shots.length) {
-        onStatus(`AI 正在观看 ${shots.length} 张关键画面并拆解…`)
+        onStatus(`AI 正在观看 ${shots.length} 张关键画面并拆解（约 1-3 分钟）…`)
         try {
           const images = shots.map((shot) => ({
             label: shot.label,
@@ -146,7 +146,7 @@ async function runChatAnalysis({
             mediaName: displayName, duration, instruction, offlineDraft,
             transcript: context.transcript, frameCount: shots.length
           })
-          const result = await completeVisionMulti({ systemPrompt, prompt, images, signal })
+          const result = await completeVisionMulti({ systemPrompt, prompt, images, signal, timeoutMs: 300000 })
           aiText = result.text
           frameCount = shots.length
         } catch (error) {
@@ -168,7 +168,7 @@ async function runChatAnalysis({
       const { systemPrompt, prompt } = buildDeepAnalysisPrompt({
         mediaName: displayName, duration, instruction, offlineDraft, transcript: context.transcript
       })
-      const result = await complete({ systemPrompt, prompt, signal })
+      const result = await complete({ systemPrompt, prompt, signal, timeoutMs: 300000 })
       aiText = result.text
     }
   }

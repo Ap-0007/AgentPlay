@@ -96,16 +96,18 @@ test('chat analysis sends frames to vision model and reports multimodal evidence
     workspace: makeWorkspace(root),
     model: { configured: true, local: false, provider: '火山引擎', model: 'doubao-vision' },
     frames: makeFrames(root),
-    completeVisionMulti: async ({ systemPrompt, prompt, images }) => {
+    completeVisionMulti: async ({ systemPrompt, prompt, images, timeoutMs }) => {
       seen.systemPrompt = systemPrompt
       seen.prompt = prompt
       seen.images = images
+      seen.timeoutMs = timeoutMs
       return { text: '## 钩子拆解\n首帧大字标题抓人。' }
     },
     complete: async () => { throw new Error('不应退回纯文本') }
   })
   assert.equal(result.success, true)
   assert.equal(result.frameCount, 2)
+  assert.equal(seen.timeoutMs, 300000, '视觉调用必须放宽到 300 秒（实测端点需要约 187 秒）')
   assert.equal(seen.images.length, 2)
   assert.equal(seen.images[0].label, 't=00:01')
   assert.match(seen.images[0].dataUrl, /^data:image\/jpeg;base64,/)
