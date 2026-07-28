@@ -38,6 +38,26 @@ function cookiesFileForUrl(cookiesDir, url) {
   }
 }
 
+// 兼容 JSON 导出（J2TEAM Cookies / Cookie-Editor 等）：统一转成 Netscape cookies.txt 文本；非 JSON 原样返回
+function normalizeCookiesText(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return null
+  if (!raw.startsWith('[') && !raw.startsWith('{')) return raw
+  let data
+  try { data = JSON.parse(raw) } catch { return null }
+  const list = Array.isArray(data) ? data : (Array.isArray(data.cookies) ? data.cookies : null)
+  if (!list) return null
+  const lines = ['# Netscape HTTP Cookie File']
+  for (const c of list) {
+    if (!c || typeof c.name !== 'string' || typeof c.domain !== 'string') continue
+    const hostOnly = c.hostOnly === true
+    const domain = hostOnly ? c.domain.replace(/^\./, '') : (c.domain.startsWith('.') ? c.domain : `.${c.domain}`)
+    const expires = Number.isFinite(c.expirationDate) ? Math.floor(c.expirationDate) : 0
+    lines.push([domain, hostOnly ? 'FALSE' : 'TRUE', c.path || '/', c.secure ? 'TRUE' : 'FALSE', String(expires), c.name, String(c.value ?? '')].join('\t'))
+  }
+  return lines.length > 1 ? lines.join('\n') : null
+}
+
 // 从 cookies.txt 内容识别主域（取出现次数最多的注册域），用于导入时命名
 function detectCookiesDomain(text) {
   const counts = new Map()
@@ -235,5 +255,6 @@ module.exports = {
   parseProgressLine,
   sanitizeTitle,
   cookiesFileForUrl,
-  detectCookiesDomain
+  detectCookiesDomain,
+  normalizeCookiesText
 }

@@ -388,7 +388,7 @@ const whisperDownload = new LocalAiDownloadService({
 })
 const TRANSLATE_PACK = require('./translate-pack-manifest')
 const YTDLP_PACK = require('./ytdlp-pack-manifest')
-const { SiteVideoService, detectCookiesDomain } = require('./site-video-service')
+const { SiteVideoService, detectCookiesDomain, normalizeCookiesText } = require('./site-video-service')
 const ytdlpDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'yt-dlp'),
   manifest: YTDLP_PACK,
@@ -877,19 +877,20 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:site-import-cookies', async (event) => {
     assertTrustedSender(event)
     const picked = await dialog.showOpenDialog({
-      title: '选择导出的 cookies.txt',
+      title: '选择导出的 Cookies 文件',
       properties: ['openFile'],
-      filters: [{ name: 'Cookies 文件', extensions: ['txt'] }]
+      filters: [{ name: 'Cookies 文件 (txt/json)', extensions: ['txt', 'json'] }]
     })
     if (picked.canceled || !picked.filePaths.length) return { success: false, canceled: true }
     try {
       const source = picked.filePaths[0]
-      const text = fs.readFileSync(source, 'utf8')
-      const detected = detectCookiesDomain(text)
-      if (!detected) return { success: false, error: '不是有效的 Netscape cookies.txt（没有识别到任何 Cookie 条目）' }
+      const normalized = normalizeCookiesText(fs.readFileSync(source, 'utf8'))
+      if (!normalized) return { success: false, error: '无法识别的 Cookies 文件（支持 Netscape cookies.txt，或 J2TEAM / Cookie-Editor 的 JSON 导出）' }
+      const detected = detectCookiesDomain(normalized)
+      if (!detected) return { success: false, error: '不是有效的 Cookies 文件（没有识别到任何 Cookie 条目）' }
       const dir = path.join(app.getPath('userData'), 'site-cookies')
       fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(path.join(dir, `${detected.domain}.txt`), text)
+      fs.writeFileSync(path.join(dir, `${detected.domain}.txt`), normalized)
       return { success: true, domain: detected.domain, count: detected.count }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }

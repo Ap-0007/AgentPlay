@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain } = require('../electron/site-video-service')
+const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain, normalizeCookiesText } = require('../electron/site-video-service')
 const YTDLP_PACK = require('../electron/ytdlp-pack-manifest')
 
 function fakeSpawn(responder) {
@@ -157,6 +157,24 @@ test('cookies file mapping and domain detection', () => {
   assert.equal(detected.domain, 'douyin.com')
   assert.equal(detected.count, 2)
   assert.equal(detectCookiesDomain('not a cookie file'), null)
+})
+
+test('JSON cookie exports (J2TEAM / Cookie-Editor) normalize to Netscape format', () => {
+  const j2team = JSON.stringify([
+    { domain: '.douyin.com', hostOnly: false, httpOnly: true, name: 'ttwid', path: '/', secure: true, expirationDate: 1780000000.5, value: 'a1' },
+    { domain: 'www.douyin.com', hostOnly: true, name: '__ac_nonce', path: '/', secure: false, value: 'n1' },
+    { domain: '.douyin.com', hostOnly: false, name: 'odin_tt', path: '/', session: true, value: 'o1' }
+  ])
+  const normalized = normalizeCookiesText(j2team)
+  assert.ok(normalized.startsWith('# Netscape HTTP Cookie File'))
+  assert.match(normalized, /\.douyin\.com\tTRUE\t\/\tTRUE\t1780000000\tttwid\ta1/)
+  assert.match(normalized, /www\.douyin\.com\tFALSE\t\/\tFALSE\t0\t__ac_nonce\tn1/)
+  assert.equal(detectCookiesDomain(normalized).domain, 'douyin.com')
+  const wrapped = normalizeCookiesText(JSON.stringify({ cookies: [{ domain: '.bilibili.com', name: 'SESSDATA', value: 's1', path: '/', secure: true }] }))
+  assert.match(wrapped, /\.bilibili\.com\tTRUE\t\/\tTRUE\t0\tSESSDATA\ts1/)
+  assert.equal(normalizeCookiesText('{"broken":'), null)
+  assert.equal(normalizeCookiesText('[]'), null)
+  assert.equal(normalizeCookiesText('.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\ta1'), '.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\ta1')
 })
 
 test('editable fields get system edit menu and messages are selectable', () => {
