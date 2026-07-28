@@ -630,13 +630,15 @@ app.whenReady().then(async () => {
       if (usesBundledRuntime) bundledRuntime.release()
     }
   }
-  // 多图视觉调用（拉片关键帧）：images = [{ dataUrl, label }]，走当前云端模型
+  // 多图视觉调用（拉片关键帧）：images = [{ dataUrl, label }]，必须带当前配置，否则会落到引擎默认端点
   llmCompleteVisionMulti = async ({ systemPrompt, prompt, images, signal, timeoutMs }) => {
+    const config = modelConfigStore.resolved('chat')
     return agentEngine.completeVisionMulti({
       prompt,
       systemPrompt,
       imageDataUrls: images.map((image) => image.dataUrl),
       labels: images.map((image) => image.label),
+      apiKey: config,
       signal,
       timeoutMs: timeoutMs || 300000
     })
@@ -651,7 +653,7 @@ app.whenReady().then(async () => {
       try {
         const dataUrl = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${fs.readFileSync(imagePath).toString('base64')}`
         if (dataUrl.length > 20 * 1024 * 1024) throw new Error('图片超过 15MB，请先压缩')
-        const result = await agentEngine.completeVision({ prompt: instruction, imageDataUrl: dataUrl, signal, timeoutMs: 120000 })
+        const result = await agentEngine.completeVision({ prompt: instruction, imageDataUrl: dataUrl, apiKey: config, signal, timeoutMs: 120000 })
         return result.text
       } catch (error) {
         log.warn('视觉模型图片理解失败，回落 OCR', error)
