@@ -88,6 +88,43 @@ test('download returns produced file and surfaces yt-dlp failures honestly', asy
   await assert.rejects(failing.download('https://example.com/vip', { destDir }), /only available for registered users/)
 })
 
+test('download retries with browser cookies on login-required errors', async () => {
+  const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-dl-'))
+  const seen = []
+  const notes = []
+  const service = new SiteVideoService({
+    enginePath: process.execPath,
+    spawnImpl: fakeSpawn(({ child, args }) => {
+      seen.push(args)
+      if (!args.includes('--cookies-from-browser')) {
+        child.stderr.emit('data', Buffer.from('ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed'))
+        child.emit('exit', 1)
+      } else {
+        const produced = path.join(destDir, '视频-BV1.mp4')
+        fs.writeFileSync(produced, 'x')
+        child.stdout.emit('data', Buffer.from(produced + '\n'))
+        child.emit('exit', 0)
+      }
+    })
+  })
+  const result = await service.download('https://v.douyin.com/abc', { destDir, onRetryNote: (n) => notes.push(n) })
+  assert.ok(result.outputPath.endsWith('视频-BV1.mp4'))
+  assert.ok(seen[0] && !seen[0].includes('--cookies-from-browser'), '首次应匿名尝试')
+  assert.ok(seen.some((args) => args.includes('--cookies-from-browser')), '登录态错误后应带浏览器 Cookies 重试')
+  assert.ok(notes.some((n) => n.includes('Cookies 重试')))
+})
+
+test('editable fields get system edit menu and messages are selectable', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
+  assert.match(main, /webContents\.on\('context-menu'/)
+  assert.match(main, /role: 'paste', label: '粘贴'/)
+  assert.match(main, /role: 'copy', label: '复制'/)
+  assert.match(view, /closest\('input, textarea, \[contenteditable="true"\]'\)\) return/)
+  assert.match(panel, /select-text/)
+})
+
 test('site video wiring: auto component download, chat route and model center card', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')

@@ -706,6 +706,23 @@ app.whenReady().then(async () => {
     return result.canceled || !result.filePath ? false : mpvReady && mpv.screenshot(result.filePath)
   })
 
+  // 可编辑区域与选中文字的系统右键菜单（复制/粘贴/剪切/全选），播放器菜单之外的通用编辑入口
+  mainWindow.webContents.on('context-menu', (_e, params) => {
+    if (params.isEditable) {
+      Menu.buildFromTemplate([
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { type: 'separator' },
+        { role: 'selectAll', label: '全选' }
+      ]).popup({ window: mainWindow })
+    } else if (String(params.selectionText || '').trim()) {
+      Menu.buildFromTemplate([{ role: 'copy', label: '复制' }]).popup({ window: mainWindow })
+    }
+  })
   ipcMain.on('context:show', (_event, state = {}) => {
     const item = (label, action, extra = {}) => ({ label, click: () => sendAction(action), ...extra })
     const contextMenu = Menu.buildFromTemplate([
@@ -881,6 +898,7 @@ app.whenReady().then(async () => {
       const result = await siteVideo.download(url, {
         destDir: path.join(app.getPath('videos'), 'AgentPlay 下载'),
         signal: controller.signal,
+        onRetryNote: (note) => sendStatus(note),
         onProgress: (progress) => sendStatus(`正在下载 ${progress.percent}%`)
       })
       userAuthorizedPaths.add(path.resolve(result.outputPath))
@@ -925,6 +943,7 @@ app.whenReady().then(async () => {
           sendStatus(`正在下载：${info.title.slice(0, 40)}`)
           const result = await siteVideo.download(url, {
             destDir, signal: controller.signal,
+            onRetryNote: (note) => sendStatus(note),
             onProgress: (progress) => sendStatus(`正在下载 ${progress.percent}%`)
           })
           videoPath = result.outputPath

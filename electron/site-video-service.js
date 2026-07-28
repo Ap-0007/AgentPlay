@@ -106,7 +106,7 @@ class SiteVideoService {
     }
   }
 
-  async download(url, { destDir, onProgress, signal } = {}) {
+  async download(url, { destDir, onProgress, signal, onRetryNote } = {}) {
     const target = assertHttpUrl(url)
     const status = this.availability()
     if (!status.available) throw new Error(status.reason)
@@ -117,7 +117,7 @@ class SiteVideoService {
       ? 'bv*[height<=1080][vcodec^=avc1]+ba/bv*[height<=1080]+ba/bv*/b'
       : 'b[acodec!=none][vcodec!=none][ext=mp4]/b[acodec!=none][vcodec!=none]'
     const outTemplate = path.join(destDir, '%(title).80s-%(id)s.%(ext)s')
-    const args = [
+    const baseArgs = [
       ...(ffmpegOk ? ['--ffmpeg-location', this.ffmpegDir] : []),
       '-f', format,
       '--no-playlist', '--no-warnings', '--newline',
@@ -125,6 +125,24 @@ class SiteVideoService {
       '--print', 'after_move:filepath',
       target
     ]
+    // 需要登录态的站点（如抖音部分视频）：匿名失败后自动用本机浏览器 Cookies 重试（只读、不出机）
+    const attempts = [null, 'chrome', 'edge']
+    let lastError = null
+    for (const browser of attempts) {
+      if (browser) onRetryNote?.(`需要登录态，正在用本机 ${browser} 浏览器 Cookies 重试`)
+      const args = browser ? [...baseArgs, '--cookies-from-browser', browser] : baseArgs
+      try {
+        return await this.runDownload(args, destDir, onProgress, signal)
+      } catch (error) {
+        lastError = error
+        if (signal?.aborted) throw error
+        if (!/fresh cookies|login|登录|cookie|会员|VIP|注册/i.test(String(error.message))) break
+      }
+    }
+    throw lastError
+  }
+
+  async runDownload(args, destDir, onProgress, signal) {
     let finalPath = ''
     const { stdout, stderr } = await this.exec(args, {
       timeoutMs: this.downloadTimeoutMs,

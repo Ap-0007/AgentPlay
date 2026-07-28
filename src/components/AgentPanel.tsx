@@ -686,7 +686,7 @@ export default function AgentPanel() {
             <p className="text-gray-500 text-sm text-center mt-8">附件已就绪，说对它们要做什么…</p>
           )}
           {(docBusy || docOutputs.length > 0 || task.error) && (
-            <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] p-3">
+            <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.07] p-3 select-text">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-emerald-100">{task.label || '任务'}</span>
                 {docBusy && <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />}

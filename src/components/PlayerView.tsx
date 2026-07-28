@@ -653,6 +653,8 @@ export default function PlayerView({ onBack }: Props) {
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
       onContextMenu={(e) => {
+        // 输入框/可编辑区域右键走系统编辑菜单（复制/粘贴/剪切），不弹播放器菜单
+        if (e.target instanceof HTMLElement && e.target.closest('input, textarea, [contenteditable="true"]')) return
         e.preventDefault()
         window.aiPlayer?.contextMenu?.show({
           hasMedia: isMedia,
