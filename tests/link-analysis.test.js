@@ -28,6 +28,8 @@ test('format selector prefers merged h264 with ffmpeg and single-file-with-audio
   assert.equal(withoutFfmpeg.availability().ffmpegOk, false)
   const source = fs.readFileSync(path.join(__dirname, '..', 'electron', 'site-video-service.js'), 'utf8')
   assert.match(source, /bv\*\[height<=1080\]\[vcodec\^=avc1\]\+ba/)
+  assert.match(source, /bv\*\[width<=1080\]\[vcodec\^=h264\]\+ba/)
+  assert.match(source, /b\[vcodec\^=h264\]/)
   assert.match(source, /b\[acodec!=none\]\[vcodec!=none\]\[ext=mp4\]/)
   assert.match(source, /--ffmpeg-location/)
 })

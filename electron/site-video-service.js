@@ -77,6 +77,20 @@ function detectCookiesDomain(text) {
   return domain ? { domain, count } : null
 }
 
+// 下载产物文件名去 #：它是 URL 片段符，不处理会把 file:// / HTTP 直链（播放器/DLNA/投屏）全截断
+function stripHashFromName(filePath) {
+  const base = path.basename(filePath)
+  if (!base.includes('#')) return filePath
+  const target = path.join(path.dirname(filePath), base.replace(/#/g, ''))
+  if (fs.existsSync(target)) return filePath
+  try {
+    fs.renameSync(filePath, target)
+    return target
+  } catch {
+    return filePath
+  }
+}
+
 function sanitizeTitle(title) {
   const cleaned = String(title || '').split('').map((ch) => {
     const code = ch.codePointAt(0)
@@ -205,10 +219,11 @@ class SiteVideoService {
     const status = this.availability()
     if (!status.available) throw new Error(status.reason)
     fs.mkdirSync(destDir, { recursive: true })
-    // 优先 1080p 内 mp4 单文件（不依赖 ffmpeg 合并），取不到再退任意最佳单文件
+    // 优先 1080p 内 h264/avc1 单文件：横屏按 height 卡、竖屏按 width 卡（抖音竖屏 720x1280），
+    // 编码标注两种都认（B站/YouTube 标 avc1，抖音标 h264），保证产物在 HTML5 也能硬解
     const { ffmpegOk } = this.availability()
     const format = ffmpegOk
-      ? 'bv*[height<=1080][vcodec^=avc1]+ba/bv*[height<=1080]+ba/bv*/b'
+      ? 'bv*[height<=1080][vcodec^=avc1]+ba/bv*[width<=1080][vcodec^=avc1]+ba/bv*[height<=1080][vcodec^=h264]+ba/bv*[width<=1080][vcodec^=h264]+ba/b[vcodec^=avc1]/b[vcodec^=h264]/bv*[height<=1080]+ba/bv*[width<=1080]+ba/b/bv*/b'
       : 'b[acodec!=none][vcodec!=none][ext=mp4]/b[acodec!=none][vcodec!=none]'
     const outTemplate = path.join(destDir, '%(title).80s-%(id)s.%(ext)s')
     const baseArgs = [
@@ -246,6 +261,7 @@ class SiteVideoService {
     if (!finalPath || !fs.existsSync(finalPath) || fs.statSync(finalPath).size === 0) {
       throw new Error(stderr.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ') || '下载结束但没有产出文件')
     }
+    finalPath = stripHashFromName(finalPath)
     return { outputPath: finalPath, bytes: fs.statSync(finalPath).size }
   }
 }
@@ -256,5 +272,6 @@ module.exports = {
   sanitizeTitle,
   cookiesFileForUrl,
   detectCookiesDomain,
-  normalizeCookiesText
+  normalizeCookiesText,
+  stripHashFromName
 }

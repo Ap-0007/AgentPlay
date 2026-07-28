@@ -47,3 +47,10 @@ test('player view routes mousemove through the jitter threshold and closes subti
   const liveBlock = view.slice(view.indexOf('const toggleLiveTranslate'), view.indexOf('useEffect(() => {\n    if (!liveSub) return'))
   assert.match(liveBlock, /setSubtitlePanelOpen\(false\)/)
 })
+
+test('local file URLs are percent-encoded so # in titles cannot truncate the path', () => {
+  const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
+  // 抖音标题常带 #话题：拼 file:// 必须先 encodeURI 再把 # 编成 %23，否则播放器只能看到 # 前的半截路径
+  assert.match(view, /encodeURI\(videoSrc\.replace\(\/\\\\\/g, '\/'\)\)\.replace\(\/#\/g, '%23'\)/)
+  assert.doesNotMatch(view, /'file:\/\/\/' \+ videoSrc\.replace/)
+})

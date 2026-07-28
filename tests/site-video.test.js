@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain, normalizeCookiesText } = require('../electron/site-video-service')
+const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain, normalizeCookiesText, stripHashFromName } = require('../electron/site-video-service')
 const YTDLP_PACK = require('../electron/ytdlp-pack-manifest')
 
 function fakeSpawn(responder) {
@@ -157,6 +157,24 @@ test('cookies file mapping and domain detection', () => {
   assert.equal(detected.domain, 'douyin.com')
   assert.equal(detected.count, 2)
   assert.equal(detectCookiesDomain('not a cookie file'), null)
+})
+
+test('downloaded file names lose # so file:// and HTTP URLs cannot be truncated', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hash-name-'))
+  const withHash = path.join(dir, '讲一期产品 #创业日记-123.mp4')
+  fs.writeFileSync(withHash, 'x')
+  const renamed = stripHashFromName(withHash)
+  assert.equal(renamed, path.join(dir, '讲一期产品 创业日记-123.mp4'))
+  assert.ok(fs.existsSync(renamed))
+  assert.ok(!fs.existsSync(withHash))
+  const plain = path.join(dir, '普通视频-456.mp4')
+  fs.writeFileSync(plain, 'x')
+  assert.equal(stripHashFromName(plain), plain)
+  // 目标已存在时保留原名，绝不覆盖
+  const clash = path.join(dir, 'a#b.mp4')
+  fs.writeFileSync(clash, 'x')
+  fs.writeFileSync(path.join(dir, 'ab.mp4'), 'y')
+  assert.equal(stripHashFromName(clash), clash)
 })
 
 test('JSON cookie exports (J2TEAM / Cookie-Editor) normalize to Netscape format', () => {

@@ -93,7 +93,7 @@ export default function PlayerView({ onBack }: Props) {
 
   const fileUrl =
     isDesktop && videoSrc && !videoSrc.startsWith('http') && !videoSrc.startsWith('blob:')
-      ? 'file:///' + videoSrc.replace(/\\/g, '/')
+      ? 'file:///' + encodeURI(videoSrc.replace(/\\/g, '/')).replace(/#/g, '%23')
       : videoSrc
 
   useEffect(() => {
