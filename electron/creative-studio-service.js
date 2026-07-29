@@ -201,16 +201,20 @@ async function generateImageAsset(config, input = {}) {
   if (!prompt) throw new Error('新镜头缺少图像提示词')
   // 火山方舟：Coding 端点没有图像接口，必须走标准 v3 端点 + seedream 模型
   const isVolc = /^volcengine/.test(config.providerId || '') || /volces\.com/.test(config.baseUrl || '')
+  const isAgnes = config.providerId === 'agnes' || /agnes-ai\.com/.test(config.baseUrl || '')
   const baseUrl = isVolc ? 'https://ark.cn-beijing.volces.com/api/v3' : config.baseUrl
-  const model = safeText(input.model, 200) || (isVolc ? 'doubao-seedream-4-0-250828' : 'gpt-image-1')
+  const model = safeText(input.model, 200) || (isAgnes ? 'agnes-image-2.1-flash' : isVolc ? 'doubao-seedream-4-0-250828' : 'gpt-image-1')
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(new Error('图像生成超时')), 180000)
   try {
     const headers = { 'Content-Type': 'application/json' }
     if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`
+    // agnes 的 t2i 不支持 response_format 参数（400 UnsupportedParamsError 实测），其它厂商照发
+    const requestBody = { model, prompt, size: input.size || '1024x1024' }
+    if (!isAgnes) requestBody.response_format = 'b64_json'
     const response = await safeFetch({ ...config, baseUrl }, `${baseUrl}/images/generations`, {
       method: 'POST', headers, signal: controller.signal,
-      body: JSON.stringify({ model, prompt, size: input.size || '1024x1024', response_format: 'b64_json' })
+      body: JSON.stringify(requestBody)
     })
     if (!response.ok) {
       const body = await response.text()
@@ -220,9 +224,22 @@ async function generateImageAsset(config, input = {}) {
       throw new Error(`图像接口返回 ${response.status}: ${body.slice(0, 600)}`)
     }
     const body = await response.json()
+    let bytes = null
     const base64 = body.data?.[0]?.b64_json
-    if (!base64) throw new Error('图像接口没有返回 b64_json；为避免不受控外链下载，请改用支持 base64 的接口或手动导入素材')
-    const bytes = Buffer.from(base64, 'base64')
+    if (base64) {
+      bytes = Buffer.from(base64, 'base64')
+    } else {
+      // agnes 等厂商只回 URL：只允许从已知输出域名拉取（防不受控外链）
+      const imageUrl = String(body.data?.[0]?.url || '')
+      const ALLOWED_IMAGE_HOSTS = ['platform-outputs.agnes-ai.space']
+      const host = /^https:\/\/([^/]+)/.exec(imageUrl)?.[1] || ''
+      if (!ALLOWED_IMAGE_HOSTS.includes(host)) {
+        throw new Error('图像接口没有返回 b64_json 或可信输出 URL；为避免不受控外链下载，请改用支持 base64 的接口或手动导入素材')
+      }
+      const imageResp = await safeFetch({ ...config, baseUrl: `https://${host}` }, imageUrl, { signal: controller.signal })
+      if (!imageResp.ok) throw new Error(`图像下载失败 ${imageResp.status}`)
+      bytes = Buffer.from(await imageResp.arrayBuffer())
+    }
     if (!bytes.length || bytes.length > 30 * 1024 * 1024) throw new Error('图像结果为空或超过 30MB')
     const outputDir = validateOutputDirectory(input.outputDir)
     const outputPath = path.join(outputDir, `${safeText(input.id, 80).replace(/[^\w-]+/g, '_') || Date.now()}.png`)
