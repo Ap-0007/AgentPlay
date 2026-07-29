@@ -1,7 +1,8 @@
 ﻿param(
   [string[]]$ImagePaths = @(),
   [string]$LangTag = '',
-  [switch]$ListLanguages
+  [switch]$ListLanguages,
+  [switch]$Words
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -39,8 +40,18 @@ foreach ($imagePath in $ImagePaths) {
     $decoder = Await-WinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
     $bitmap = Await-WinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
     $result = Await-WinRt ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-    Write-Output '###TEXT'
-    Write-Output $result.Text
+    if ($Words) {
+      # 表格恢复模式：逐词输出坐标（x y w h text，制表符分隔）
+      foreach ($line in $result.Lines) {
+        foreach ($word in $line.Words) {
+          $r = $word.BoundingRect
+          Write-Output ("W`t{0}`t{1}`t{2}`t{3}`t{4}" -f [math]::Round($r.X), [math]::Round($r.Y), [math]::Round($r.Width), [math]::Round($r.Height), $word.Text)
+        }
+      }
+    } else {
+      Write-Output '###TEXT'
+      Write-Output $result.Text
+    }
   } catch {
     Write-Output "###ERROR $($_.Exception.Message)"
   }

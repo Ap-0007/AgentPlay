@@ -541,6 +541,38 @@ async function recognizePdfWithOcr(filePath) {
   }
 }
 
+async function wordsForImage(imagePath) {
+  const status = await ocrService.detect()
+  if (!status.available) throw new Error(`系统 OCR 不可用：${status.reason}`)
+  const results = await ocrService.recognizeWords([imagePath])
+  const entry = results.get(imagePath)
+  if (!entry?.ok) throw new Error(entry?.error || 'OCR 识别失败')
+  return entry.words
+}
+
+async function wordsForPdf(filePath) {
+  const status = await ocrService.detect()
+  if (!status.available) throw new Error(`系统 OCR 不可用：${status.reason}`)
+  const pageCount = await pdfPageCount(filePath)
+  // 表格恢复用 1.5 倍栅格化：CJK 小字号在 1600px 宽页面上会丢字/误字（实测 20px 丢张三、30px 全对）
+  const images = await rasterizePdfPages({ pdfPath: filePath, pageCount, createWindow: createHiddenWindow, scale: 1.5 })
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-table-'))
+  try {
+    const imagePaths = images.map((buffer, index) => {
+      const imagePath = path.join(tempDir, `page-${index + 1}.png`)
+      fs.writeFileSync(imagePath, buffer)
+      return imagePath
+    })
+    const results = await ocrService.recognizeWords(imagePaths)
+    return imagePaths.map((imagePath, index) => ({
+      page: index + 1,
+      words: results.get(imagePath)?.ok ? results.get(imagePath).words : []
+    }))
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+}
+
 function documentSelectionFromToken(token) {
   const record = approvedDocumentSelections.get(String(token || ''))
   if (!record || Date.now() - record.createdAt > 24 * 60 * 60 * 1000) {
@@ -724,6 +756,7 @@ app.whenReady().then(async () => {
     historyRoot: path.join(app.getPath('userData'), 'document-workspace'),
     renderPdf: renderHtmlToPdf,
     ocr: { recognizePdf: recognizePdfWithOcr },
+    tableOcr: { wordsForPdf, wordsForImage },
     officeConvert,
     imageWindow: createHiddenWindow,
     transcriber: { transcribeToFile },

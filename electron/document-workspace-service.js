@@ -11,6 +11,9 @@ const { editDocx, parseEditInstruction } = require('./docx-editor')
 const { editPptx, parsePptxEditInstruction } = require('./pptx-editor')
 const { convertImage, parseImageEditInstruction } = require('./image-convert-service')
 const { insertImageIntoDocx } = require('./docx-image')
+const { redactDocument } = require('./redact-service')
+const { bilingualReflow } = require('./bilingual-reflow-service')
+const { recoverTableInto } = require('./table-recovery-service')
 const { FormulaError, analyzeFormula, columnIndex, columnLetters, evaluateFormula } = require('./formula-engine')
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -66,6 +69,15 @@ function classifyTask(files, instruction, preferredOutput = 'auto') {
   if (files.length === 2 && exts[0] === '.docx' && IMAGE_EXTS.includes(exts[1]) && /插图|配图|插到|插入|加入图片|加图|加一(?:张|幅)?图/.test(text)) {
     const anchorMatch = /(?:插到|加到|放在)[“"']?([^“"’”']+?)[”"']?\s*(?:后面|之后|下面)/.exec(text)
     return { kind: 'docx-insert-image', outputFormat: 'docx', requiresAi: false, summary: '本地 DOCX 插图', anchor: anchorMatch ? anchorMatch[1].trim() : null }
+  }
+  if (files.length === 1 && ['.txt', '.md', '.csv', '.json', '.srt', '.vtt', '.docx', '.xlsx'].includes(exts[0]) && /脱敏|打码|隐私处理|敏感信息/.test(text)) {
+    return { kind: 'redact', outputFormat: exts[0] === '.docx' ? 'docx' : exts[0] === '.xlsx' ? 'xlsx' : exts[0].slice(1), requiresAi: false, summary: '文档脱敏' }
+  }
+  if (files.length === 1 && ['.txt', '.md', '.docx', '.pdf'].includes(exts[0]) && /双语重排|中英对照|双语对照|对照排版|对照版/.test(text)) {
+    return { kind: 'bilingual-reflow', outputFormat: 'docx', requiresAi: true, summary: '双语对照排版' }
+  }
+  if (files.length === 1 && ['.pdf', ...IMAGE_EXTS].includes(exts[0]) && /表格恢复|恢复表格|提取表格|识别表格|表格转|转成?(Excel|xlsx|电子表格)/i.test(text)) {
+    return { kind: 'table-recovery', outputFormat: 'xlsx', requiresAi: false, summary: '扫描表格恢复为 XLSX' }
   }
   if (files.length === 1 && ['.docx', '.pptx'].includes(exts[0]) && /提取图片|导出图片|把.*图片.*拿|抠图/.test(text)) {
     return { kind: 'extract-images', outputFormat: 'files', requiresAi: false, summary: '提取文档内嵌图片' }
@@ -808,12 +820,13 @@ async function splitPdf(filePath, outputDir, baseName) {
 }
 
 class DocumentWorkspaceService {
-  constructor({ outputRoot, historyRoot, complete, renderPdf, ocr, officeConvert, imageWindow, transcriber, describeImage }) {
+  constructor({ outputRoot, historyRoot, complete, renderPdf, ocr, officeConvert, imageWindow, transcriber, describeImage, tableOcr }) {
     this.outputRoot = outputRoot
     this.historyRoot = historyRoot
     this.complete = complete
     this.renderPdf = renderPdf
     this.ocr = ocr || null
+    this.tableOcr = tableOcr || null
     this.officeConvert = officeConvert || null
     this.imageWindow = imageWindow || null
     this.transcriber = transcriber || null
@@ -1077,6 +1090,41 @@ class DocumentWorkspaceService {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'docx')
       const summary = await editDocx(plan.files[0].path, finalPath, plan.editOperations)
       result = { outputs: [finalPath], summary: `已无损完成：${summary}；样式与未涉及内容保持原样` }
+    } else if (plan.kind === 'redact') {
+      const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, plan.outputFormat)
+      const summary = await redactDocument(plan.files[0].path, finalPath)
+      result = { outputs: [finalPath], summary }
+    } else if (plan.kind === 'bilingual-reflow') {
+      const sourceText = await extractText(plan.files[0].path, this.ocr)
+      const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-中英对照`, 'docx')
+      const { summary } = await bilingualReflow({ sourceText, title: plan.files[0].name, complete: this.complete, finalPath })
+      result = { outputs: [finalPath], summary }
+    } else if (plan.kind === 'table-recovery') {
+      if (!this.tableOcr) throw new Error('表格 OCR 通道未就绪')
+      const sourcePath = plan.files[0].path
+      const ext = path.extname(sourcePath).toLowerCase()
+      const workbook = new ExcelJS.Workbook()
+      let sheets = 0
+      let totalRows = 0
+      if (ext === '.pdf') {
+        const pages = await this.tableOcr.wordsForPdf(sourcePath)
+        for (const page of pages) {
+          try {
+            const info = await recoverTableInto(workbook, page.words, `第 ${page.page} 页`)
+            sheets += 1
+            totalRows += info.rows
+          } catch { /* 该页无表格结构，跳过 */ }
+        }
+      } else {
+        const words = await this.tableOcr.wordsForImage(sourcePath)
+        const info = await recoverTableInto(workbook, words, '表格1')
+        sheets = 1
+        totalRows = info.rows
+      }
+      if (!sheets) throw new Error('没有检测到多列表格结构（可能是普通文字页，建议裁掉无关区域或提高清晰度）')
+      const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-表格恢复`, 'xlsx')
+      await workbook.xlsx.writeFile(finalPath)
+      result = { outputs: [finalPath], summary: `表格恢复完成：${sheets} 个工作表、共 ${totalRows} 行（词级 OCR 聚类，边界单元格建议人工抽查）` }
     } else if (plan.kind === 'pptx-edit') {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'pptx')
       const summary = await editPptx(plan.files[0].path, finalPath, plan.editOperations)

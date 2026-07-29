@@ -9,10 +9,12 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function rasterizePdfPages({ pdfPath, pageCount, createWindow }) {
+async function rasterizePdfPages({ pdfPath, pageCount, createWindow, scale = 1 }) {
   const pages = Math.max(0, Math.min(Number(pageCount) || 0, MAX_PAGES))
   if (!pages) throw new Error('PDF 页数无效，无法栅格化')
-  const win = await createWindow({ width: PAGE_WIDTH, height: PAGE_HEIGHT })
+  const width = Math.round(PAGE_WIDTH * scale)
+  const height = Math.round(PAGE_HEIGHT * scale)
+  const win = await createWindow({ width, height })
   try {
     const fileUrl = `file:///${String(pdfPath).replace(/\\/g, '/')}`
     const images = []

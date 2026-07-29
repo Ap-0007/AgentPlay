@@ -101,6 +101,36 @@ class WinRtOcrService {
     }
     return results
   }
+
+  // 表格恢复模式：逐词坐标 [{text,x,y,w,h}]（走 ps1 -Words 输出）
+  async recognizeWords(imagePaths, { lang = DEFAULT_LANG } = {}) {
+    if (!Array.isArray(imagePaths) || imagePaths.length === 0) return new Map()
+    const args = ['-Words']
+    if (lang) args.push('-LangTag', lang)
+    args.push('-ImagePaths', ...imagePaths)
+    const output = await this.run(args)
+    const results = new Map()
+    let current = null
+    let words = []
+    for (const line of output.split(/\r?\n/)) {
+      if (line.startsWith('###IMAGE ')) {
+        current = line.slice(9).trim()
+        words = []
+      } else if (line.startsWith('###ERROR')) {
+        if (current) results.set(current, { ok: false, error: line.slice(9).trim() })
+      } else if (line === '###END') {
+        if (current && !results.has(current)) results.set(current, { ok: true, words })
+        current = null
+        words = []
+      } else if (current && line.startsWith('W\t')) {
+        const parts = line.split('\t')
+        if (parts.length >= 6) {
+          words.push({ x: Number(parts[1]), y: Number(parts[2]), w: Number(parts[3]), h: Number(parts[4]), text: parts.slice(5).join('\t') })
+        }
+      }
+    }
+    return results
+  }
 }
 
 module.exports = { WinRtOcrService, normalizeOcrText }
