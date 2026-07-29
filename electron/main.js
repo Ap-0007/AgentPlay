@@ -2028,6 +2028,7 @@ app.whenReady().then(async () => {
         : playbackBinary
       return await renderCreativeVideo({
         mpvPath: renderBinary,
+        ffmpegPath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffmpeg.exe'),
         input,
         outputPath: destination.filePath,
         onSpawn: (child) => { activeRecutProcess = child }

@@ -133,3 +133,29 @@ test('both Windows installers carry the policy-independent SAPI helper and creat
   }
   assert.equal(fs.existsSync(path.join(root, 'resources', 'voice-helper', 'Program.cs')), true)
 })
+
+test('volcengine image generation routes to the standard v3 endpoint with seedream and activation guidance', () => {
+  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'creative-studio-service.js'), 'utf8')
+  assert.match(service, /api\/v3.*images\/generations|ark\.cn-beijing\.volces\.com\/api\/v3/)
+  assert.match(service, /doubao-seedream-4-0-250828/)
+  assert.match(service, /ModelNotOpen/)
+  assert.match(service, /模型广场.*seedream.*开通/)
+})
+
+test('creative plan timeout covers the slow reasoning endpoint reality', () => {
+  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'creative-studio-service.js'), 'utf8')
+  assert.match(service, /timeoutMs \|\| 600000/, '实测 Coding Plan 端点方案请求 254s，默认超时必须留足')
+})
+
+test('all-generated timelines do not require a source video', () => {
+  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'creative-studio-service.js'), 'utf8')
+  assert.match(service, /needsSource = \(input\.shots \|\| \[\]\)\.some\(\(shot\) => shot\.kind !== 'generated'\)/)
+})
+
+test('generated shots pre-render with ffmpeg when available (mpv writes zero-duration clips)', () => {
+  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'creative-studio-service.js'), 'utf8')
+  assert.match(service, /ffmpegOk/)
+  assert.match(service, /'-loop', '1', '-framerate', '30'/)
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
+  assert.match(main, /ffmpegPath: path\.join\(app\.getPath\('userData'\), 'yt-dlp'/)
+})

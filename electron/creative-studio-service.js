@@ -117,7 +117,7 @@ async function requestCreativePlan(config, input = {}, options = {}) {
   const prompt = buildCreativePrompt(input, evidence.length)
   if (config.requiresKey && !config.apiKey) throw new Error('请先在模型接入中心保存 API Key')
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(new Error('AI 创作方案请求超时')), options.timeoutMs || 120000)
+  const timeout = setTimeout(() => controller.abort(new Error('AI 创作方案请求超时')), options.timeoutMs || 600000)
   const requestOptions = { signal: controller.signal, method: 'POST', headers: { 'Content-Type': 'application/json' } }
   let response
   try {
@@ -199,16 +199,26 @@ async function generateImageAsset(config, input = {}) {
   if (config.requiresKey && !config.apiKey) throw new Error('请先保存图像生成接口的 API Key')
   const prompt = safeText(input.prompt, 4000)
   if (!prompt) throw new Error('新镜头缺少图像提示词')
+  // 火山方舟：Coding 端点没有图像接口，必须走标准 v3 端点 + seedream 模型
+  const isVolc = /^volcengine/.test(config.providerId || '') || /volces\.com/.test(config.baseUrl || '')
+  const baseUrl = isVolc ? 'https://ark.cn-beijing.volces.com/api/v3' : config.baseUrl
+  const model = safeText(input.model, 200) || (isVolc ? 'doubao-seedream-4-0-250828' : 'gpt-image-1')
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(new Error('图像生成超时')), 180000)
   try {
     const headers = { 'Content-Type': 'application/json' }
     if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`
-    const response = await safeFetch(config, `${config.baseUrl}/images/generations`, {
+    const response = await safeFetch({ ...config, baseUrl }, `${baseUrl}/images/generations`, {
       method: 'POST', headers, signal: controller.signal,
-      body: JSON.stringify({ model: safeText(input.model, 200) || 'gpt-image-1', prompt, size: input.size || '1536x1024', response_format: 'b64_json' })
+      body: JSON.stringify({ model, prompt, size: input.size || '1024x1024', response_format: 'b64_json' })
     })
-    if (!response.ok) throw new Error(`图像接口返回 ${response.status}: ${(await response.text()).slice(0, 1000)}`)
+    if (!response.ok) {
+      const body = await response.text()
+      if (/ModelNotOpen/i.test(body)) {
+        throw new Error(`图像模型 ${model} 未在你的火山方舟账号开通：控制台「模型广场」搜 seedream 一键开通（有免费额度），开通后重试；也可以先用「导入素材」`)
+      }
+      throw new Error(`图像接口返回 ${response.status}: ${body.slice(0, 600)}`)
+    }
     const body = await response.json()
     const base64 = body.data?.[0]?.b64_json
     if (!base64) throw new Error('图像接口没有返回 b64_json；为避免不受控外链下载，请改用支持 base64 的接口或手动导入素材')
@@ -327,8 +337,13 @@ function buildSubtitleAss(shots = [], style = 'clean') {
 }
 
 function validateCreativeTimeline(input = {}) {
-  const sourcePath = path.resolve(String(input.sourcePath || ''))
-  if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) throw new Error('原视频不存在')
+  const needsSource = (input.shots || []).some((shot) => shot.kind !== 'generated')
+  // 纯 AI 新镜头时间线不需要源视频；只有用到来源片段时才校验原视频存在
+  let sourcePath = ''
+  if (needsSource) {
+    sourcePath = path.resolve(String(input.sourcePath || ''))
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) throw new Error('原视频不存在')
+  }
   const segments = new Map((input.segments || []).map((segment) => [String(segment.id), segment]))
   const shots = (input.shots || []).slice(0, 100).map((shot, index) => {
     if (shot.kind === 'generated') {
@@ -346,11 +361,12 @@ function validateCreativeTimeline(input = {}) {
   return shots
 }
 
-async function renderCreativeVideo({ mpvPath, input, outputPath, onSpawn }) {
+async function renderCreativeVideo({ mpvPath, ffmpegPath, input, outputPath, onSpawn }) {
   if (!mpvPath || !fs.existsSync(mpvPath)) throw new Error('视频渲染内核不可用')
   const shots = validateCreativeTimeline(input)
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-player-creative-'))
   const videoCodec = process.platform === 'win32' ? 'h264_mf' : 'mpeg4'
+  const ffmpegOk = Boolean(ffmpegPath && fs.existsSync(ffmpegPath))
   let activeChild = null
   const spawnHook = (child) => { activeChild = child; onSpawn?.(child) }
   try {
@@ -358,10 +374,19 @@ async function renderCreativeVideo({ mpvPath, input, outputPath, onSpawn }) {
     for (const [index, shot] of shots.entries()) {
       const clipPath = path.join(tempDir, `clip-${String(index).padStart(3, '0')}.mp4`)
       const source = shot.kind === 'source' ? shot.sourcePath : shot.assetPath
-      const args = [source, '--no-config', '--no-audio', '--no-sub', '--of=mp4', `--ovc=${videoCodec}`, '--vf=lavfi=[scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p]', `--o=${clipPath}`]
-      if (shot.kind === 'source') args.push(`--start=${shot.start}`, `--length=${shot.duration}`)
-      else args.push(`--length=${shot.duration}`, `--image-display-duration=${shot.duration}`)
-      await runProcess(mpvPath, args, { onSpawn: spawnHook })
+      if (ffmpegOk) {
+        // 镜头预渲染用 ffmpeg：mpv 对单张图片产出无时长文件（EDL 组合必炸）
+        const filter = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p'
+        const ffArgs = shot.kind === 'source'
+          ? ['-hide_banner', '-loglevel', 'error', '-ss', String(shot.start), '-i', source, '-t', String(shot.duration), '-vf', filter, '-c:v', 'libx264', '-an', '-y', clipPath]
+          : ['-hide_banner', '-loglevel', 'error', '-loop', '1', '-framerate', '30', '-i', source, '-t', String(shot.duration), '-vf', filter, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', '-y', clipPath]
+        await runProcess(ffmpegPath, ffArgs, { onSpawn: spawnHook })
+      } else {
+        const args = [source, '--no-config', '--no-audio', '--no-sub', '--of=mp4', `--ovc=${videoCodec}`, '--vf=lavfi=[scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p]', `--o=${clipPath}`]
+        if (shot.kind === 'source') args.push(`--start=${shot.start}`, `--length=${shot.duration}`)
+        else args.push(`--length=${shot.duration}`, `--image-display-duration=${shot.duration}`)
+        await runProcess(mpvPath, args, { onSpawn: spawnHook })
+      }
       if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size < 1000) throw new Error(`第 ${index + 1} 个镜头预渲染失败`)
       clipPaths.push(clipPath)
     }
