@@ -151,6 +151,7 @@ interface AiPlayerAPI {
     generate: (input: { path: string; requestId: string }) => Promise<{ success: boolean; error?: string; needDownload?: boolean; srtPath?: string; count?: number; failed?: number }>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
   }
+  detectLanguage?: (filePath: string) => Promise<{ lang: string; reason?: string; sample?: string }>
   subtitleLive?: {
     start: (input: { mediaPath: string; subtitlePath?: string; currentTime?: number; targetLang?: string; requestId: string }) => Promise<{
       success: boolean

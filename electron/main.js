@@ -44,6 +44,7 @@ const { DocumentWorkspaceService, SUPPORTED_EXTENSIONS, pdfPageCount } = require
 const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
 const AUDIO_MEDIA_EXTS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma']
 const { WinRtOcrService } = require('./ocr-service')
+const { LanguageDetectService } = require('./language-detect-service')
 const { OfficeConvertService } = require('./office-convert-service')
 const { TranscriptionService } = require('./transcription-service')
 const { parseSrt, buildBilingualSrt, translateEntries, cuesToEntries, runLiveTranslation } = require('./subtitle-bilingual-service')
@@ -415,6 +416,12 @@ function createHiddenWindow({ width, height }) {
 }
 
 const ocrService = new WinRtOcrService()
+const languageDetect = new LanguageDetectService({
+  whisperRoot: resolveWhisperRoot(),
+  mpvPath: app.isPackaged
+    ? path.join(process.resourcesPath, 'bin', 'win', 'mpv.com')
+    : path.join(__dirname, '..', 'resources', 'bin', 'win', 'mpv.com')
+})
 const officeConvert = new OfficeConvertService()
 
 function resolveWhisperRoot() {
@@ -1749,6 +1756,19 @@ app.whenReady().then(async () => {
     const controller = activeAnalysisRequests.get(String(requestId || ''))
     controller?.abort()
     return Boolean(controller)
+  })
+  // 轻量语言探测：抽前 12 秒音频转写判定 zh/en，给"要不要弹翻译提示"用
+  ipcMain.handle('media:detect-language', async (event, filePath) => {
+    assertTrustedSender(event)
+    if (typeof filePath !== 'string' || !/\.(mp4|mkv|avi|mov|flv|webm|ts|m4v|wmv|mp3|flac|wav|aac|m4a|ogg|wma)$/i.test(filePath)) {
+      return { lang: 'unknown', reason: '不是可探测的媒体文件' }
+    }
+    try {
+      const resolved = assertAllowedPath(filePath)
+      return await languageDetect.detect(resolved)
+    } catch (error) {
+      return { lang: 'unknown', reason: error instanceof Error ? error.message : String(error) }
+    }
   })
   // 实时双语字幕：从当前播放位置起逐批翻译，渲染进程叠显（原文上、译文下）；译完自动存双语 srt（不覆盖已有文件）
   ipcMain.handle('subtitle:live-start', async (event, input = {}) => {

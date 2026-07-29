@@ -84,7 +84,9 @@ export default function PlayerView({ onBack }: Props) {
   const [liveSub, setLiveSub] = useState<{ requestId: string; cues: Array<{ index: number; start: number; end: number; text: string }> } | null>(null)
   const liveTranslationsRef = useRef(new Map<number, string>())
   const liveSeekSentRef = useRef(0)
-  const subtitleFileRef = useRef('')
+  const subtitleFileRef = useRef('')
+  const [langPrompt, setLangPrompt] = useState<{ lang: string } | null>(null)
+  const langPromptOffRef = useRef(false)
 
   const isDesktop = window.aiPlayer?.isElectron === true
   const fileType = getFileType(mediaName)
@@ -468,7 +470,23 @@ export default function PlayerView({ onBack }: Props) {
     return off
   }, [useMpv])
 
-  const toggleLiveTranslate = async () => {
+  // 语言探测：音频语言与系统语言(中文)不同才自动弹提示；会话内可点 ✕ 永久免打扰
+  useEffect(() => {
+    setLangPrompt(null)
+    if (!isDesktop || fileType !== 'video' || !videoSrc || /^(https?|blob):/i.test(videoSrc)) return
+    if (langPromptOffRef.current || liveSub) return
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      try {
+        const result = await window.aiPlayer?.detectLanguage?.(videoSrc)
+        if (cancelled || !result || result.lang !== 'en') return
+        setLangPrompt({ lang: result.lang })
+      } catch { /* 探测失败静默 */ }
+    }, 1800)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [videoSrc, isDesktop, fileType])
+
+  const toggleLiveTranslate = async (targetLang?: string) => {
     const api = window.aiPlayer?.subtitleLive
     if (!api) return
     if (liveSub) {
@@ -489,14 +507,14 @@ export default function PlayerView({ onBack }: Props) {
     liveTranslationsRef.current = new Map()
     setSubtitlePanelOpen(true)
     setSubtitleStatus('正在准备实时翻译…')
-    const result = await api.start({ mediaPath: videoSrc, subtitlePath: subtitleFileRef.current, currentTime: usePlayerStore.getState().currentTime, requestId })
+    const result = await api.start({ mediaPath: videoSrc, subtitlePath: subtitleFileRef.current, currentTime: usePlayerStore.getState().currentTime, targetLang, requestId })
     if (!result.success || !result.cues) {
       liveRequestIdRef.current = ''
       setSubtitleStatus(result.error || '实时翻译启动失败')
       return
     }
     setLiveSub({ requestId: result.requestId || requestId, cues: result.cues })
-    setSubtitleStatus(`实时翻译已开启（${result.total} 句，从当前位置向前翻译）`)
+    setSubtitleStatus(`实时翻译已开启（译成${targetLang || '中文'}，${result.total} 句，从当前位置向前翻译）`)
     setSubtitlePanelOpen(false)
   }
 
@@ -713,6 +731,15 @@ export default function PlayerView({ onBack }: Props) {
           {subtitleUrl && <track ref={trackRef} src={subtitleUrl} kind="subtitles" default />}
         </video>
       )}
+      {langPrompt && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-lg bg-player-surface/95 border border-white/15 px-3 py-2 text-xs shadow-lg" data-player-chrome="true" onPointerEnter={holdControlsVisible} onPointerLeave={scheduleAutoHide}>
+          <span className="text-gray-200">检测到{langPrompt.lang === 'en' ? '英语' : '其他语种'}音频，需要翻译字幕吗？</span>
+          <button onClick={() => { setLangPrompt(null); void toggleLiveTranslate('中文') }} className="rounded bg-player-accent px-2.5 py-1 text-white hover:opacity-90">译成中文</button>
+          <button onClick={() => { setLangPrompt(null); void toggleLiveTranslate('英语') }} className="rounded bg-white/10 px-2.5 py-1 text-gray-200 hover:bg-white/20">译成英文</button>
+          <button onClick={() => setLangPrompt(null)} className="px-2 py-1 text-gray-400 hover:text-white">不用了</button>
+          <button onClick={() => { langPromptOffRef.current = true; setLangPrompt(null) }} className="px-1 py-1 text-gray-500 hover:text-white" title="本会话不再提示">✕</button>
+        </div>
+      )}
       {playbackNotice && !useMpv && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 rounded bg-black/80 px-4 py-2 text-sm text-amber-300">
           {playbackNotice}

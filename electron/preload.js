@@ -274,6 +274,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('subtitle:bilingual-status', handler)
     }
   },
+  detectLanguage: (filePath) => ipcRenderer.invoke('media:detect-language', filePath),
   subtitleLive: {
     start: (input) => ipcRenderer.invoke('subtitle:live-start', input),
     seek: (input) => ipcRenderer.invoke('subtitle:live-seek', input),
