@@ -2,6 +2,41 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============ 四套主题（CSS 变量，R G B 三元组） ============ */
+:root,
+[data-theme='glass'] {
+  /* 玻璃霓虹：藏青黑底 + 磨砂面板 + 蓝紫辉光 */
+  --player-bg: 8 11 22;
+  --player-surface: 18 23 42;
+  --player-accent: 108 112 255;
+  --player-accent2: 76 201 240;
+  color-scheme: dark;
+}
+[data-theme='light'] {
+  /* 浅色极简：白/浅灰大留白 + 电光蓝点缀 */
+  --player-bg: 243 246 251;
+  --player-surface: 255 255 255;
+  --player-accent: 37 99 235;
+  --player-accent2: 56 189 248;
+  color-scheme: light;
+}
+[data-theme='cyber'] {
+  /* 赛博全息：近黑底 + 青/品红全息辉光 */
+  --player-bg: 4 8 12;
+  --player-surface: 9 17 22;
+  --player-accent: 34 230 238;
+  --player-accent2: 255 62 200;
+  color-scheme: dark;
+}
+[data-theme='amber'] {
+  /* 琥珀金：炭灰面板 + 暖金点缀（专业剪辑台风） */
+  --player-bg: 17 16 15;
+  --player-surface: 27 25 23;
+  --player-accent: 224 169 74;
+  --player-accent2: 255 214 140;
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {
@@ -9,16 +44,74 @@ body,
   margin: 0;
 }
 
+body {
+  background: rgb(var(--player-bg));
+}
+
+/* ============ 面板与辉光效果（各主题差异集中在效果层） ============ */
+.theme-panel {
+  background: rgb(var(--player-surface) / 0.92);
+  border: 1px solid rgb(255 255 255 / 0.08);
+}
+[data-theme='glass'] .theme-panel {
+  backdrop-filter: blur(14px);
+  background: rgb(var(--player-surface) / 0.72);
+  border-color: rgb(var(--player-accent) / 0.16);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.45), inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+[data-theme='light'] .theme-panel {
+  background: rgb(var(--player-surface));
+  border-color: rgb(15 23 42 / 0.08);
+  box-shadow: 0 2px 12px rgb(15 23 42 / 0.06);
+}
+[data-theme='cyber'] .theme-panel {
+  border-color: rgb(var(--player-accent) / 0.35);
+  box-shadow: 0 0 14px rgb(var(--player-accent) / 0.18), inset 0 0 24px rgb(var(--player-accent) / 0.04);
+}
+[data-theme='amber'] .theme-panel {
+  border-color: rgb(var(--player-accent) / 0.22);
+  box-shadow: 0 4px 20px rgb(0 0 0 / 0.5), inset 0 1px 0 rgb(var(--player-accent2) / 0.08);
+}
+
+/* 主按钮/关键控件的点缀光晕 */
+.theme-glow {
+  box-shadow: 0 0 10px rgb(var(--player-accent) / 0.45);
+}
+[data-theme='light'] .theme-glow {
+  box-shadow: 0 2px 8px rgb(var(--player-accent) / 0.3);
+}
+
+/* ============ 浅色主题下的文字/边框适配（深色三主题沿用浅色文字） ============ */
+[data-theme='light'] .text-white { color: #0f172a; }
+[data-theme='light'] .text-gray-200 { color: #1e293b; }
+[data-theme='light'] .text-gray-300 { color: #334155; }
+[data-theme='light'] .text-gray-400 { color: #475569; }
+[data-theme='light'] .text-gray-500 { color: #64748b; }
+[data-theme='light'] .text-gray-600 { color: #94a3b8; }
+[data-theme='light'] .border-white\/5 { border-color: rgb(15 23 42 / 0.06); }
+[data-theme='light'] .border-white\/10 { border-color: rgb(15 23 42 / 0.1); }
+[data-theme='light'] .border-white\/15 { border-color: rgb(15 23 42 / 0.14); }
+[data-theme='light'] .bg-black\/20 { background-color: rgb(15 23 42 / 0.05); }
+[data-theme='light'] .bg-black\/30 { background-color: rgb(15 23 42 / 0.07); }
+[data-theme='light'] .bg-black\/40 { background-color: rgb(15 23 42 / 0.08); }
+[data-theme='light'] .bg-black\/70 { background-color: rgb(15 23 42 / 0.5); }
+[data-theme='light'] .bg-white\/5 { background-color: rgb(15 23 42 / 0.05); }
+[data-theme='light'] .bg-white\/10 { background-color: rgb(15 23 42 / 0.08); }
+[data-theme='light'] .hover\:bg-white\/5:hover { background-color: rgb(15 23 42 / 0.05); }
+[data-theme='light'] .hover\:bg-white\/15:hover { background-color: rgb(15 23 42 / 0.12); }
+[data-theme='light'] .hover\:bg-white\/20:hover { background-color: rgb(15 23 42 / 0.16); }
+[data-theme='light'] .bg-white\/\[0\.03\] { background-color: rgb(15 23 42 / 0.03); }
+
 /* 滚动条隐藏（极简界面） */
 ::-webkit-scrollbar {
   width: 6px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #333;
+  background: rgb(var(--player-accent) / 0.35);
   border-radius: 3px;
 }
 @media (pointer: coarse) {
-  button, input[type="range"] { min-height: 44px; min-width: 44px; }
+  button, input[type='range'] { min-height: 44px; min-width: 44px; }
 }
 
 ::-webkit-scrollbar-track {

@@ -20,6 +20,8 @@ const EMPTY_TASK: AgentTask = { kind: null, label: '', running: false, status: '
 
 interface AgentState {
   open: boolean
+  // 每次 openPanel 自增：中栏常驻布局下用它触发输入框聚焦
+  focusNonce: number
   listening: boolean
   inputText: string
   messages: AgentMessage[]
@@ -42,6 +44,7 @@ interface AgentState {
 
 export const useAgentStore = create<AgentState>((set, get) => ({
   open: false,
+  focusNonce: 0,
   listening: false,
   inputText: '',
   messages: [],
@@ -52,7 +55,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setTask: (patch) => set((s) => ({ task: { ...s.task, ...patch } })),
   resetTask: () => set({ task: EMPTY_TASK }),
   setPendingDocs: (docs) => set({ pendingDocs: docs }),
-  openPanel: () => set({ open: true }),
+  openPanel: () => set((s) => ({ open: true, focusNonce: s.focusNonce + 1 })),
   closePanel: () => set({ open: false }),
   toggleListening: () => set((s) => ({ listening: !s.listening })),
   setListening: (v) => set({ listening: v }),

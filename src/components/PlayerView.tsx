@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PlayerControls from './PlayerControls'
 import { usePlayerStore } from '../stores/playerStore'
-import { useAgentStore } from '../stores/agentStore'
 import { PLAYER_CHROME_HIDE_DELAY_MS, isRealMouseActivity, shouldAutoHideControls } from '../player-ui-policy.mjs'
 
 interface Props {
@@ -68,7 +67,6 @@ export default function PlayerView({ onBack }: Props) {
   const subtitleVisible = usePlayerStore((s) => s.subtitleVisible)
   const playbackRate = usePlayerStore((s) => s.playbackRate)
   const pictureMode = usePlayerStore((s) => s.pictureMode)
-  const agentOpen = useAgentStore((s) => s.open)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [officeHtml, setOfficeHtml] = useState<string | null>(null)
   const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null)
@@ -168,9 +166,9 @@ export default function PlayerView({ onBack }: Props) {
     if (!useMpv) return
     const player = window.aiPlayer?.player
     if (!player) return
-    if (agentOpen || subtitlePanelOpen) player.hideContainer()
+    if (subtitlePanelOpen) player.hideContainer()
     else player.showContainer()
-  }, [agentOpen, subtitlePanelOpen, useMpv])
+  }, [subtitlePanelOpen, useMpv])
 
   useEffect(() => {
     if (!useMpv || !window.aiPlayer?.player) return
@@ -257,17 +255,17 @@ export default function PlayerView({ onBack }: Props) {
     const active = document.activeElement
     if (active instanceof HTMLButtonElement && active.closest('[data-player-chrome="true"]')) active.blur()
     const isUsingChrome = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest('[data-player-chrome="true"]'))
-    if (!isUsingChrome && !useAgentStore.getState().open) setControlsVisible(false)
+    if (!isUsingChrome) setControlsVisible(false)
   }, [setControlsVisible])
 
   // 只武装隐藏计时，不强制显示：控制栏消失瞬间元素在光标下触发 pointerleave/blur，
   // 若离开时又重新显示，就会形成 显示→3秒隐藏→再显示 的循环（窗口随菜单栏显隐抖动）。
   const scheduleAutoHide = useCallback(() => {
     clearHideTimer()
-    if (shouldAutoHideControls({ hasMedia: isMedia, playing: isPlaying, blocked: subtitlePanelOpen || agentOpen })) {
+    if (shouldAutoHideControls({ hasMedia: isMedia, playing: isPlaying, blocked: subtitlePanelOpen })) {
       hideTimer.current = setTimeout(hideControlsIfIdle, PLAYER_CHROME_HIDE_DELAY_MS)
     }
-  }, [agentOpen, clearHideTimer, hideControlsIfIdle, isMedia, isPlaying, subtitlePanelOpen])
+  }, [clearHideTimer, hideControlsIfIdle, isMedia, isPlaying, subtitlePanelOpen])
 
   const handleUserActivity = useCallback(() => {
     holdControlsVisible()
@@ -849,7 +847,7 @@ export default function PlayerView({ onBack }: Props) {
           controlsVisible || !isMedia ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        ← 媒体库
+        ✕ 关闭
       </button>
 
       {isMedia && isDesktop && (

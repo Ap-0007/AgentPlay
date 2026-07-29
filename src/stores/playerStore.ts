@@ -26,6 +26,7 @@ interface PlayerState {
   toggleFullscreen: () => void
   toggleSubtitle: () => void
   setMedia: (name: string, src: string) => void
+  clearMedia: () => void
   setControlsVisible: (v: boolean) => void
   setPlaybackRate: (v: number) => void
   setPictureMode: (v: PlayerState['pictureMode']) => void
@@ -81,6 +82,8 @@ export const usePlayerStore = create<PlayerState>()(
           ...s.recentMedia.filter((item) => item.src !== src)
         ].slice(0, 30)
       })),
+      // 关闭右栏播放区：停止当前媒体（播放记录里可随时点回）
+      clearMedia: () => set({ mediaName: null, videoSrc: null, isPlaying: false, currentTime: 0 }),
       setControlsVisible: (v) => set({ controlsVisible: v }),
       setPlaybackRate: (v) => set({ playbackRate: Math.max(0.25, Math.min(4, v)) }),
       setPictureMode: (v) => set({ pictureMode: v }),

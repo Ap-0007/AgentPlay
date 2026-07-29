@@ -29,8 +29,11 @@ function kindLabel(kind: string) {
 
 
 export default function AgentPanel() {
-  const { messages, inputText, setInputText, send, cancel, thinking, closePanel, listening, toggleListening, setListening, addMessage } =
+  const { messages, inputText, setInputText, send, cancel, thinking, listening, toggleListening, setListening, addMessage } =
     useAgentStore()
+  const focusNonce = useAgentStore((s) => s.focusNonce)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { inputRef.current?.focus() }, [focusNonce])
   const [attachments, setAttachments] = useState<Array<{ token: string; name: string; ext: string; size: number }>>([])
   const [docCaps, setDocCaps] = useState<{ modelConfigured: boolean; modelLocal: boolean; providerName: string; model: string } | null>(null)
   const task = useAgentStore((s) => s.task)
@@ -204,7 +207,6 @@ export default function AgentPanel() {
     if (!result) return
     if (result.media?.length) {
       window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.media[0] }))
-      closePanel()
     }
     if (result.documents?.length) {
       setAttachments((current) => [...current, ...result.documents])
@@ -391,7 +393,6 @@ export default function AgentPanel() {
       setDocOutputs([result.outputPath])
       const infoTitle = !direct && 'info' in result && result.info?.title ? `，《${String(result.info.title).slice(0, 40)}》` : ''
       addMessage('agent', `视频已下载（${((result.bytes || 0) / 1024 / 1024).toFixed(1)}MB${infoTitle}）：${result.outputPath}，正在为你播放`)
-      closePanel()
       window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -467,7 +468,6 @@ export default function AgentPanel() {
       if (!result.success) throw new Error(result.error || '链接拉片失败')
       setDocOutputs(result.outputs || [])
       addMessage('agent', `${result.summary || '拉片完成'}${result.whispered ? '' : '（未装转写组件，报告仅基于基础结构）'}`)
-      closePanel()
       if (result.videoPath) window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.videoPath }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -598,12 +598,10 @@ export default function AgentPanel() {
 
   return (
     <div
-      className="absolute inset-0 z-50 flex items-end justify-center bg-black/40"
-      onClick={closePanel}
+      className="h-full min-h-0 flex flex-col bg-player-bg"
     >
       <div
-        className="w-full max-w-lg h-96 mb-20 bg-player-surface/95 backdrop-blur-md rounded-2xl border border-white/10 flex flex-col shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        className="flex-1 min-h-0 flex flex-col"
         onDrop={(e) => void handleDropFiles(e)}
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
       >
@@ -618,9 +616,6 @@ export default function AgentPanel() {
               }`}
             >
               🎙️
-            </button>
-            <button onClick={closePanel} className="text-gray-400 hover:text-white">
-              ✕
             </button>
           </div>
         </div>
@@ -704,21 +699,6 @@ export default function AgentPanel() {
           </div>
         )}
 
-        {/* 输入框（置顶） */}
-        <div className="px-4 py-3 border-b border-white/10 flex gap-2">
-          <button onClick={openAny} title="打开文件（视频、音频、图片或文档）" className="w-9 h-9 shrink-0 rounded-lg bg-white/10 hover:bg-white/15 flex items-center justify-center text-base">📎</button>
-          <input
-            type="text"
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !thinking && !docBusy && handleSend()}
-            placeholder={attachments.length ? '说对这些附件要做什么…' : '打字或点麦克风说话…'}
-            className="flex-1 bg-black/40 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 ring-player-accent"
-          />
-          <button onClick={docBusy ? cancelDocTask : thinking ? cancel : handleSend} className={`px-4 py-2 rounded-lg text-sm ${docBusy || thinking ? 'bg-red-600' : 'bg-player-accent'}`}>
-            {docBusy || thinking ? '停止' : '发送'}
-          </button>
-        </div>
 
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
@@ -802,6 +782,22 @@ export default function AgentPanel() {
               {m.text}
             </div>
           ))}
+        </div>
+        {/* 输入框（贴底） */}
+        <div className="px-4 py-3 border-t border-white/10 flex gap-2">
+          <button onClick={openAny} title="打开文件（视频、音频、图片或文档）" className="w-9 h-9 shrink-0 rounded-lg bg-white/10 hover:bg-white/15 flex items-center justify-center text-base">📎</button>
+          <input
+            ref={inputRef}
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && !thinking && !docBusy && handleSend()}
+            placeholder={attachments.length ? '说对这些附件要做什么…' : '打字或点麦克风说话…'}
+            className="flex-1 bg-black/40 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 ring-player-accent"
+          />
+          <button onClick={docBusy ? cancelDocTask : thinking ? cancel : handleSend} className={`px-4 py-2 rounded-lg text-sm ${docBusy || thinking ? 'bg-red-600' : 'bg-player-accent'}`}>
+            {docBusy || thinking ? '停止' : '发送'}
+          </button>
         </div>
       </div>
     </div>

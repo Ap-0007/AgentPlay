@@ -270,6 +270,7 @@ interface AiPlayerAPI {
       }>
     }>
     generateImage: (input: { id: string; prompt: string; model?: string; size?: string }) => Promise<{ success: boolean; outputPath: string; bytes: number }>
+    generateVideo: (input: { id?: string; prompt: string; model?: string; duration?: number; fps?: number; size?: string; imageBase64?: string }) => Promise<{ success: boolean; outputPath?: string; bytes?: number; videoId?: string; numFrames?: number; error?: string }>
     generateVoice: (input: { text: string; engine: 'system' | 'cloud'; model?: string; voice?: string; rate?: number }) => Promise<{ success: boolean; outputPath: string; bytes: number; engine: string }>
     selectAsset: (kind: 'image' | 'audio') => Promise<string | null>
     renderCreative: (input: Record<string, unknown>) => Promise<{ success: boolean; cancelled?: boolean; outputPath?: string; bytes?: number; shots?: number; duration?: number }>

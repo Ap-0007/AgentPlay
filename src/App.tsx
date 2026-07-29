@@ -2,22 +2,41 @@ import { useState, useEffect } from 'react'
 import PlayerView from './components/PlayerView'
 import MediaLibrary from './components/MediaLibrary'
 import AgentPanel from './components/AgentPanel'
+import Workbench from './components/Workbench'
+import Sidebar from './components/Sidebar'
 import { useAgentStore } from './stores/agentStore'
 import { usePlayerStore } from './stores/playerStore'
+import { useThemeStore, applyThemeToDocument } from './stores/themeStore'
 import ErrorBoundary from './components/ErrorBoundary'
 import ModelCenter from './components/ModelCenter'
 import ComputerUsePanel from './components/ComputerUsePanel'
 import AnalysisStudio from './components/AnalysisStudio'
 
 function AppInner() {
-  const [view, setView] = useState<'library' | 'player'>('library')
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const [libraryRoot, setLibraryRoot] = useState<string | undefined>()
   const [modelCenterOpen, setModelCenterOpen] = useState(false)
   const [computerUseOpen, setComputerUseOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [analysisStudioOpen, setAnalysisStudioOpen] = useState(false)
-  const agentOpen = useAgentStore((s) => s.open)
+  // 右栏：有播放内容即自动展开
+  const videoSrc = usePlayerStore((s) => s.videoSrc)
+  const rightOpen = Boolean(videoSrc)
+  const theme = useThemeStore((s) => s.theme)
 
+  useEffect(() => {
+    applyThemeToDocument(theme)
+  }, [theme])
+
+  const playMedia = (name: string, path: string) => {
+    usePlayerStore.getState().setMedia(name, path)
+    setLibraryOpen(false)
+  }
+
+  const closeRightPane = () => {
+    void window.aiPlayer?.player?.stop()
+    usePlayerStore.getState().clearMedia()
+  }
 
   useEffect(() => {
     const legacyKey = localStorage.getItem('aiplayer_api_key')
@@ -37,12 +56,11 @@ function AppInner() {
     if (!window.aiPlayer?.receiver) return
     const off = window.aiPlayer.receiver.onPlay((url) => {
       usePlayerStore.getState().setMedia(url.split('/').pop() || '投屏', url)
-      setView('player')
     })
     return off
   }, [])
 
-  // 全局播放/窗口动作兜底：PlayerView 未挂载时（首页）菜单依然可用；挂载时让位给它
+  // 全局播放/窗口动作兜底：PlayerView 未挂载时（右栏关闭）菜单依然可用；挂载时让位给它
   useEffect(() => {
     const handler = (event: Event) => {
       if ((window as unknown as Record<string, unknown>).__playerActionMounted) return
@@ -56,8 +74,7 @@ function AppInner() {
       }
       if (action === 'online-subtitle' || action === 'bilingual-subtitle' || action === 'live-translate-subtitle') {
         if (state.videoSrc) {
-          setView('player')
-          setTimeout(() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action })), 300)
+          window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action }))
         }
         return
       }
@@ -101,12 +118,11 @@ function AppInner() {
     if (!menu) return
     const offFile = menu.onOpenFile((filePath) => {
       usePlayerStore.getState().setMedia(filePath.split(/[\\/]/).pop() || filePath, filePath)
-      setView('player')
       menu.confirmOpenFile?.(filePath)
     })
     const offFolder = menu.onOpenFolder((dirPath) => {
       setLibraryRoot(dirPath)
-      setView('library')
+      setLibraryOpen(true)
     })
     const offAgent = menu.onAgent(() => useAgentStore.getState().openPanel())
     const offDocumentOpen = window.aiPlayer?.documents?.onOpenExternal?.((seedFiles) => {
@@ -143,12 +159,11 @@ function AppInner() {
         void window.aiPlayer?.dialog?.openFile().then((filePath) => {
           if (!filePath) return
           usePlayerStore.getState().setMedia(filePath.split(/[\\/]/).pop() || filePath, filePath)
-          setView('player')
         })
       } else {
         const libraryActions = ['network-source', 'record', 'dedup', 'organize', 'plugins', 'poster', 'devices']
-        if (libraryActions.includes(action) && view !== 'library') {
-          setView('library')
+        if (libraryActions.includes(action)) {
+          setLibraryOpen(true)
           setTimeout(() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action })), 0)
         } else {
           window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action }))
@@ -162,12 +177,12 @@ function AppInner() {
       offAgent()
       offAction()
     }
-  }, [view])
+  }, [])
 
   useEffect(() => {
     const folderHandler = (event: Event) => {
       setLibraryRoot((event as CustomEvent<string>).detail)
-      setView('library')
+      setLibraryOpen(true)
     }
     const actionHandler = (event: Event) => {
       const action = (event as CustomEvent<string>).detail
@@ -183,7 +198,6 @@ function AppInner() {
       const filePath = (event as CustomEvent<string>).detail
       if (!filePath) return
       usePlayerStore.getState().setMedia(filePath.split(/[\\/]/).pop() || filePath, filePath)
-      setView('player')
     }
     window.addEventListener('ai-player-open-folder', folderHandler)
     window.addEventListener('ai-player-play-file', playFileHandler)
@@ -195,19 +209,33 @@ function AppInner() {
     }
   }, [])
 
-  const playMedia = (name: string, path: string) => {
-    usePlayerStore.getState().setMedia(name, path)
-    setView('player')
-  }
-
   return (
-    <div className="w-screen h-screen flex flex-col bg-player-bg overflow-hidden">
-      {view === 'library' ? (
-        <MediaLibrary onPlay={playMedia} rootDir={libraryRoot} />
-      ) : (
-        <PlayerView onBack={() => setView('library')} />
+    <>
+      <Workbench
+        rightOpen={rightOpen}
+        sidebar={({ pinned, onTogglePin }) => (
+          <Sidebar
+            pinned={pinned}
+            onTogglePin={onTogglePin}
+            onOpenLibrary={() => setLibraryOpen(true)}
+            onOpenModelCenter={() => { setComputerUseOpen(false); setModelCenterOpen(true) }}
+            onOpenComputerUse={() => setComputerUseOpen(true)}
+          />
+        )}
+        center={<AgentPanel />}
+        right={<PlayerView onBack={closeRightPane} />}
+      />
+      {libraryOpen && (
+        <div className="fixed inset-0 z-40 bg-black/50 flex items-stretch justify-center p-6" onClick={() => setLibraryOpen(false)}>
+          <div className="w-full max-w-5xl theme-panel rounded-2xl flex flex-col overflow-hidden" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
+              <h2 className="text-sm text-gray-300">媒体库</h2>
+              <button onClick={() => setLibraryOpen(false)} className="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <MediaLibrary onPlay={playMedia} rootDir={libraryRoot} />
+          </div>
+        </div>
       )}
-      {agentOpen && <AgentPanel />}
       {computerUseOpen && <ComputerUsePanel onClose={() => setComputerUseOpen(false)} />}
       {modelCenterOpen && <ModelCenter onClose={() => setModelCenterOpen(false)} />}
       {analysisStudioOpen && <AnalysisStudio onClose={() => setAnalysisStudioOpen(false)} />}
@@ -224,7 +252,7 @@ function AppInner() {
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 

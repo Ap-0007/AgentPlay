@@ -6,6 +6,9 @@ const test = require('node:test')
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
 const library = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MediaLibrary.tsx'), 'utf8')
+const sidebar = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'Sidebar.tsx'), 'utf8')
+const workbench = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'Workbench.tsx'), 'utf8')
+const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
 const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types', 'global.d.ts'), 'utf8')
 
 test('home:open combines file and directory selection in one dialog', () => {
@@ -18,35 +21,42 @@ test('home:open combines file and directory selection in one dialog', () => {
   assert.match(types, /folders: string\[\]/)
 })
 
-test('home action row exposes open, agent panel, analysis, cast and model center', () => {
-  for (const label of ['📂 打开', '🎙️ AI 对话窗', '🎬 拉片', '📺 投屏', '🧩 模型接入中心']) {
-    assert.ok(library.includes(label), `动作行缺：${label}`)
+test('sidebar exposes open, library, analysis, cast, model center and computer use entries', () => {
+  for (const label of ['📂', '打开', '🗂', '媒体库', '🎬', '拉片', '📺', '投屏 / 设备', '🧩', '模型接入中心', '🖥', '电脑观察']) {
+    assert.ok(sidebar.includes(label), `左栏缺：${label}`)
   }
-  assert.match(library, /window\.aiPlayer\?\.home\?\.open\(\)/)
-  assert.match(library, /ai-player-open-folder/)
-  assert.match(library, /ai-player-attach-docs/)
-  // 空态只剩一个“打开”
+  assert.match(sidebar, /window\.aiPlayer\?\.home\?\.open\(\)/)
+  assert.match(sidebar, /ai-player-open-folder/)
+  assert.match(sidebar, /ai-player-attach-docs/)
+  // 三栏布局下媒体库改为浮层，动作入口集中在左栏
+  assert.ok(!library.includes('📂 打开'), '媒体库内不应再有打开动作行')
+  assert.match(app, /<Workbench/)
+  assert.match(app, /<MediaLibrary onPlay=\{playMedia\} rootDir=\{libraryRoot\} \/>/)
+})
+
+test('analysis opens the chat flow from sidebar, and empty library has no duplicate open entry', () => {
+  assert.match(sidebar, /openAnalysisChat/)
+  assert.match(sidebar, /就自动下载并开始拉片/)
+  assert.doesNotMatch(sidebar, /detail: 'analysis-studio'/)
+  // 空态只剩引导，不再有第二个“打开”
   const emptyBlock = library.slice(library.indexOf('这里还没有媒体文件'), library.indexOf('这里还没有媒体文件') + 900)
-  assert.ok(!emptyBlock.includes('📂 打开'), '空态不应再有打开按钮（动作行已有唯一入口）')
+  assert.ok(!emptyBlock.includes('📂 打开'), '空态不应再有打开按钮')
 })
 
-test('home has exactly one open entry, one recent strip, and analysis opens the chat flow', () => {
-  // 横排“最近播放”已移除，只剩右侧竖排
-  assert.ok(!library.includes('<h2 className="text-gray-400 text-sm mb-3">最近播放</h2>'), '横排最近播放应已移除')
-  // 空态不再重复“打开”按钮
-  const emptyBlock = library.slice(library.indexOf('这里还没有媒体文件'), library.indexOf('这里还没有媒体文件') + 700)
-  assert.ok(!emptyBlock.includes('handleOpen'), '空态不应再有打开按钮')
-  // 拉片按钮改为对话流引导
-  assert.match(library, /openAnalysisChat/)
-  assert.match(library, /就自动下载并开始拉片/)
-  assert.doesNotMatch(library, /detail: 'analysis-studio'/)
-})
-
-test('recent strip auto-hides after idle, pins via localStorage and replays on click', () => {
-  assert.match(library, /function RecentStrip/)
-  assert.match(library, /aiplayer_recent_pinned/)
-  assert.match(library, /setTimeout\(\(\) => setCollapsed\(true\), 4000\)/)
-  assert.match(library, /writingMode: 'vertical-rl'/)
-  assert.match(library, /onPlay\(item\.name, item\.src\)/)
-  assert.match(library, /<RecentStrip onPlay=\{onPlay\} \/>/)
+test('sidebar shows recent list replaying on click; workbench panes resize and pin via localStorage', () => {
+  // 播放记录迁入左栏底部，点击即回播
+  assert.match(sidebar, /播放记录/)
+  assert.match(sidebar, /recentMedia\.map/)
+  assert.match(sidebar, /setMedia\(item\.name, item\.src\)/)
+  // 右侧竖排 RecentStrip 已随布局移除
+  assert.ok(!library.includes('RecentStrip'), '媒体库内的 RecentStrip 应已移除')
+  // 三栏可拖拽拉伸 + 钉住，宽度持久化
+  assert.match(workbench, /cursor-col-resize/)
+  assert.match(workbench, /aiplayer_left_w/)
+  assert.match(workbench, /aiplayer_right_w/)
+  assert.match(workbench, /aiplayer_left_pinned/)
+  // 右栏有媒体自动展开、左栏未钉住自动收起
+  assert.match(workbench, /leftVisible = pinned \|\| !rightOpen/)
+  assert.match(app, /rightOpen = Boolean\(videoSrc\)/)
+  assert.match(app, /clearMedia/)
 })

@@ -18,64 +18,6 @@ interface Props {
 }
 
 
-// 右侧竖排播放记录：鼠标悬停展开，离开 4 秒自动收起；📌 常驻钉住不隐藏（状态存本地）
-function RecentStrip({ onPlay }: { onPlay: (name: string, path: string) => void }) {
-  const recentMedia = usePlayerStore((state) => state.recentMedia)
-  const [pinned, setPinned] = useState(() => localStorage.getItem('aiplayer_recent_pinned') === '1')
-  const [hovering, setHovering] = useState(false)
-  const [collapsed, setCollapsed] = useState(false)
-  useEffect(() => {
-    if (pinned || hovering) {
-      setCollapsed(false)
-      return
-    }
-    const timer = window.setTimeout(() => setCollapsed(true), 4000)
-    return () => window.clearTimeout(timer)
-  }, [pinned, hovering])
-  const togglePin = () => {
-    setPinned((value) => {
-      localStorage.setItem('aiplayer_recent_pinned', value ? '0' : '1')
-      return !value
-    })
-  }
-  const expanded = pinned || hovering || !collapsed
-  if (!recentMedia.length) return null
-  return (
-    <div
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => setHovering(false)}
-      className={`absolute right-0 top-0 bottom-0 z-30 transition-all duration-300 ${expanded ? 'w-64' : 'w-8'}`}
-    >
-      {!expanded ? (
-        <div className="w-8 h-full bg-player-surface/90 border-l border-white/10 flex items-center justify-center cursor-pointer">
-          <span className="text-xs text-gray-400" style={{ writingMode: 'vertical-rl' }}>播放记录</span>
-        </div>
-      ) : (
-        <div className="w-64 h-full bg-player-surface/95 backdrop-blur border-l border-white/10 flex flex-col">
-          <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
-            <span className="text-xs text-gray-300">播放记录</span>
-            <button
-              onClick={togglePin}
-              title={pinned ? '取消常驻（恢复自动隐藏）' : '常驻显示（不再自动隐藏）'}
-              className={`text-sm ${pinned ? 'text-player-accent' : 'text-gray-500 hover:text-white'}`}
-            >
-              📌
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {recentMedia.map((item) => (
-              <button key={item.src} onClick={() => onPlay(item.name, item.src)} className="block w-full rounded-lg px-2 py-2 text-left hover:bg-white/5">
-                <p className="truncate text-xs text-gray-200">{item.name}</p>
-                <p className="text-[10px] text-gray-500">{new Date(item.openedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 export default function MediaLibrary({ onPlay, rootDir }: Props) {
   const openPanel = useAgentStore((s) => s.openPanel)
   const [menu, setMenu] = useState<{ x: number; y: number; file: MediaFile } | null>(null)
@@ -168,32 +110,6 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
     setShowMore(true)
   }
 
-  // 一个“打开”：文件按类型分流（视频进播放器、文档进对话附件），文件夹授权进媒体库
-  // 拉片进对话流：粘贴链接即发全管道；本地视频打开后说“深度解剖”
-  const openAnalysisChat = () => {
-    const store = useAgentStore.getState()
-    store.openPanel()
-    if (store.messages.length === 0) {
-      store.addMessage('agent', '把 B站/YouTube/抖音等视频链接粘贴发给我，就自动下载并开始拉片；也可以先用「打开」选一个本地视频，然后对我说“深度解剖这个视频”。')
-    }
-  }
-
-  const handleOpen = async () => {
-    const result = await window.aiPlayer?.home?.open()
-    if (!result) return
-    for (const folder of result.folders || []) {
-      window.dispatchEvent(new CustomEvent('ai-player-open-folder', { detail: folder }))
-    }
-    if (result.documents?.length) {
-      useAgentStore.getState().openPanel()
-      window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: result.documents }))
-      return
-    }
-    if (result.media?.length) {
-      const first = result.media[0]
-      onPlay(first.split(/[\\/]/).pop() || first, first)
-    }
-  }
   const handleSuggest = async () => {
     const r = await window.aiPlayer?.media?.suggest()
     setSuggestResults(r || [])
@@ -385,16 +301,6 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
           placeholder='搜索或说"放谍战剧"…'
           className="flex-1 bg-player-surface rounded-xl px-4 py-3 text-sm outline-none focus:ring-1 ring-player-accent"
         />
-      </div>
-      {/* 首页动作行：常用功能不用进菜单找 */}
-      <div className="flex flex-wrap items-center gap-2 px-6 pb-3">
-        <button onClick={() => void handleOpen()} className="flex items-center gap-2 rounded-xl bg-player-accent px-4 py-2.5 text-sm font-medium hover:bg-blue-600">
-          📂 打开
-        </button>
-        <button onClick={openPanel} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">🎙️ AI 对话窗</button>
-        <button onClick={() => openAnalysisChat()} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">🎬 拉片</button>
-        <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'devices' }))} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">📺 投屏</button>
-        <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'model-center' }))} className="rounded-xl bg-white/10 px-4 py-2.5 text-sm hover:bg-white/15">🧩 模型接入中心</button>
       </div>
       <Recorder trigger={recordTrigger} hidden />
       {showAddUrl && (
@@ -700,7 +606,6 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
           </div>
         </div>
       )}
-      <RecentStrip onPlay={onPlay} />
     </div>
   )
 }
