@@ -64,6 +64,13 @@ test('frame ask: current video frame goes to vision model, answer returns to cha
   assert.match(playerView, /正在看这一帧…/)
 })
 
+test('chat video-gen intent routes to Agnes generateVideo and auto-plays result', () => {
+  assert.match(agentPanel, /videoGenIntents/)
+  assert.match(agentPanel, /studio\?\.generateVideo/)
+  assert.match(agentPanel, /AI 生成视频/)
+  assert.match(agentPanel, /ai-player-play-file/)
+})
+
 test('four themes live in css variables and style the control layer', () => {
   for (const theme of ['glass', 'light', 'cyber', 'amber']) {
     assert.ok(indexCss.includes(`[data-theme='${theme}']`), `缺主题：${theme}`)

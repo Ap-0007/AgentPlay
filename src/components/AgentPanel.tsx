@@ -340,9 +340,34 @@ export default function AgentPanel() {
   }
   runAnalysisTaskRef.current = runAnalysisTask
 
+  // AI 生视频：「生成一段视频：xxx」「做条视频 xxx」→ Agnes 产出 mp4，自动在右栏播放
+  const videoGenIntents = /^生成(一段|一个|一条|个|段|条)?视频|^做(一段|一个|一条|个|段|条)?视频|^来(一段|一条)视频/
+  const runVideoGenTask = async (text: string) => {
+    addMessage('user', text)
+    setInputText('')
+    const prompt = (text.split(/[：:，,]/).slice(1).join('，') || text.replace(videoGenIntents, '')).trim() || '一段有科技感的抽象动画'
+    const seconds = Math.max(1, Math.min(8, Number(/(\d+)\s*秒/.exec(text)?.[1]) || 4))
+    setTask({ kind: 'doc', label: 'AI 生成视频', running: true, status: `正在生成 ${seconds} 秒视频（约 1-2 分钟）…`, outputs: [], error: '' })
+    try {
+      const result = await window.aiPlayer?.studio?.generateVideo({ prompt, duration: seconds })
+      if (!result?.success || !result.outputPath) throw new Error(result?.error || '视频生成失败')
+      setTask({ running: false, status: '', outputs: [result.outputPath], error: '' })
+      addMessage('agent', `视频已生成（${result.numFrames || ''} 帧），正在为你播放：${result.outputPath}`)
+      window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ running: false, status: '', outputs: [], error: message })
+      addMessage('agent', `[错误] ${message}`)
+    }
+  }
+
   const routeTextSend = async () => {
     const text = inputText.trim()
     const { videoSrc } = usePlayerStore.getState()
+    if (videoGenIntents.test(text) && window.aiPlayer?.studio?.generateVideo) {
+      await runVideoGenTask(text)
+      return
+    }
     if (/^去重|重复文件|查重/.test(text)) {
       await runDedupTask(text)
       return
