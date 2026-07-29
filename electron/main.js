@@ -729,14 +729,17 @@ log.info('AI播放器启动')
 app.whenReady().then(async () => {
   const win = createWindow()
 
-  // 全局热键：随叫随到——任何场景下 Ctrl+Shift+A 唤起主窗口并直接开麦克风
-  globalShortcut.register('CmdOrCtrl+Shift+A', () => {
+  // 全局热键：随叫随到——任何场景下唤起主窗口并直接开麦克风；主键被占用时回退备选
+  const wakeApp = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
     mainWindow.focus()
     mainWindow.webContents.send('menu:action', 'agent-voice')
-  })
+  }
+  const hotkeyRegistered = globalShortcut.register('CmdOrCtrl+Shift+A', wakeApp)
+    || globalShortcut.register('CmdOrCtrl+Shift+Q', wakeApp)
+  log.info(`全局唤醒热键注册${hotkeyRegistered ? '成功（Ctrl+Shift+A，被占用时回退 Ctrl+Shift+Q）' : '失败：可能被其他软件占用'}`)
 
 
   mpv = new MpvService()
@@ -1092,7 +1095,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('guide:annotate', async (event, question) => {
     assertTrustedSender(event)
     try {
-      const result = await requestScreenGuide(modelConfigStore.resolved('chat'), String(question || ''))
+      const ask = () => requestScreenGuide(modelConfigStore.resolved('chat'), String(question || ''))
+      // 网络抖动自动重试一次（实测云端视觉偶发 fetch failed）
+      const result = await ask().catch((firstError) => {
+        if (!/fetch failed|network|timed ?out|abort|econn|socket/i.test(firstError.message)) throw firstError
+        return ask()
+      })
       if (result.marks.length) showGuideOverlay(result.marks)
       return { success: true, steps: result.steps, annotated: result.marks.length > 0 }
     } catch (error) {

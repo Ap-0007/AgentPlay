@@ -21,14 +21,14 @@ test('home:open combines file and directory selection in one dialog', () => {
   assert.match(types, /folders: string\[\]/)
 })
 
-test('sidebar exposes open, library, analysis, cast, model center and computer use entries', () => {
-  for (const label of ['📂', '打开', '🗂', '媒体库', '🎬', '拉片', '📺', '投屏 / 设备', '🧩', '模型接入中心', '🖥', '电脑观察']) {
+test('sidebar exposes open, analysis, cast, model center and computer use entries', () => {
+  for (const label of ['📂', '打开', '🎬', '拉片', '📺', '投屏 / 设备', '🧩', '模型接入中心', '🖥', '电脑观察']) {
     assert.ok(sidebar.includes(label), `左栏缺：${label}`)
   }
   assert.match(sidebar, /window\.aiPlayer\?\.home\?\.open\(\)/)
   assert.match(sidebar, /ai-player-open-folder/)
   assert.match(sidebar, /ai-player-attach-docs/)
-  // 三栏布局下媒体库改为浮层，动作入口集中在左栏
+  // 媒体库入口并入「打开」的文件夹授权，不再是左栏独立按钮；媒体库本身为浮层
   assert.ok(!library.includes('📂 打开'), '媒体库内不应再有打开动作行')
   assert.match(app, /<Workbench/)
   assert.match(app, /<MediaLibrary onPlay=\{playMedia\} rootDir=\{libraryRoot\} \/>/)

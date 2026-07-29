@@ -64,7 +64,6 @@ export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenMode
         <p className="px-1 pb-2 text-xs font-semibold tracking-wide text-gray-500">AgentPlay</p>
         <div className="space-y-1">
           {actionButton('📂', '打开', () => void handleOpen(), true)}
-          {actionButton('🗂', '媒体库', onOpenLibrary)}
           {actionButton('🎬', '拉片', openAnalysisChat)}
           {actionButton('📺', '投屏 / 设备', () => {
             onOpenLibrary()
