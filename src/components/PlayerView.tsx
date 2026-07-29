@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PlayerControls from './PlayerControls'
 import { usePlayerStore } from '../stores/playerStore'
+import { useAgentStore } from '../stores/agentStore'
 import { PLAYER_CHROME_HIDE_DELAY_MS, isRealMouseActivity, shouldAutoHideControls } from '../player-ui-policy.mjs'
 
 interface Props {
@@ -333,6 +334,36 @@ export default function PlayerView({ onBack }: Props) {
     await window.aiPlayer?.screenshot?.save(canvas.toDataURL('image/png'), `${fileBase}-${Date.now()}.png`)
   }
 
+  // 影院模式：播放区占满整个窗口（三栏收起）+ 窗口全屏；退出则双双还原（setPreset fullscreen 是 toggle，窗口 bounds 自动恢复）
+  const toggleTheaterMode = () => {
+    const state = usePlayerStore.getState()
+    const next = !state.theater
+    state.setTheater(next)
+    if (isDesktop && next !== state.isFullscreen) {
+      void window.aiPlayer?.windowControls?.setPreset('fullscreen')
+    }
+  }
+
+  // 问这帧：抓取当前视频画面发给视觉模型，回答回到中栏对话
+  const askFrame = async () => {
+    const agent = useAgentStore.getState()
+    const question = agent.inputText.trim() || '这个画面里是什么？用中文简要描述'
+    agent.setInputText('')
+    agent.openPanel()
+    agent.addMessage('user', `💬 ${question}`)
+    agent.addMessage('agent', '正在看这一帧…')
+    let dataUrl = ''
+    if (!useMpv && videoRef.current && videoRef.current.videoWidth > 0) {
+      const canvas = document.createElement('canvas')
+      canvas.width = videoRef.current.videoWidth
+      canvas.height = videoRef.current.videoHeight
+      canvas.getContext('2d')?.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
+      dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+    }
+    const result = await window.aiPlayer?.guide?.askFrame({ question, dataUrl })
+    agent.addMessage('agent', result?.success ? result.answer || '（模型没有回答）' : `[错误] ${result?.error || '画面问答不可用'}`)
+  }
+
   const applyWindowPreset = (preset: 'original' | 'half' | 'fill' | 'fullscreen') => {
     const video = videoRef.current
     void window.aiPlayer?.windowControls?.setPreset(preset, video?.videoWidth && video?.videoHeight
@@ -649,6 +680,19 @@ export default function PlayerView({ onBack }: Props) {
   }, [fileType, videoSrc, isDesktop])
 
   useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable="true"]')) return
+      const state = usePlayerStore.getState()
+      if (!state.theater) return
+      state.setTheater(false)
+      if (isDesktop && state.isFullscreen) void window.aiPlayer?.windowControls?.setPreset('fullscreen')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isDesktop])
+
+  useEffect(() => {
     const handler = () => {
       const fullscreen = !!document.fullscreenElement
       usePlayerStore.setState({ isFullscreen: fullscreen, controlsVisible: true })
@@ -689,7 +733,7 @@ export default function PlayerView({ onBack }: Props) {
       }}
       onDoubleClick={() => {
         if (fileType === 'office' || fileType === 'other') return
-        applyWindowPreset('fullscreen')
+        toggleTheaterMode()
       }}
     >
       {fileType === 'video' && fileUrl && !useMpv && (
@@ -849,6 +893,21 @@ export default function PlayerView({ onBack }: Props) {
       >
         ✕ 关闭
       </button>
+
+      {isMedia && isDesktop && fileType === 'video' && (
+        <button
+          onClick={() => void askFrame()}
+          title="把当前画面发给 AI 问答（输入框里的文字作为问题）"
+          data-player-chrome="true"
+          onPointerEnter={holdControlsVisible}
+          onPointerLeave={scheduleAutoHide}
+          className={`absolute top-4 right-24 px-3 py-1 bg-player-surface/80 rounded text-sm hover:bg-player-surface transition-opacity duration-300 ${
+            controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          💬 问这帧
+        </button>
+      )}
 
       {isMedia && isDesktop && (
         <button

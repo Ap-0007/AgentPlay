@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { usePlayerStore } from '../stores/playerStore'
 
 // Codex 式三栏工作台：左栏(功能+播放记录) / 中栏(AI 对话主角) / 右栏(播放内容区)
 // - 左右栏宽可拖拽，持久化到 localStorage
@@ -17,11 +18,13 @@ const RIGHT_MIN = 320
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
 export default function Workbench({ rightOpen, sidebar, center, right }: Props) {
+  // 影院模式：播放区占满整个窗口，左栏/中栏全部收起
+  const theater = usePlayerStore((s) => s.theater)
   const [leftWidth, setLeftWidth] = useState(() => clamp(Number(localStorage.getItem('aiplayer_left_w')) || 240, LEFT_MIN, LEFT_MAX))
   const [rightWidth, setRightWidth] = useState(() => clamp(Number(localStorage.getItem('aiplayer_right_w')) || 480, RIGHT_MIN, Math.round(window.innerWidth * 0.6)))
   const [pinned, setPinned] = useState(() => localStorage.getItem('aiplayer_left_pinned') === '1')
 
-  const leftVisible = pinned || !rightOpen
+  const leftVisible = !theater && (pinned || !rightOpen)
 
   const togglePin = useCallback(() => {
     setPinned((value) => {
@@ -84,11 +87,11 @@ export default function Workbench({ rightOpen, sidebar, center, right }: Props) 
           <span className="text-[10px]" style={{ writingMode: 'vertical-rl' }}>功能栏</span>
         </button>
       )}
-      <main className="flex-1 min-w-0 min-h-0 flex flex-col">{center}</main>
+      {!theater && <main className="flex-1 min-w-0 min-h-0 flex flex-col">{center}</main>}
       {rightOpen && (
         <>
-          {divider('right')}
-          <aside style={{ width: rightWidth }} className="shrink-0 min-h-0 flex flex-col bg-black">
+          {!theater && divider('right')}
+          <aside style={theater ? undefined : { width: rightWidth }} className={theater ? 'flex-1 min-w-0 min-h-0 flex flex-col bg-black' : 'shrink-0 min-h-0 flex flex-col bg-black'}>
             {right}
           </aside>
         </>

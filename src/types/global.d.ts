@@ -319,6 +319,11 @@ interface AiPlayerAPI {
     stopBundled: () => Promise<BundledModelStatus>
     quickSwitch: (input: { role?: 'chat' | 'computerUse'; target: 'cloud' | 'bundled' }) => Promise<{ switched: boolean; needDownload?: boolean; reason?: string; config?: { providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean } }>
   }
+  guide?: {
+    annotate: (question: string) => Promise<{ success: boolean; steps?: Array<{ text: string; mark: unknown }>; annotated?: boolean; error?: string }>
+    askFrame: (input: { question: string; dataUrl?: string }) => Promise<{ success: boolean; answer?: string; error?: string }>
+    dismiss: () => Promise<boolean>
+  }
   computerUse?: {
     suggest: (task: string, requestId: string) => Promise<{
       requestId: string; mode: 'observe-only'; warning: string;

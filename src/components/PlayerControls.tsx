@@ -12,7 +12,7 @@ export default function PlayerControls({ onInteractionStart, onInteractionEnd }:
     volume, setVolume,
     currentTime, duration, seek,
     subtitleVisible, toggleSubtitle,
-    isFullscreen, toggleFullscreen,
+    isFullscreen, toggleFullscreen, theater,
     controlsVisible, playbackRate, setPlaybackRate, toggleMute
   } = usePlayerStore()
   const openPanel = useAgentStore((s) => s.openPanel)
@@ -120,8 +120,13 @@ export default function PlayerControls({ onInteractionStart, onInteractionEnd }:
         {/* 4. 全屏 */}
         <button
           onClick={() => {
-            if (window.aiPlayer?.windowControls) void window.aiPlayer.windowControls.setPreset('fullscreen')
-            else {
+            // 影院模式：播放区占满整个窗口（三栏收起），窗口同步全屏；再按还原
+            const state = usePlayerStore.getState()
+            const next = !state.theater
+            state.setTheater(next)
+            if (window.aiPlayer?.windowControls) {
+              if (next !== state.isFullscreen) void window.aiPlayer.windowControls.setPreset('fullscreen')
+            } else {
               toggleFullscreen()
               if (document.fullscreenElement) document.exitFullscreen()
               else document.documentElement.requestFullscreen().catch(() => {})
@@ -129,7 +134,7 @@ export default function PlayerControls({ onInteractionStart, onInteractionEnd }:
           }}
           className="w-9 h-9 flex items-center justify-center rounded hover:bg-white/10"
         >
-          {isFullscreen ? '🗗' : '⛶'}
+          {isFullscreen || theater ? '🗗' : '⛶'}
         </button>
 
         {/* 5. 麦克风（点击唤醒 Agent） */}

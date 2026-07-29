@@ -99,6 +99,11 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     stopBundled: () => ipcRenderer.invoke('models:stop-bundled'),
     quickSwitch: (input) => ipcRenderer.invoke('models:quick-switch', input)
   },
+  guide: {
+    annotate: (question) => ipcRenderer.invoke('guide:annotate', question),
+    askFrame: (input) => ipcRenderer.invoke('guide:askFrame', input),
+    dismiss: () => ipcRenderer.invoke('guide:dismiss')
+  },
   computerUse: {
     suggest: (task, requestId) => ipcRenderer.invoke('computerUse:suggest', task, requestId),
     cancel: (requestId) => ipcRenderer.invoke('computerUse:cancel', requestId),

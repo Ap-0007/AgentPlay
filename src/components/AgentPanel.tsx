@@ -202,6 +202,24 @@ export default function AgentPanel() {
     window.setTimeout(() => void runDocTaskRef.current(), 0)
   }
 
+  // 屏幕指路：截图发给视觉模型，在屏幕上画出操作标注，步骤同时回到对话里
+  const runGuide = async () => {
+    const question = inputText.trim()
+    if (question) setInputText('')
+    addMessage('user', question ? `🎯 屏幕指路：${question}` : '🎯 屏幕指路')
+    const result = await window.aiPlayer?.guide?.annotate(question)
+    if (!result) {
+      addMessage('agent', '[错误] 指路功能在当前环境不可用')
+      return
+    }
+    if (!result.success) {
+      addMessage('agent', `[错误] ${result.error}`)
+      return
+    }
+    const lines = (result.steps || []).map((step, index) => `${index + 1}. ${step.text}`).join('\n')
+    addMessage('agent', `${result.annotated ? '已在屏幕上画出标注（15 秒后自动消失）：' : '操作步骤：'}\n${lines}`)
+  }
+
   const openAny = async () => {
     const result = await window.aiPlayer?.chat?.openAny?.()
     if (!result) return
@@ -631,6 +649,7 @@ export default function AgentPanel() {
           <div className="flex items-center gap-3 shrink-0">
             <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'model-center' }))} className="text-xs text-player-accent">模型接入中心</button>
             <button onClick={() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'computer-use' }))} className="text-xs text-amber-400">电脑观察</button>
+            <button onClick={() => void runGuide()} title="截取当前屏幕，让 AI 在屏幕上画出操作指引" className="text-xs text-cyan-300 hover:text-cyan-100">🎯 指路</button>
             <button onClick={() => setShowServiceEdit((value) => !value)} className="text-xs text-gray-400">海报/字幕 Key</button>
           </div>
         </div>
@@ -704,13 +723,13 @@ export default function AgentPanel() {
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           {messages.length === 0 && attachments.length === 0 && (
             <div className="mt-6">
-              <p className="text-gray-500 text-sm text-center">说点什么，或点 📎 打开视频和文档，也可以直接把文件拖进来</p>
+              <p className="text-gray-500 text-sm text-center">说点什么——整理文档、拉片、问答，或直接把文件拖进来</p>
               <div className="mt-4 grid grid-cols-2 gap-2">
                 {EXAMPLE_TASKS.map((task) => (
                   <button
                     key={task.label}
                     onClick={() => { setInputText(task.text); setOutputFormat(task.format) }}
-                    className="rounded-lg border border-white/10 px-3 py-2 text-left text-xs text-gray-300 hover:border-player-accent hover:bg-white/5"
+                    className="rounded-lg border border-white/10 px-3 py-2 text-left text-xs text-gray-300 outline-none hover:border-player-accent hover:bg-white/5 focus:border-player-accent"
                   >
                     {task.label}
                   </button>
@@ -720,12 +739,12 @@ export default function AgentPanel() {
                 <div className="mt-5">
                   <p className="text-[11px] text-gray-600 mb-1">最近任务</p>
                   <div className="space-y-1">
-                    {history.slice(0, 5).map((record) => (
+                    {history.filter((record, index, arr) => arr.findIndex((item) => item.instruction === record.instruction) === index).slice(0, 3).map((record) => (
                       <div key={record.id} className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
                         <p className="truncate text-xs text-gray-400">{record.instruction}</p>
                         <div className="mt-1 flex flex-wrap gap-1">
                           {record.outputs.map((output) => (
-                            <button key={output} onClick={() => void window.aiPlayer?.system?.openPath(output)} className="truncate rounded bg-black/30 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-black/50" title={output}>
+                            <button key={output} onClick={() => void window.aiPlayer?.system?.openPath(output)} className="max-w-full truncate rounded bg-black/30 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-black/50" title={output}>
                               {output.split(/[\\/]/).pop()}
                             </button>
                           ))}
@@ -775,11 +794,14 @@ export default function AgentPanel() {
             </div>
           )}
           {messages.map((m, i) => (
-            <div
-              key={i}
-              className={`text-sm ${m.role === 'user' ? 'text-white text-right' : 'text-gray-300'}`}
-            >
-              {m.text}
+            <div key={i} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+              <div
+                className={m.role === 'user'
+                  ? 'max-w-[85%] rounded-2xl rounded-br-md bg-player-accent/20 border border-player-accent/25 px-3.5 py-2 text-sm text-white whitespace-pre-wrap break-words'
+                  : 'max-w-[85%] rounded-2xl rounded-bl-md bg-white/[0.04] border border-white/5 px-3.5 py-2 text-sm text-gray-300 whitespace-pre-wrap break-words'}
+              >
+                {m.text}
+              </div>
             </div>
           ))}
         </div>

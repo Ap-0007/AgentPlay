@@ -7,6 +7,8 @@ interface PlayerState {
   currentTime: number
   duration: number
   isFullscreen: boolean
+  // 影院模式：播放区占满整个窗口（左栏/中栏收起），双击或全屏按钮进出
+  theater: boolean
   subtitleVisible: boolean
   mediaName: string | null
   videoSrc: string | null
@@ -26,6 +28,7 @@ interface PlayerState {
   toggleFullscreen: () => void
   toggleSubtitle: () => void
   setMedia: (name: string, src: string) => void
+  setTheater: (v: boolean) => void
   clearMedia: () => void
   setControlsVisible: (v: boolean) => void
   setPlaybackRate: (v: number) => void
@@ -42,6 +45,7 @@ export const usePlayerStore = create<PlayerState>()(
       currentTime: 0,
       duration: 0,
       isFullscreen: false,
+      theater: false,
       subtitleVisible: true,
       mediaName: null,
       videoSrc: null,
@@ -68,6 +72,7 @@ export const usePlayerStore = create<PlayerState>()(
       }),
       setDuration: (d) => set({ duration: d }),
       toggleFullscreen: () => set((s) => ({ isFullscreen: !s.isFullscreen })),
+      setTheater: (v) => set({ theater: v }),
       toggleSubtitle: () => set((s) => ({ subtitleVisible: !s.subtitleVisible })),
       setMedia: (name, src) => set((s) => ({
         mediaName: name,

@@ -193,6 +193,12 @@ function AppInner() {
       if (action === 'computer-use') setComputerUseOpen(true)
       if (action === 'analysis-studio') setAnalysisStudioOpen(true)
       if (action === 'document-workspace') useAgentStore.getState().openPanel()
+      if (action === 'agent-voice') {
+        // 全局热键唤起：聚焦中栏输入并直接开麦（再按热键由系统层聚焦，不打断录音）
+        const store = useAgentStore.getState()
+        store.openPanel()
+        if (!store.listening) store.toggleListening()
+      }
     }
     const playFileHandler = (event: Event) => {
       const filePath = (event as CustomEvent<string>).detail

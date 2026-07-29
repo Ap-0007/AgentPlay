@@ -81,6 +81,62 @@ body {
   box-shadow: 0 2px 8px rgb(var(--player-accent) / 0.3);
 }
 
+/* ============ 主题落地到控件层：主按钮渐变 + 光晕 ============ */
+/* 深色三主题的主按钮统一升级为 accent→accent2 渐变（对照设计稿） */
+[data-theme='glass'] .bg-player-accent,
+[data-theme='cyber'] .bg-player-accent,
+[data-theme='amber'] .bg-player-accent {
+  background-image: linear-gradient(135deg, rgb(var(--player-accent)), rgb(var(--player-accent2)));
+  color: #fff;
+}
+[data-theme='glass'] .bg-player-accent {
+  box-shadow: 0 2px 16px rgb(var(--player-accent) / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.18);
+}
+[data-theme='cyber'] .bg-player-accent {
+  color: #04181a;
+  font-weight: 600;
+  box-shadow: 0 0 18px rgb(var(--player-accent) / 0.55);
+}
+[data-theme='amber'] .bg-player-accent {
+  color: #241a08;
+  font-weight: 600;
+  box-shadow: 0 2px 14px rgb(var(--player-accent) / 0.4), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+[data-theme='light'] .bg-player-accent {
+  box-shadow: 0 2px 10px rgb(var(--player-accent) / 0.35);
+}
+
+/* 输入框聚焦时的主题色辉光 */
+.ring-player-accent:focus,
+.focus\:ring-player-accent:focus {
+  --tw-ring-color: rgb(var(--player-accent) / 0.7);
+}
+[data-theme='glass'] input:focus,
+[data-theme='cyber'] input:focus,
+[data-theme='amber'] input:focus {
+  box-shadow: 0 0 0 1px rgb(var(--player-accent) / 0.5), 0 0 14px rgb(var(--player-accent) / 0.25);
+}
+
+/* 强调色文字（链接/激活态）跟随主题第二色微调，提升辨识度 */
+[data-theme='cyber'] .text-player-accent { color: rgb(var(--player-accent)); text-shadow: 0 0 8px rgb(var(--player-accent) / 0.5); }
+[data-theme='amber'] .text-player-accent { color: rgb(var(--player-accent2)); }
+
+/* 玻璃主题：中栏与面板之间的分隔线改为渐变光线 */
+[data-theme='glass'] .border-white\/10 { border-color: rgb(var(--player-accent) / 0.14); }
+
+/* 赛博主题：整体衬一层细网格底纹（全息感，克制度高） */
+[data-theme='cyber'] body {
+  background-image:
+    linear-gradient(rgb(var(--player-accent) / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--player-accent) / 0.035) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+
+/* 琥珀主题：面板顶部一线暖光 */
+[data-theme='amber'] .theme-panel {
+  box-shadow: 0 4px 20px rgb(0 0 0 / 0.5), inset 0 1px 0 rgb(var(--player-accent2) / 0.12);
+}
+
 /* ============ 浅色主题下的文字/边框适配（深色三主题沿用浅色文字） ============ */
 [data-theme='light'] .text-white { color: #0f172a; }
 [data-theme='light'] .text-gray-200 { color: #1e293b; }

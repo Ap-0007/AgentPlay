@@ -55,8 +55,8 @@ test('sidebar shows recent list replaying on click; workbench panes resize and p
   assert.match(workbench, /aiplayer_left_w/)
   assert.match(workbench, /aiplayer_right_w/)
   assert.match(workbench, /aiplayer_left_pinned/)
-  // 右栏有媒体自动展开、左栏未钉住自动收起
-  assert.match(workbench, /leftVisible = pinned \|\| !rightOpen/)
+  // 右栏有媒体自动展开、左栏未钉住自动收起；影院模式全部收起
+  assert.match(workbench, /leftVisible = !theater && \(pinned \|\| !rightOpen\)/)
   assert.match(app, /rightOpen = Boolean\(videoSrc\)/)
   assert.match(app, /clearMedia/)
 })

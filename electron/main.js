@@ -1,13 +1,14 @@
 // AI播放器 Electron 主进程
 // dev: 加载 Vite dev server；prod: 加载构建产物
 // 集成 mpv sidecar，IPC 桥接渲染进程
-const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session, desktopCapturer } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session, desktopCapturer, globalShortcut } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const crypto = require('crypto')
 const { spawn } = require('child_process')
 const { MpvService } = require('./mpv-service')
+const { requestScreenGuide, askAboutImage } = require('./screen-guide-service')
 const { shouldEmbedMpv } = require('./playback-policy')
 const { AgentEngine } = require('./llm-service')
 const { scanDir, defaultVideoDir, ALL_EXTS, getType } = require('./file-service')
@@ -216,6 +217,52 @@ function normalizeRequestId(value, prefix) {
 function getHwndNumber(win) {
   const buf = win.getNativeWindowHandle()
   return buf.readInt32LE(0)
+}
+
+// 屏幕指路覆盖层：透明、点击穿透、置顶，15 秒自动消失
+let guideOverlay = null
+let guideOverlayTimer = null
+function dismissGuideOverlay() {
+  if (guideOverlayTimer) { clearTimeout(guideOverlayTimer); guideOverlayTimer = null }
+  if (guideOverlay && !guideOverlay.isDestroyed()) guideOverlay.destroy()
+  guideOverlay = null
+}
+// 覆盖层内以 0-1000 归一化坐标画圈与箭头（注入执行，勿引用外层变量）
+function drawGuideMarks(marks) {
+  const svg = document.getElementById('s')
+  const w = window.innerWidth
+  const h = window.innerHeight
+  const px = (v) => (v / 1000) * w
+  const py = (v) => (v / 1000) * h
+  let inner = '<defs><marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#6c70ff"/></marker></defs>'
+  for (const mark of marks) {
+    if (mark.type === 'circle') {
+      inner += `<circle cx="${px(mark.x)}" cy="${py(mark.y)}" r="42" fill="none" stroke="#6c70ff" stroke-width="4" opacity="0.95"><animate attributeName="r" values="34;46;34" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.95;0.5;0.95" dur="1.6s" repeatCount="indefinite"/></circle>`
+      inner += `<circle cx="${px(mark.x)}" cy="${py(mark.y)}" r="5" fill="#6c70ff"/>`
+    } else if (mark.type === 'arrow') {
+      inner += `<line x1="${px(mark.x)}" y1="${py(mark.y)}" x2="${px(mark.toX)}" y2="${py(mark.toY)}" stroke="#6c70ff" stroke-width="5" stroke-linecap="round" marker-end="url(#ah)"/>`
+      inner += `<circle cx="${px(mark.toX)}" cy="${py(mark.toY)}" r="30" fill="none" stroke="#6c70ff" stroke-width="3" opacity="0.7"/>`
+    }
+  }
+  svg.innerHTML = inner
+}
+function showGuideOverlay(marks, durationMs = 15000) {
+  dismissGuideOverlay()
+  guideOverlay = new BrowserWindow({
+    fullscreen: true, transparent: true, frame: false, skipTaskbar: true,
+    focusable: false, hasShadow: false, resizable: false, movable: false,
+    webPreferences: { sandbox: true }
+  })
+  guideOverlay.setAlwaysOnTop(true, 'screen-saver')
+  guideOverlay.setIgnoreMouseEvents(true, { forward: true })
+  const html = '<!doctype html><html><body style="margin:0;overflow:hidden;background:transparent"><svg id="s" style="position:fixed;inset:0;width:100vw;height:100vh"></svg></body></html>'
+  guideOverlay.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  guideOverlay.webContents.once('did-finish-load', () => {
+    if (guideOverlay && !guideOverlay.isDestroyed()) {
+      guideOverlay.webContents.executeJavaScript(`(${drawGuideMarks.toString()})(${JSON.stringify(marks)})`).catch(() => {})
+    }
+  })
+  guideOverlayTimer = setTimeout(dismissGuideOverlay, durationMs)
 }
 
 // 创建 mpv 嵌入容器窗口（child，无边框，黑色背景，不渲染 HTML 内容）
@@ -682,6 +729,16 @@ log.info('AI播放器启动')
 app.whenReady().then(async () => {
   const win = createWindow()
 
+  // 全局热键：随叫随到——任何场景下 Ctrl+Shift+A 唤起主窗口并直接开麦克风
+  globalShortcut.register('CmdOrCtrl+Shift+A', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    mainWindow.webContents.send('menu:action', 'agent-voice')
+  })
+
+
   mpv = new MpvService()
   const useEmbed = shouldEmbedMpv()
   if (useEmbed) {
@@ -1031,6 +1088,46 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     if (!mainWindow || mainWindow.isDestroyed()) return false
     return process.platform === 'darwin' ? true : mainWindow.isMenuBarVisible()
+  })
+  ipcMain.handle('guide:annotate', async (event, question) => {
+    assertTrustedSender(event)
+    try {
+      const result = await requestScreenGuide(modelConfigStore.resolved('chat'), String(question || ''))
+      if (result.marks.length) showGuideOverlay(result.marks)
+      return { success: true, steps: result.steps, annotated: result.marks.length > 0 }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('guide:dismiss', (event) => {
+    assertTrustedSender(event)
+    dismissGuideOverlay()
+    return true
+  })
+  // 画面问答：视频帧/截图发给视觉模型。mpv 播放时主进程直接截图，HTML5 由渲染端给 dataUrl
+  ipcMain.handle('guide:askFrame', async (event, input) => {
+    assertTrustedSender(event)
+    const fsPromises = require('fs').promises
+    let dataUrl = String(input?.dataUrl || '')
+    let tmpShot = ''
+    try {
+      if (!dataUrl) {
+        if (!mpvReady || !mpv) throw new Error('播放器尚未就绪')
+        tmpShot = path.join(os.tmpdir(), `agentplay-frame-${Date.now()}.jpg`)
+        const ok = await mpv.screenshot(tmpShot)
+        if (!ok || !fs.existsSync(tmpShot)) throw new Error('视频帧抓取失败')
+        dataUrl = 'data:image/jpeg;base64,' + (await fsPromises.readFile(tmpShot)).toString('base64')
+      }
+      const result = await askAboutImage(modelConfigStore.resolved('chat'), {
+        dataUrl,
+        question: String(input?.question || '')
+      })
+      return { success: true, answer: result.answer }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      if (tmpShot) await fsPromises.unlink(tmpShot).catch(() => {})
+    }
   })
   ipcMain.handle('screenshot:save', async (_e, dataUrl, suggestedName) => {
     assertTrustedSender(_e)
@@ -2321,6 +2418,10 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
 })
 
 app.on('window-all-closed', () => {
