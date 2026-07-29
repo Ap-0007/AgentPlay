@@ -78,7 +78,7 @@ class WifiTransfer {
         maxFileSize: 1024 * 1024 * 1024,
         maxTotalFileSize: 2 * 1024 * 1024 * 1024
       })
-      form.parse(req, (err, fields, files) => {
+      form.parse(req, async (err, fields, files) => {
         if (err) {
           fs.rmSync(tempDir, { recursive: true, force: true })
           res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -86,6 +86,7 @@ class WifiTransfer {
           return
         }
         const uploaded = Array.isArray(files.file) ? files.file : files.file ? [files.file] : []
+        // 落地异步化：同卷 rename 秒过，跨卷走线程池 copyFile——1GB 文件不再冻结主进程
         for (const file of uploaded) {
           const safeName = path.basename(file.originalFilename || file.newFilename).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
           let destination = path.join(this.uploadDir, safeName)
@@ -93,7 +94,11 @@ class WifiTransfer {
             const ext = path.extname(safeName)
             destination = path.join(this.uploadDir, `${path.basename(safeName, ext)}-${Date.now()}${ext}`)
           }
-          fs.copyFileSync(file.filepath, destination)
+          try {
+            fs.renameSync(file.filepath, destination)
+          } catch {
+            await fs.promises.copyFile(file.filepath, destination)
+          }
         }
         fs.rmSync(tempDir, { recursive: true, force: true })
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })

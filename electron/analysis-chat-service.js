@@ -134,7 +134,7 @@ async function runChatAnalysis({
       onStatus('正在抽取关键画面帧')
       let shots = []
       try {
-        shots = await frames.extract({ sourcePath: resolved, durationSec: duration, outDir: path.join(os.tmpdir(), `agentplay-frames-${Date.now()}`) })
+        shots = await frames.extract({ sourcePath: resolved, durationSec: duration, outDir: path.join(os.tmpdir(), `agentplay-frames-${Date.now()}`), signal })
       } catch (error) {
         onStatus(`关键帧抽取失败（${String(error?.message || '未知原因').slice(0, 60)}），本次仅基于字幕`)
         shots = []

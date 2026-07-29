@@ -78,8 +78,18 @@ class DlnaReceiver {
       res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8' })
       res.end(this.scpdXml())
     } else if (req.url.includes('/AVTransport/control') || req.url.includes('/RenderingControl/control')) {
+      // 请求体限长：LAN 内无界累积可内存 DoS（与 dlna-server 同规格 1MB）
       let body = ''
-      req.on('data', (c) => (body += c))
+      let tooBig = false
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 1024 * 1024 && !tooBig) {
+          tooBig = true
+          res.writeHead(413)
+          res.end()
+          req.destroy()
+        }
+      })
       req.on('end', () => {
         const urlMatch = body.match(/<CurrentURI>([^<]+)<\/CurrentURI>/)
         if (urlMatch && this.onPlay) {

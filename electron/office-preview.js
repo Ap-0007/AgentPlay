@@ -59,11 +59,18 @@ async function previewXlsx(filePath) {
     await workbook.xlsx.readFile(filePath)
     const sheet = workbook.worksheets[0]
     if (!sheet) return { success: false, error: '工作簿中没有可预览的工作表' }
+    // 预览限 1000 行：全量读 10 万行会撑爆主进程内存并冻结
+    const MAX_ROWS = 1000
     const rows = []
-    sheet.eachRow({ includeEmpty: true }, (row) => {
-      rows.push(row.values.slice(1).map(cellText))
+    sheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      if (rowNumber <= MAX_ROWS) rows.push(row.values.slice(1).map(cellText))
     })
-    return { success: true, html: buildSpreadsheetHtml(rows) }
+    const total = sheet.rowCount
+    const html = buildSpreadsheetHtml(rows)
+    const note = total > MAX_ROWS
+      ? `<p style="padding:8px;color:#888;font:12px system-ui">仅预览前 ${MAX_ROWS} 行（共 ${total} 行），完整内容请用系统 Office 打开</p>`
+      : ''
+    return { success: true, html: note + html }
   } catch (error) {
     return { success: false, error: String(error) }
   }

@@ -356,6 +356,27 @@ function assertAllowedPath(filePath, { denyExecutable = false } = {}) {
   throw new Error('只允许访问你明确授权过、媒体库或常用目录内的文件')
 }
 
+// 云端发送同意：原生对话框一次确认、本次开机内有效（渲染器自报布尔不算数）
+let cloudConsentGranted = false
+async function ensureCloudConsent(detail) {
+  if (cloudConsentGranted) return true
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: '云端发送确认',
+    message: '本次任务需要把内容发送给你配置的云端模型',
+    detail: `${detail}\n\n允许后本次开机内不再询问。内容只发往你配置的模型地址；不允许则改用本地处理或取消。`,
+    buttons: ['不允许', '允许'],
+    defaultId: 0,
+    cancelId: 0
+  })
+  if (result.response === 1) {
+    cloudConsentGranted = true
+    return true
+  }
+  return false
+}
+
 async function chooseFile() {
   const result = await dialog.showOpenDialog(mainWindow, openFileOptions)
   if (result.canceled) return null
@@ -1200,24 +1221,37 @@ app.whenReady().then(async () => {
       // 转写：有组件才做；写出同名字幕，后续解剖与播放器共用
       const whisperStatus = transcriptionService.availability()
       if (whisperStatus.available) {
-        sendStatus('正在离线转写语音（CPU，约为音频时长数倍）')
-        const transcription = await transcriptionService.transcribe({ sourcePath: videoPath, lang: 'auto', timestamps: true })
-        if (String(transcription.text || '').trim()) {
-          const srtPath = path.join(path.dirname(videoPath), `${path.parse(videoPath).name}.srt`)
-          if (!fs.existsSync(srtPath)) fs.writeFileSync(srtPath, transcription.text, 'utf8')
+        const dur = Number(info?.duration) || 0
+        if (dur > 45 * 60) {
+          // 长视频前置守护：离线转写超 2 小时才跑完的事不硬干（分段转写排期中）
+          sendStatus('视频超过 45 分钟，离线转写预计超过 2 小时，本次跳过（分段转写排期中）')
+        } else {
+          sendStatus('正在离线转写语音（CPU，约为音频时长数倍）')
+          const transcription = await transcriptionService.transcribe({
+            sourcePath: videoPath,
+            lang: 'auto',
+            timestamps: true,
+            signal: controller.signal,
+            timeoutMs: dur > 0 ? Math.max(15 * 60 * 1000, dur * 3000 + 5 * 60 * 1000) : undefined
+          })
+          if (String(transcription.text || '').trim()) {
+            const srtPath = path.join(path.dirname(videoPath), `${path.parse(videoPath).name}.srt`)
+            if (!fs.existsSync(srtPath)) fs.writeFileSync(srtPath, transcription.text, 'utf8')
+          }
         }
       }
       // 拉片解剖（自动读取同名字幕证据）
       sendStatus('正在生成拉片解剖报告')
       const config = modelConfigStore.resolved('chat')
       const requiresKey = config.requiresKey !== false
+      const approved = await ensureCloudConsent('视频关键画面截图与口播字幕将发送给云端模型用于拉片分析。')
       const analysis = await runChatAnalysis({
         sourcePath: videoPath,
         mediaName: info?.title || path.basename(videoPath),
         duration: info?.duration,
         instruction: input.instruction || '深度解剖这个视频',
         outputFormat: input.outputFormat || resolveAnalysisOutput(input.instruction),
-        cloudApproved: input.cloudApproved === true,
+        cloudApproved: approved,
         signal: controller.signal,
         onStatus: sendStatus,
         workspace: documentWorkspace,
@@ -1354,7 +1388,7 @@ app.whenReady().then(async () => {
         if (!config.baseUrl || !config.model || (requiresKey && !config.apiKey)) {
           throw new Error('这个任务需要模型理解内容，请先在“模型接入中心”配置模型')
         }
-        if (paths.length > 0 && !isLocalModelConfig(config) && input.cloudApproved !== true) {
+        if (paths.length > 0 && !isLocalModelConfig(config) && input.cloudApproved !== true && !(await ensureCloudConsent('所选文件的正文将用于理解并生成新文档。'))) {
           throw new Error('当前连接的是云端模型。请勾选“允许发送所选文件内容”，或改用本地模型')
         }
       }
@@ -1629,6 +1663,11 @@ app.whenReady().then(async () => {
     if (!cloudReady && !offlineReady) {
       return { success: false, error: '翻译需要云端模型或离线翻译组件，请先在模型接入中心配置或下载' }
     }
+    // 双语生成可取消：controller 用渲染端已知的 requestId 注册，whisper 阶段直接可中止
+    const cancelKey = String(input.requestId || 'bilingual')
+    activeAnalysisRequests.get(cancelKey)?.abort()
+    const controller = new AbortController()
+    activeAnalysisRequests.set(cancelKey, controller)
     const requestId = String(input.requestId || 'bilingual')
     const sendStatus = (status) => {
       if (!event.sender.isDestroyed()) event.sender.send('subtitle:bilingual-status', { requestId, status })
@@ -1654,7 +1693,7 @@ app.whenReady().then(async () => {
       const whisperStatus = transcriptionService.availability()
       if (!whisperStatus.available) return { success: false, error: `${whisperStatus.reason}，请先下载转写组件`, needDownload: true }
       sendStatus('正在离线识别语音（CPU，约为音频时长数倍）')
-      const transcription = await transcriptionService.transcribe({ sourcePath: mediaPath, lang: 'auto', timestamps: true })
+      const transcription = await transcriptionService.transcribe({ sourcePath: mediaPath, lang: 'auto', timestamps: true, signal: controller.signal })
       const entries = parseSrt(transcription.text)
       if (entries.length === 0) return { success: false, error: '没有识别到语音内容（可能是纯音乐或音量过低）' }
       const engine = pickTranslateEngine(entries)
@@ -1668,7 +1707,15 @@ app.whenReady().then(async () => {
       return { success: true, srtPath, count: entries.length, failed }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      activeAnalysisRequests.delete(cancelKey)
     }
+  })
+  ipcMain.handle('subtitle:bilingual-cancel', (event, requestId) => {
+    assertTrustedSender(event)
+    const controller = activeAnalysisRequests.get(String(requestId || ''))
+    controller?.abort()
+    return Boolean(controller)
   })
   // 实时双语字幕：从当前播放位置起逐批翻译，渲染进程叠显（原文上、译文下）；译完自动存双语 srt（不覆盖已有文件）
   ipcMain.handle('subtitle:live-start', async (event, input = {}) => {
@@ -1807,13 +1854,14 @@ app.whenReady().then(async () => {
     try {
       const config = modelConfigStore.resolved('chat')
       const requiresKey = config.requiresKey !== false
+      const approved = await ensureCloudConsent('视频关键画面截图与口播字幕将发送给云端模型用于深度解剖。')
       const result = await runChatAnalysis({
         sourcePath: input.sourcePath,
         mediaName: input.mediaName,
         duration: input.duration,
         instruction: input.instruction,
         outputFormat: input.outputFormat,
-        cloudApproved: input.cloudApproved === true,
+        cloudApproved: approved,
         signal: controller.signal,
         onStatus: sendStatus,
         workspace: documentWorkspace,
@@ -2221,6 +2269,15 @@ app.on('before-quit', () => {
   for (const controller of activeAiRequests.values()) controller.abort()
   for (const controller of activeComputerUseRequests.values()) controller.abort()
   for (const controller of activeDocumentRequests.values()) controller.abort()
+  // 统一收尸：分析/下载/实时字幕/镜像/转写，退出不留孤儿进程
+  for (const controller of activeAnalysisRequests.values()) controller.abort()
+  for (const controller of activeMediaDownloads.values()) controller.abort()
+  try { liveSubtitleSession?.stop?.() } catch { /* 忽略 */ }
+  try { mirrorReceiver?.stop() } catch { /* 忽略 */ }
+  if (mirrorCaptureTimer) clearInterval(mirrorCaptureTimer)
+  try { mirrorSender?.close() } catch { /* 忽略 */ }
+  try { mirrorWindow && !mirrorWindow.isDestroyed() && mirrorWindow.destroy() } catch { /* 忽略 */ }
+  try { transcriptionService.stopAll() } catch { /* 忽略 */ }
   if (mpv) mpv.stop()
   if (mpvContainer && !mpvContainer.isDestroyed()) mpvContainer.destroy()
   if (wifiTransfer) wifiTransfer.stop()

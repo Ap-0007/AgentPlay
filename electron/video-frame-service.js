@@ -67,7 +67,7 @@ class VideoFrameService {
     return { available: Boolean(this.ffmpegPath && fs.existsSync(this.ffmpegPath)) }
   }
 
-  run(args, { timeoutMs = 120000 } = {}) {
+  run(args, { timeoutMs = 120000, signal } = {}) {
     return new Promise((resolve, reject) => {
       const child = this.spawnImpl(this.ffmpegPath, args, { windowsHide: true, shell: false })
       let stderr = ''
@@ -79,7 +79,19 @@ class VideoFrameService {
         if (finish.done) return
         finish.done = true
         clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
         fn(value)
+      }
+      const onAbort = () => {
+        try { child.kill() } catch { /* 已退出 */ }
+        finish(reject, new Error('已取消'))
+      }
+      if (signal) {
+        if (signal.aborted) {
+          onAbort()
+          return
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
       }
       child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8') })
       child.once('error', (error) => finish(reject, error))
@@ -107,7 +119,7 @@ class VideoFrameService {
   }
 
   // 抽取关键帧：scene-change 优先，产出不足或去重塌缩都退均匀采样；返回 [{ path, tSec, label }]
-  async extract({ sourcePath, durationSec = 0, outDir, budget } = {}) {
+  async extract({ sourcePath, durationSec = 0, outDir, budget, signal } = {}) {
     if (!this.availability().available) return []
     if (!sourcePath || !fs.existsSync(sourcePath)) return []
     const duration = Number(durationSec) > 0 ? Number(durationSec) : await this.probeDuration(sourcePath)
@@ -116,7 +128,7 @@ class VideoFrameService {
     const readFiles = () => (fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((name) => name.endsWith('.jpg')).sort() : [])
     const loadThumbs = async (vf, count) => {
       const rawPath = path.join(outDir, 'thumbs.raw')
-      await this.run(['-hide_banner', '-nostdin', '-i', sourcePath, '-vf', vf, '-frames:v', String(count), '-f', 'rawvideo', rawPath])
+      await this.run(['-hide_banner', '-nostdin', '-i', sourcePath, '-vf', vf, '-frames:v', String(count), '-f', 'rawvideo', rawPath], { signal })
       const raw = fs.readFileSync(rawPath)
       const size = THUMB * THUMB
       const thumbs = []
@@ -137,7 +149,7 @@ class VideoFrameService {
         '-vf', `select='gt(scene,${SCENE_THRESHOLD})',showinfo,scale=${FRAME_WIDTH}:-2,format=yuvj420p`,
         '-fps_mode', 'vfr', '-frames:v', String(cap * 3), '-q:v', '4',
         path.join(outDir, 'f%04d.jpg')
-      ])
+      ], { signal })
       stderr = result.stderr
     } catch { /* 场景抽帧硬失败也交给均匀采样兜底 */ }
     let times = [...stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number.parseFloat(m[1]))
@@ -159,7 +171,7 @@ class VideoFrameService {
         '-hide_banner', '-nostdin', '-i', sourcePath,
         '-vf', `fps=${fps.toFixed(4)},scale=${FRAME_WIDTH}:-2,format=yuvj420p`, '-frames:v', String(cap), '-q:v', '4',
         path.join(outDir, 'f%04d.jpg')
-      ])
+      ], { signal })
       files = readFiles()
       times = files.map((_, i) => i / fps)
       thumbs = []

@@ -729,7 +729,11 @@ class AgentEngine {
     const toolResults = []
 
     for (let i = 0; i < 5; i++) {
+      // 外层取消信号贯穿工具循环：面板"停止"不再只停个壳
+      if (options.signal?.aborted) return { text: '[已取消]', toolResults }
       const controller = new AbortController()
+      const onOuterAbort = () => controller.abort()
+      options.signal?.addEventListener('abort', onOuterAbort, { once: true })
       const timer = setTimeout(() => controller.abort(), 30000)
       let resp
       try {
@@ -749,9 +753,11 @@ class AgentEngine {
           signal: controller.signal
         })
       } catch (e) {
+        if (options.signal?.aborted) return { text: '[已取消]', toolResults }
         return { text: `[网络错误] ${e instanceof Error ? e.message : String(e)}`, toolResults }
       } finally {
         clearTimeout(timer)
+        options.signal?.removeEventListener('abort', onOuterAbort)
       }
 
       if (!resp.ok) {

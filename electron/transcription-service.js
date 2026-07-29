@@ -15,6 +15,15 @@ class TranscriptionService {
     this.mpvPath = mpvPath
     this.spawnImpl = spawnImpl || spawn
     this.timeoutMs = timeoutMs || TIMEOUT_MS
+    this.activeChildren = new Set()
+  }
+
+  // 退出时统一收尸：before-quit 调用，避免 whisper-cli/抽音 mpv 变孤儿
+  stopAll() {
+    for (const child of this.activeChildren) {
+      try { child.kill() } catch { /* 已退出 */ }
+    }
+    this.activeChildren.clear()
   }
 
   availability() {
@@ -31,6 +40,7 @@ class TranscriptionService {
   exec(file, args, timeoutMs, options = {}) {
     return new Promise((resolve, reject) => {
       const child = this.spawnImpl(file, args, { windowsHide: true, ...options })
+      this.activeChildren.add(child)
       let stdout = ''
       let stderr = ''
       let settled = false
@@ -38,23 +48,38 @@ class TranscriptionService {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        this.activeChildren.delete(child)
         fn(value)
       }
       const timer = setTimeout(() => {
         try { child.kill() } catch { /* 已退出 */ }
         finish(reject, new Error('转写超时'))
       }, timeoutMs || this.timeoutMs)
+      // 取消链：外层 abort 时立即杀子进程
+      const signal = options.signal
+      const onAbort = () => {
+        try { child.kill() } catch { /* 已退出 */ }
+        finish(reject, new Error('已取消'))
+      }
+      if (signal) {
+        if (signal.aborted) {
+          onAbort()
+          return
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
       child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8') })
       child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8') })
       child.on('error', (error) => finish(reject, error))
       child.on('close', (code) => {
+        signal?.removeEventListener('abort', onAbort)
         if (code === 0) finish(resolve, stdout)
         else finish(reject, new Error(stderr.trim().split('\n').pop() || `转写进程退出 (${code})`))
       })
     })
   }
 
-  async transcribe({ sourcePath, lang = 'zh', timestamps = false, onProgress }) {
+  async transcribe({ sourcePath, lang = 'zh', timestamps = false, onProgress, signal, timeoutMs }) {
     const status = this.availability()
     if (!status.available) throw new Error(`${status.reason}，请先在模型接入中心下载转写组件`)
     const ext = path.extname(sourcePath).toLowerCase()
@@ -69,7 +94,7 @@ class TranscriptionService {
       if (EXTRACT_AUDIO_EXTS.includes(ext)) {
         onProgress?.('正在提取音轨')
         const wavPath = path.join(tempDir, 'audio.wav')
-        await this.exec(this.mpvPath, ['--no-video', '--ao=pcm', `--ao-pcm-file=${wavPath}`, sourcePath], 5 * 60 * 1000)
+        await this.exec(this.mpvPath, ['--no-video', '--ao=pcm', `--ao-pcm-file=${wavPath}`, sourcePath], 5 * 60 * 1000, { signal })
         input = wavPath
       } else if (/[^\x00-\x7F]/.test(input) || !path.isAbsolute(input)) {
         const staged = path.join(tempDir, `audio${ext}`)
@@ -79,7 +104,7 @@ class TranscriptionService {
       onProgress?.('正在离线转写（CPU 需要数倍于音频时长，可取消）')
       const args = ['-m', 'ggml-tiny.bin', '-l', lang, '-f', input, '-nt', '-np']
       if (timestamps) args.push('-osrt')
-      const output = await this.exec(path.join(this.whisperRoot, 'engine', 'whisper-cli.exe'), args, this.timeoutMs, { cwd: this.whisperRoot })
+      const output = await this.exec(path.join(this.whisperRoot, 'engine', 'whisper-cli.exe'), args, timeoutMs || this.timeoutMs, { cwd: this.whisperRoot, signal })
       let text = output.trim()
       if (timestamps) {
         const srtPath = `${input}.srt`
