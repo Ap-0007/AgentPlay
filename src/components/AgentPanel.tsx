@@ -629,15 +629,7 @@ export default function AgentPanel() {
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <span className="text-sm text-gray-300">AI Agent</span>
           <div className="flex items-center gap-2">
-            <button
-              onClick={toggleListening}
-              title="语音输入"
-              className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
-                listening ? 'bg-red-500 animate-pulse text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-100'
-              }`}
-            >
-              🎙️
-            </button>
+
           </div>
         </div>
 
@@ -813,7 +805,7 @@ export default function AgentPanel() {
         </div>
         {/* 输入框（贴底） */}
         <div className="px-4 py-3 border-t border-white/10 flex gap-2">
-          <button onClick={openAny} title="打开文件（视频、音频、图片或文档）" className="w-9 h-9 shrink-0 rounded-lg bg-white/10 hover:bg-white/15 flex items-center justify-center text-base">📎</button>
+          <button onClick={openAny} title="打开文件/文件夹（视频、音频、图片或文档）" className="w-9 h-9 shrink-0 rounded-lg bg-white/10 hover:bg-white/15 flex items-center justify-center text-base">📂</button>
           <input
             ref={inputRef}
             type="text"
@@ -823,6 +815,15 @@ export default function AgentPanel() {
             placeholder={attachments.length ? '说对这些附件要做什么…' : '打字或点麦克风说话…'}
             className="flex-1 bg-black/40 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 ring-player-accent"
           />
+          <button
+            onClick={toggleListening}
+            title={listening ? '停止语音输入' : '语音输入'}
+            className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center text-base transition-colors ${
+              listening ? 'bg-red-500 animate-pulse text-white' : 'bg-white/10 hover:bg-white/15'
+            }`}
+          >
+            🎙️
+          </button>
           <button onClick={docBusy ? cancelDocTask : thinking ? cancel : handleSend} className={`px-4 py-2 rounded-lg text-sm ${docBusy || thinking ? 'bg-red-600' : 'bg-player-accent'}`}>
             {docBusy || thinking ? '停止' : '发送'}
           </button>
