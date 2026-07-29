@@ -196,3 +196,50 @@ test('moving pages reorders the deck while parts stay intact', async () => {
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test('pptx keeps master, layouts, theme, animations and notes after edits', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-complex-'))
+  try {
+    const pptx = new PptxGenJS()
+    pptx.defineSlideMaster({ title: 'M', background: { color: '1F2A44' } })
+    const s1 = pptx.addSlide('M')
+    s1.addText('封面旧标题', { x: 1, y: 1.5, w: 8, h: 1, fontSize: 32, color: 'FFFFFF' })
+    const s2 = pptx.addSlide('M')
+    s2.addText('带动画的第二页', { x: 1, y: 1.5, w: 8, h: 1, fontSize: 24, color: 'FFFFFF' })
+    const fixture = path.join(dir, 'deck.pptx')
+    await pptx.writeFile({ fileName: fixture })
+
+    // 手工注入动画块与备注页（pptxgenjs 不产这些部件）
+    const TIMING = '<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"/></p:par></p:tnLst></p:timing>'
+    let zip = await JSZip.loadAsync(fs.readFileSync(fixture))
+    let slide2 = await zip.file('ppt/slides/slide2.xml').async('string')
+    zip.file('ppt/slides/slide2.xml', slide2.replace('</p:sld>', TIMING + '</p:sld>'))
+    zip.file('ppt/notesSlides/notesSlide1.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld></notes>')
+    fs.writeFileSync(fixture, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }))
+
+    const out = path.join(dir, 'deck-out.pptx')
+    await editPptx(fixture, out, [
+      { type: 'replace', from: '旧标题', to: '新标题' },
+      { type: 'replace', from: '带动画的第二页', to: '动画还在' },
+      { type: 'add', title: '新增页', bullets: ['沿用母版'], afterPage: 2 }
+    ])
+    const a = await JSZip.loadAsync(fs.readFileSync(fixture))
+    const b = await JSZip.loadAsync(fs.readFileSync(out))
+    const same = async (name) => {
+      const fa = a.file(name)
+      const fb = b.file(name)
+      if (!fa && !fb) return true
+      return fa && fb && Buffer.compare(await fa.async('nodebuffer'), await fb.async('nodebuffer')) === 0
+    }
+    for (const name of Object.keys(a.files).filter((n) => /slideMaster\d+\.xml$|slideLayout\d+\.xml$|theme\d+\.xml$/.test(n))) {
+      assert.ok(await same(name), `母版/版式/主题必须原样: ${name}`)
+    }
+    const s2out = await b.file('ppt/slides/slide2.xml').async('string')
+    assert.ok(s2out.includes('<p:timing>') && s2out.includes('动画还在'), '动画块与替换必须共存')
+    assert.ok(b.file('ppt/notesSlides/notesSlide1.xml'), '备注页必须保留')
+    const s3rels = await b.file('ppt/slides/_rels/slide3.xml.rels').async('string')
+    assert.ok(s3rels.includes('slideLayout'), '新页必须挂现有版式')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

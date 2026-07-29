@@ -287,3 +287,53 @@ test('remove paragraphs by index and by text, leaving everything else intact', a
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test('complex docx keeps headers, footers, styles, media and tables byte-identical after edits', async () => {
+  const { Document, Packer, Paragraph, TextRun, Header, Footer, Table, TableRow, TableCell, WidthType, ImageRun, HeadingLevel } = require('docx')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-complex-'))
+  try {
+    const png1px = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+    const doc = new Document({
+      sections: [{
+        headers: { default: new Header({ children: [new Paragraph({ children: [new TextRun('机密页眉')] })] }) },
+        footers: { default: new Footer({ children: [new Paragraph({ children: [new TextRun('页脚')] })] }) },
+        children: [
+          new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun('年度报告')] }),
+          new Paragraph({ children: [new TextRun('目标一千万元整。')] }),
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [new TableRow({ children: [new TableCell({ children: [new Paragraph('毛利率')] }), new TableCell({ children: [new Paragraph('42%')] })] })]
+          }),
+          new Paragraph({ children: [new ImageRun({ data: png1px, transformation: { width: 20, height: 20 }, type: 'png' })] })
+        ]
+      }]
+    })
+    const fixture = path.join(dir, 'complex.docx')
+    fs.writeFileSync(fixture, await Packer.toBuffer(doc))
+    const out = path.join(dir, 'complex-out.docx')
+    await editDocx(fixture, out, [
+      { type: 'replace', from: '一千万元整', to: '壹仟贰佰万元整' },
+      { type: 'insert', anchor: '年度报告', position: 'after', lines: ['插入段'] },
+      { type: 'comment', anchor: '壹仟贰佰万元整', text: '已复核' }
+    ])
+    const a = await JSZip.loadAsync(fs.readFileSync(fixture))
+    const b = await JSZip.loadAsync(fs.readFileSync(out))
+    const same = async (name) => {
+      const fa = a.file(name)
+      const fb = b.file(name)
+      if (!fa && !fb) return true
+      return fa && fb && Buffer.compare(await fa.async('nodebuffer'), await fb.async('nodebuffer')) === 0
+    }
+    const header = Object.keys(a.files).find((n) => /header\d+\.xml$/.test(n))
+    const footer = Object.keys(a.files).find((n) => /footer\d+\.xml$/.test(n))
+    const media = Object.keys(a.files).filter((n) => n.includes('media/'))
+    assert.ok(await same(header), '页眉必须原样')
+    assert.ok(await same(footer), '页脚必须原样')
+    assert.ok(await same('word/styles.xml'), '样式表必须原样')
+    for (const m of media) assert.ok(await same(m), `图片必须原样: ${m}`)
+    const xml = await b.file('word/document.xml').async('string')
+    assert.ok(xml.includes('壹仟贰佰万元整') && xml.includes('<w:tbl>') && xml.includes('插入段'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
