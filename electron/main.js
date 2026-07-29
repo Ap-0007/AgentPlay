@@ -40,6 +40,7 @@ const {
   synthesizeCloudVoice,
   synthesizeSystemVoice
 } = require('./creative-studio-service')
+const { generateVideoAsset } = require('./creative-studio-service')
 const { DocumentWorkspaceService, SUPPORTED_EXTENSIONS, pdfPageCount } = require('./document-workspace-service')
 const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
 const AUDIO_MEDIA_EXTS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma']
@@ -1986,6 +1987,13 @@ app.whenReady().then(async () => {
     return generateImageAsset(modelConfigStore.resolved('chat'), {
       ...input,
       outputDir: path.join(app.getPath('userData'), 'creative-assets', 'images')
+    })
+  })
+  ipcMain.handle('studio:generate-video', async (event, input = {}) => {
+    assertTrustedSender(event)
+    return generateVideoAsset(modelConfigStore.resolved('chat'), {
+      ...input,
+      outputDir: path.join(app.getPath('userData'), 'creative-assets', 'videos')
     })
   })
   ipcMain.handle('studio:generate-voice', async (event, input = {}) => {

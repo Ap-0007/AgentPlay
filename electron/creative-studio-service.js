@@ -250,6 +250,93 @@ async function generateImageAsset(config, input = {}) {
   }
 }
 
+// Agnes 视频生成：POST /v1/videos 创建任务 → video_id 轮询（只认 video_id，喂 task_id 必 404）→ 白名单下载。
+// 帧数必须 8n+1；视频请求与轮询共用 5 RPM，轮询间隔 ≥13s；服务端单任务串行。
+function framesFor(seconds, fps = 24) {
+  const target = Math.max(9, Math.ceil(seconds * fps))
+  const remainder = (target - 1) % 8
+  return remainder === 0 ? target : target + (8 - remainder)
+}
+
+async function generateVideoAsset(config, input = {}) {
+  const isAgnes = config.providerId === 'agnes' || /agnes-ai\.com/.test(config.baseUrl || '')
+  if (!isAgnes) throw new Error('视频生成当前支持 Agnes（agnes-video-v2.0）；静态镜头可走图像生成或导入素材')
+  if (config.requiresKey && !config.apiKey) throw new Error('请先保存视频生成接口的 API Key')
+  const prompt = safeText(input.prompt, 4000)
+  if (!prompt) throw new Error('新镜头缺少视频提示词')
+  const fps = Math.max(1, Math.min(60, Number(input.fps) || 24))
+  const seconds = Math.max(1, Math.min(8, Number(input.duration) || 4))
+  const numFrames = framesFor(seconds, fps)
+  const baseUrl = config.baseUrl || 'https://apihub.agnes-ai.com/v1'
+  const root = baseUrl.replace(/\/v1\/?$/, '')
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error('视频生成超时（20 分钟）')), 20 * 60 * 1000)
+  try {
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` }
+    // Agnes 视频参数名是 width/height/num_frames/frame_rate（写成 size/fps 会 401"无效的令牌"）
+    const [width, height] = String(input.size || '1280x720').toLowerCase().split('x').map((v) => Number(v) || 0)
+    const body = { model: safeText(input.model, 200) || 'agnes-video-v2.0', prompt, width: width || 1280, height: height || 720, num_frames: numFrames, frame_rate: fps }
+    if (input.imageBase64) {
+      // 图生视频：必须纯 base64（带 data-URI 前缀会报 Incorrect padding）
+      body.image = String(input.imageBase64).replace(/^data:image\/[a-z]+;base64,/i, '')
+    }
+    let created = null
+    let createdText = ''
+    // 服务端单任务串行：队列满/Service busy/网络抖动都按忙时退避重试（safeFetch 对网络错误直接抛出）
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        created = await safeFetch({ ...config, baseUrl }, `${baseUrl}/videos`, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+        if (created.ok) break
+        createdText = await created.text()
+      } catch (error) {
+        createdText = error instanceof Error ? error.message : String(error)
+      }
+      const busy = !created || created.status === 503 || /Service busy|queue full|queue_full|fetch failed|ECONNRESET|ETIMEDOUT|timeout/i.test(createdText)
+      if (!busy || controller.signal.aborted) break
+      await new Promise((resolve) => setTimeout(resolve, 45000))
+    }
+    if (!created || !created.ok) {
+      if (/rate limit/i.test(createdText)) throw new Error('Agnes 视频今日额度已打满（UTC 计日，北京 08:00 重置）；明天再试或减镜头数')
+      throw new Error(`视频生成请求返回 ${created ? created.status : '网络错误'}: ${createdText.slice(0, 500)}`)
+    }
+    const createdBody = await created.json()
+    const videoId = String(createdBody.video_id || '')
+    // 铁律：创建响应必须存在 video_id，否则立即失败并保留原响应（拿 task_id 轮询必 404）
+    if (!videoId) throw new Error(`视频任务创建响应缺少 video_id：${JSON.stringify(createdBody).slice(0, 400)}`)
+    const started = Date.now()
+    let completed = null
+    while (Date.now() - started < 19 * 60 * 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 13000))
+      // 轮询期网络抖动照常继续（长任务跑到十几分钟，断一次就全盘输太亏）
+      const poll = await safeFetch({ ...config, baseUrl: root }, `${root}/agnesapi?video_id=${encodeURIComponent(videoId)}`, { headers, signal: controller.signal }).catch(() => null)
+      if (!poll || !poll.ok) continue
+      const status = await poll.json()
+      const state = String(status.status || status.state || status.internal_status || '').toLowerCase()
+      if (state === 'completed' || state === 'succeeded' || state === 'success' || status.video_url || status.url) {
+        completed = status
+        break
+      }
+      if (state === 'failed' || state === 'error') throw new Error(`视频生成失败：${JSON.stringify(status).slice(0, 300)}`)
+    }
+    if (!completed) throw new Error('视频生成超时（19 分钟未完成）')
+    const videoUrl = String(completed.video_url || completed.url || '')
+    const host = /^https:\/\/([^/]+)/.exec(videoUrl)?.[1] || ''
+    const ALLOWED_VIDEO_HOSTS = ['platform-outputs.agnes-ai.space']
+    if (!ALLOWED_VIDEO_HOSTS.includes(host)) throw new Error(`视频完成但未返回可信下载地址：${JSON.stringify(completed).slice(0, 300)}`)
+    // 下载地址是预签名公开 URL：带 Authorization 头反而 401（实测），裸拉
+    const videoResp = await safeFetch({ ...config, baseUrl: `https://${host}` }, videoUrl, { signal: controller.signal })
+    if (!videoResp.ok) throw new Error(`视频下载失败 ${videoResp.status}`)
+    const bytes = Buffer.from(await videoResp.arrayBuffer())
+    if (!bytes.length || bytes.length > 200 * 1024 * 1024) throw new Error('视频结果为空或超过 200MB')
+    const outputDir = validateOutputDirectory(input.outputDir)
+    const outputPath = path.join(outputDir, `${safeText(input.id, 80).replace(/[^\w-]+/g, '_') || Date.now()}.mp4`)
+    fs.writeFileSync(outputPath, bytes, { flag: 'wx' })
+    return { success: true, outputPath, bytes: bytes.length, videoId, numFrames }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 async function synthesizeCloudVoice(config, input = {}) {
   if (config.protocol !== 'openai') throw new Error('当前云配音先支持 OpenAI 兼容的 /audio/speech 接口；也可使用本机系统配音')
   const text = safeText(input.text, 20000)
@@ -394,9 +481,12 @@ async function renderCreativeVideo({ mpvPath, ffmpegPath, input, outputPath, onS
       if (ffmpegOk) {
         // 镜头预渲染用 ffmpeg：mpv 对单张图片产出无时长文件（EDL 组合必炸）
         const filter = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p'
+        const isVideoAsset = /\.(mp4|mov|webm|mkv)$/i.test(source)
         const ffArgs = shot.kind === 'source'
           ? ['-hide_banner', '-loglevel', 'error', '-ss', String(shot.start), '-i', source, '-t', String(shot.duration), '-vf', filter, '-c:v', 'libx264', '-an', '-y', clipPath]
-          : ['-hide_banner', '-loglevel', 'error', '-loop', '1', '-framerate', '30', '-i', source, '-t', String(shot.duration), '-vf', filter, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', '-y', clipPath]
+          : isVideoAsset
+            ? ['-hide_banner', '-loglevel', 'error', '-i', source, '-t', String(shot.duration), '-vf', filter, '-c:v', 'libx264', '-an', '-y', clipPath]
+            : ['-hide_banner', '-loglevel', 'error', '-loop', '1', '-framerate', '30', '-i', source, '-t', String(shot.duration), '-vf', filter, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', '-y', clipPath]
         await runProcess(ffmpegPath, ffArgs, { onSpawn: spawnHook })
       } else {
         const args = [source, '--no-config', '--no-audio', '--no-sub', '--of=mp4', `--ovc=${videoCodec}`, '--vf=lavfi=[scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p]', `--o=${clipPath}`]
@@ -442,7 +532,9 @@ module.exports = {
   buildSubtitleAss,
   collectVisualEvidence,
   extractJson,
+  framesFor,
   generateImageAsset,
+  generateVideoAsset,
   normalizeCreativePlan,
   renderCreativeVideo,
   requestCreativePlan,
