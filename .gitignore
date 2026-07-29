@@ -19,3 +19,6 @@ resources/**/*.zip
 *.pem
 *.key
 *.keystore
+
+# 一次性补丁/排障脚本（跑完即删，不入库）
+scripts/_*
