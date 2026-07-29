@@ -121,6 +121,13 @@ export default function AgentPanel() {
   }, [])
 
   useEffect(() => {
+    // 冷启动竞态修复：Explorer 动词带来的附件先落在 store，面板一挂载就消费
+    const pending = useAgentStore.getState().pendingDocs
+    if (pending?.length) {
+      setAttachments((current) => [...current, ...pending])
+      useAgentStore.getState().setPendingDocs(null)
+      void window.aiPlayer?.documents?.capabilities().then((caps) => { if (caps) setDocCaps((current) => current || caps) })
+    }
     const handler = (event: Event) => {
       const docs = (event as CustomEvent<Array<{ token: string; name: string; ext: string; size: number }>>).detail
       if (!Array.isArray(docs) || docs.length === 0) return

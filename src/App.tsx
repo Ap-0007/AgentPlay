@@ -113,8 +113,12 @@ function AppInner() {
       setComputerUseOpen(false)
       setModelCenterOpen(false)
       setAnalysisStudioOpen(false)
-      useAgentStore.getState().openPanel()
-      window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: seedFiles }))
+      if (useAgentStore.getState().open) {
+        window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: seedFiles }))
+      } else {
+        useAgentStore.getState().setPendingDocs(seedFiles)
+        useAgentStore.getState().openPanel()
+      }
     })
     const offAction = menu.onAction((action) => {
       if (action === 'agent') useAgentStore.getState().openPanel()

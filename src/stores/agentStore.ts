@@ -25,9 +25,11 @@ interface AgentState {
   messages: AgentMessage[]
   thinking: boolean
   activeRequestId: string | null
+  pendingDocs: Array<{ token: string; name: string; ext: string; size: number }> | null
   task: AgentTask
   setTask: (patch: Partial<AgentTask>) => void
   resetTask: () => void
+  setPendingDocs: (docs: AgentState['pendingDocs']) => void
   openPanel: () => void
   closePanel: () => void
   toggleListening: () => void
@@ -46,8 +48,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   thinking: false,
   activeRequestId: null,
   task: EMPTY_TASK,
+  pendingDocs: null,
   setTask: (patch) => set((s) => ({ task: { ...s.task, ...patch } })),
   resetTask: () => set({ task: EMPTY_TASK }),
+  setPendingDocs: (docs) => set({ pendingDocs: docs }),
   openPanel: () => set({ open: true }),
   closePanel: () => set({ open: false }),
   toggleListening: () => set((s) => ({ listening: !s.listening })),

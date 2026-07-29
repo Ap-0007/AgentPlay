@@ -137,3 +137,16 @@ test('cast status bar renders without requiring the wifi/more section', () => {
   assert.match(library, /\{castStatus && \(/)
   assert.doesNotMatch(library, /\{showMore && castStatus && \(/)
 })
+
+test('explorer document verb survives cold start via store-held pending docs', () => {
+  // 竞态复盘：openPanel() 与附件事件同步发出时面板尚未挂载，事件丢失——
+  // 必须先把附件落 store，面板挂载时消费；面板已开则走事件直达
+  const app = source('src/App.tsx')
+  assert.match(app, /useAgentStore\.getState\(\)\.setPendingDocs\(seedFiles\)/)
+  assert.match(app, /useAgentStore\.getState\(\)\.open\)/)
+  const store = source('src/stores/agentStore.ts')
+  assert.match(store, /pendingDocs: Array<\{ token: string; name: string; ext: string; size: number \}> \| null/)
+  const panel = source('src/components/AgentPanel.tsx')
+  assert.match(panel, /useAgentStore\.getState\(\)\.pendingDocs/)
+  assert.match(panel, /setPendingDocs\(null\)/)
+})
