@@ -45,15 +45,16 @@ export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenMode
     }
   }
 
+  // 统一行高与图标规格：主入口只用渐变区分层级，不做体积差异
   const actionButton = (icon: string, label: string, onClick: () => void, primary = false) => (
     <button
       key={label}
       onClick={onClick}
-      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${
-        primary ? 'bg-player-accent text-white theme-glow hover:opacity-90' : 'text-gray-300 hover:bg-white/5 hover:text-white'
+      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${
+        primary ? 'bg-player-accent text-white hover:opacity-90' : 'text-gray-400 hover:bg-white/5 hover:text-gray-100'
       }`}
     >
-      <span className="text-base">{icon}</span>
+      <span className="w-5 text-center text-sm leading-none">{icon}</span>
       <span className="truncate">{label}</span>
     </button>
   )
@@ -61,11 +62,11 @@ export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenMode
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="px-3 pb-2 pt-4">
-        <p className="px-1 pb-2 text-xs font-semibold tracking-wide text-gray-500">AgentPlay</p>
+        <p className="px-1 pb-2 text-[11px] font-medium tracking-widest text-gray-600">AGENTPLAY</p>
         <div className="space-y-1">
           {actionButton('📂', '打开', () => void handleOpen(), true)}
           {actionButton('🎬', '拉片', openAnalysisChat)}
-          {actionButton('📺', '投屏 / 设备', () => {
+          {actionButton('📺', '投屏', () => {
             onOpenLibrary()
             window.setTimeout(() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'devices' })), 50)
           })}

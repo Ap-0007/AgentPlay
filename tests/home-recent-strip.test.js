@@ -22,7 +22,7 @@ test('home:open combines file and directory selection in one dialog', () => {
 })
 
 test('sidebar exposes open, analysis, cast, model center and computer use entries', () => {
-  for (const label of ['📂', '打开', '🎬', '拉片', '📺', '投屏 / 设备', '🧩', '模型接入中心', '🖥', '电脑观察']) {
+  for (const label of ['📂', '打开', '🎬', '拉片', '📺', '投屏', '🧩', '模型接入中心', '🖥', '电脑观察']) {
     assert.ok(sidebar.includes(label), `左栏缺：${label}`)
   }
   assert.match(sidebar, /window\.aiPlayer\?\.home\?\.open\(\)/)

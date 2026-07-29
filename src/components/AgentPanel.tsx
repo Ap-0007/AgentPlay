@@ -34,6 +34,7 @@ export default function AgentPanel() {
   const focusNonce = useAgentStore((s) => s.focusNonce)
   const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => { inputRef.current?.focus() }, [focusNonce])
+  const [showHistory, setShowHistory] = useState(false)
   const [attachments, setAttachments] = useState<Array<{ token: string; name: string; ext: string; size: number }>>([])
   const [docCaps, setDocCaps] = useState<{ modelConfigured: boolean; modelLocal: boolean; providerName: string; model: string } | null>(null)
   const task = useAgentStore((s) => s.task)
@@ -630,8 +631,9 @@ export default function AgentPanel() {
           <div className="flex items-center gap-2">
             <button
               onClick={toggleListening}
-              className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                listening ? 'bg-red-500 animate-pulse' : 'bg-player-accent'
+              title="语音输入"
+              className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                listening ? 'bg-red-500 animate-pulse text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-100'
               }`}
             >
               🎙️
@@ -639,13 +641,13 @@ export default function AgentPanel() {
           </div>
         </div>
 
-        <div className="px-4 py-2 border-b border-white/10 flex items-center justify-between gap-3">
+        <div className="px-4 py-1.5 border-b border-white/5 flex items-center justify-between gap-3 text-[11px]">
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex shrink-0 overflow-hidden rounded border border-white/15 text-[11px]">
               <button onClick={() => void switchModelMode('cloud')} disabled={modeSwitching} title="使用已配置的云端模型" className={`px-2 py-0.5 ${modelMode === 'cloud' ? 'bg-player-accent text-white' : 'text-gray-400 hover:text-white'}`}>云端</button>
               <button onClick={() => void switchModelMode('bundled')} disabled={modeSwitching} title="使用本机内置离线模型" className={`px-2 py-0.5 ${modelMode === 'bundled' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'}`}>本地</button>
             </div>
-            <span className="text-xs text-gray-500 truncate">{modelLabel}</span>
+            <span className="text-[11px] text-gray-600 truncate">{modelLabel}</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button onClick={() => void runGuide()} title="截取当前屏幕，让 AI 在屏幕上画出操作指引" className="rounded px-1.5 py-0.5 text-xs text-cyan-300 hover:bg-white/5 hover:text-cyan-100">🎯 指路</button>
@@ -721,36 +723,41 @@ export default function AgentPanel() {
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           {messages.length === 0 && attachments.length === 0 && (
-            <div className="mt-6">
-              <p className="text-gray-500 text-sm text-center">说点什么——整理文档、拉片、问答，或直接把文件拖进来</p>
-              <div className="mt-4 grid grid-cols-2 gap-2">
+            <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+              <p className="text-lg font-medium text-gray-200">我能帮你做什么？</p>
+              <p className="mt-1.5 text-xs text-gray-500">整理文档 · 拉片 · 问答 · 也可以直接把文件拖进来</p>
+              <div className="mt-6 grid w-full max-w-md grid-cols-2 gap-2">
                 {EXAMPLE_TASKS.map((task) => (
                   <button
                     key={task.label}
                     onClick={() => { setInputText(task.text); setOutputFormat(task.format) }}
-                    className="rounded-lg border border-white/10 px-3 py-2 text-left text-xs text-gray-300 outline-none hover:border-player-accent hover:bg-white/5 focus:border-player-accent"
+                    className="rounded-xl border border-white/10 px-3 py-3 text-left text-xs text-gray-300 outline-none transition-colors hover:border-player-accent hover:bg-white/5 focus:border-player-accent"
                   >
                     {task.label}
                   </button>
                 ))}
               </div>
               {history.length > 0 && (
-                <div className="mt-5">
-                  <p className="text-[11px] text-gray-600 mb-1">最近任务</p>
-                  <div className="space-y-1">
-                    {history.filter((record, index, arr) => arr.findIndex((item) => item.instruction === record.instruction) === index).slice(0, 3).map((record) => (
-                      <div key={record.id} className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
-                        <p className="truncate text-xs text-gray-400">{record.instruction}</p>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {record.outputs.map((output) => (
-                            <button key={output} onClick={() => void window.aiPlayer?.system?.openPath(output)} className="max-w-full truncate rounded bg-black/30 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-black/50" title={output}>
-                              {output.split(/[\\/]/).pop()}
-                            </button>
-                          ))}
+                <div className="mt-6 w-full max-w-md">
+                  <button onClick={() => setShowHistory((value) => !value)} className="text-[11px] text-gray-600 outline-none transition-colors hover:text-gray-300">
+                    {showHistory ? '▾ 收起最近任务' : `▸ 最近任务（${history.length}）`}
+                  </button>
+                  {showHistory && (
+                    <div className="mt-2 space-y-1 text-left">
+                      {history.filter((record, index, arr) => arr.findIndex((item) => item.instruction === record.instruction) === index).slice(0, 3).map((record) => (
+                        <div key={record.id} className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+                          <p className="truncate text-xs text-gray-400">{record.instruction}</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {record.outputs.map((output) => (
+                              <button key={output} onClick={() => void window.aiPlayer?.system?.openPath(output)} className="max-w-full truncate rounded bg-black/30 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-black/50" title={output}>
+                                {output.split(/[\\/]/).pop()}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
