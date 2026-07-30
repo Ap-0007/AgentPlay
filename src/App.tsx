@@ -72,7 +72,7 @@ function AppInner() {
         void window.aiPlayer?.windowControls?.setPreset(action.slice(7) as 'original' | 'half' | 'fill' | 'fullscreen')
         return
       }
-      if (action === 'online-subtitle' || action === 'bilingual-subtitle' || action === 'live-translate-subtitle') {
+      if (action === 'online-subtitle' || action === 'bilingual-subtitle' || action === 'live-translate-subtitle' || action === 'live-transcribe-subtitle') {
         if (state.videoSrc) {
           window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action }))
         }

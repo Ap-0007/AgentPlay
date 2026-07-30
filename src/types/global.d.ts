@@ -161,15 +161,22 @@ interface AiPlayerAPI {
       subtitlePath?: string
       cues?: Array<{ index: number; start: number; end: number; text: string }>
     }>
+    startTranscribe: (input: { mediaPath: string; currentTime: number; duration?: number; requestId?: string }) => Promise<{
+      success: boolean
+      error?: string
+      requestId?: string
+      durationSec?: number
+    }>
     seek: (input: { requestId: string; currentTime: number }) => Promise<boolean>
     stop: (requestId?: string) => Promise<boolean>
     onEvent: (cb: (event: {
       requestId: string
-      type: 'progress' | 'finish' | 'error'
+      type: 'progress' | 'finish' | 'error' | 'transcribe-cues'
       done?: number
       failed?: number
       total?: number
       batch?: Array<{ index: number; text: string }>
+      cues?: Array<{ index: number; start: number; end: number; text: string }>
       srtPath?: string | null
       cancelled?: boolean
       error?: string

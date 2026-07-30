@@ -34,6 +34,7 @@ const { BundledLocalRuntime } = require('./bundled-local-runtime')
 const { extractExternalMediaPaths, hasDocumentVerbFlag, extractDocumentVerbPaths } = require('./external-media-open')
 const { buildOfflineAnalysis, loadAnalysisContext, renderRecut, findAdjacentSubtitle, parseSubtitleCues } = require('./analysis-studio-service')
 const { detectAnalysisIntent, resolveAnalysisOutput, runChatAnalysis } = require('./analysis-chat-service')
+const { runLiveTranscribe, cuesToSrt } = require('./live-transcribe-service')
 const {
   generateImageAsset,
   renderCreativeVideo,
@@ -87,6 +88,7 @@ const activeDocumentRequests = new Map()
 const activeAnalysisRequests = new Map()
 const activeMediaDownloads = new Map()
 let liveSubtitleSession = null
+let liveTranscribeSession = null
 let llmComplete = null
 let llmCompleteVisionMulti = null
 const approvedDocumentSelections = new Map()
@@ -1058,6 +1060,7 @@ app.whenReady().then(async () => {
       item(state.subtitleVisible ? '关闭字幕' : '打开字幕', 'subtitle-toggle', { enabled: !!state.hasMedia }),
       item('生成双语字幕（离线识别+云端翻译）', 'bilingual-subtitle', { enabled: !!state.hasMedia }),
       item(state.liveTranslate ? '停止实时翻译字幕' : '实时翻译字幕（译文排在原文下方）', 'live-translate-subtitle', { enabled: !!state.hasMedia }),
+      item('实时识别字幕（无字幕视频边播边转写）', 'live-transcribe-subtitle', { enabled: !!state.hasMedia }),
       item('拉片与原创重构…', 'analysis-studio', { enabled: !!state.hasMedia }),
       { label: '播放速度', submenu: [0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => item(`${rate}×`, `speed-${rate}`, { type: 'radio', checked: state.playbackRate === rate })) },
       { label: '画面比例', submenu: [
@@ -1947,20 +1950,82 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('subtitle:live-seek', (event, input = {}) => {
     assertTrustedSender(event)
-    if (liveSubtitleSession && liveSubtitleSession.requestId === String(input.requestId || '')) {
-      liveSubtitleSession.position = Number(input.currentTime) || 0
-      return true
+    const target = String(input.requestId || '')
+    const position = Number(input.currentTime) || 0
+    let handled = false
+    if (liveSubtitleSession && liveSubtitleSession.requestId === target) {
+      liveSubtitleSession.position = position
+      handled = true
     }
-    return false
+    if (liveTranscribeSession && liveTranscribeSession.requestId === target) {
+      liveTranscribeSession.position = position
+      handled = true
+    }
+    return handled
   })
   ipcMain.handle('subtitle:live-stop', (event, requestId) => {
     assertTrustedSender(event)
-    if (liveSubtitleSession && (!requestId || liveSubtitleSession.requestId === String(requestId))) {
+    const target = String(requestId || '')
+    let handled = false
+    if (liveSubtitleSession && (!target || liveSubtitleSession.requestId === target)) {
       liveSubtitleSession.controller.abort()
       liveSubtitleSession = null
-      return true
+      handled = true
     }
-    return false
+    if (liveTranscribeSession && (!target || liveTranscribeSession.requestId === target)) {
+      liveTranscribeSession.controller.abort()
+      liveTranscribeSession = null
+      handled = true
+    }
+    return handled
+  })
+
+  // 实时识别字幕：无字幕视频边播边转写（分段抽音 → whisper 带时间戳 → 增量推送 cue）
+  ipcMain.handle('subtitle:live-transcribe-start', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const mediaPath = String(input.mediaPath || '')
+    if (/^(https?|blob):/i.test(mediaPath)) return { success: false, error: '实时识别只支持本地视频文件' }
+    if (!mediaPath || !fs.existsSync(mediaPath)) return { success: false, error: '视频文件不存在或已被移动' }
+    const whisperStatus = transcriptionService.availability()
+    if (!whisperStatus.available) return { success: false, error: `${whisperStatus.reason}，请先在模型接入中心下载转写组件` }
+    if (!videoFrames.available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
+    let durationSec = Number(input.duration) || 0
+    if (!(durationSec > 0)) {
+      try { durationSec = await videoFrames.probeDuration(mediaPath) } catch { /* 保留 0 */ }
+    }
+    if (!(durationSec > 0)) return { success: false, error: '无法读取视频时长' }
+    liveTranscribeSession?.controller.abort()
+    const requestId = normalizeRequestId(input.requestId, 'live-tr')
+    const controller = new AbortController()
+    liveTranscribeSession = { requestId, controller, position: Number(input.currentTime) || 0 }
+    const send = (payload) => {
+      if (!event.sender.isDestroyed()) event.sender.send('subtitle:live-event', { requestId, ...payload })
+    }
+    ;(async () => {
+      try {
+        const result = await runLiveTranscribe({
+          mediaPath, durationSec, startPosition: liveTranscribeSession.position,
+          ffmpegPath: videoFrames.ffmpegPath, transcription: transcriptionService,
+          getPosition: () => (liveTranscribeSession?.requestId === requestId ? liveTranscribeSession.position : 0),
+          signal: controller.signal,
+          onCues: (cues) => send({ type: 'transcribe-cues', cues })
+        })
+        let srtPath = null
+        if (result.cues.length) {
+          const candidate = path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay识别.srt`)
+          try {
+            if (!fs.existsSync(candidate)) fs.writeFileSync(candidate, cuesToSrt(result.cues), 'utf8')
+            srtPath = candidate
+          } catch (error) { log.error('实时识别字幕写盘失败', error) }
+        }
+        send({ type: 'finish', done: result.cues.length, failed: 0, total: result.cues.length, srtPath, cancelled: result.cancelled })
+      } catch (error) {
+        send({ type: 'error', error: error instanceof Error ? error.message : String(error) })
+      } finally {
+        if (liveTranscribeSession?.requestId === requestId) liveTranscribeSession = null
+      }
+    })()
+    return { success: true, requestId, durationSec }
   })
   ipcMain.handle('models:stop-bundled', async (event) => {
     assertTrustedSender(event)

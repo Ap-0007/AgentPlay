@@ -409,6 +409,8 @@ export default function PlayerView({ onBack }: Props) {
       void generateBilingual()
     } else if (action === 'live-translate-subtitle') {
       void toggleLiveTranslate()
+    } else if (action === 'live-transcribe-subtitle') {
+      void toggleLiveTranscribe()
     } else if (action.startsWith('window-')) {
       applyWindowPreset(action.slice(7) as 'original' | 'half' | 'fill' | 'fullscreen')
     }
@@ -480,7 +482,13 @@ export default function PlayerView({ onBack }: Props) {
   useEffect(() => {
     const off = window.aiPlayer?.subtitleLive?.onEvent((event) => {
       if (event.requestId !== liveRequestIdRef.current) return
-      if (event.type === 'progress' && event.batch) {
+      if (event.type === 'transcribe-cues' && event.cues) {
+        // 实时识别：识别一句到一句，直接追加进字幕轨
+        setLiveSub((current) => current
+          ? { ...current, cues: [...current.cues, ...(event.cues || []).map((cue) => ({ index: cue.index, start: cue.start, end: cue.end, text: cue.text }))] }
+          : current)
+        setSubtitleStatus('实时识别中（边播边转写）')
+      } else if (event.type === 'progress' && event.batch) {
         for (const item of event.batch) liveTranslationsRef.current.set(item.index, item.text)
         setSubtitleStatus(`实时翻译中 ${event.done}/${event.total}${event.failed ? `（${event.failed} 句未译）` : ''}`)
       } else if (event.type === 'finish') {
@@ -545,6 +553,44 @@ export default function PlayerView({ onBack }: Props) {
     setLiveSub({ requestId: result.requestId || requestId, cues: result.cues })
     setSubtitleStatus(`实时翻译已开启（译成${targetLang || '中文'}，${result.total} 句，从当前位置向前翻译）`)
     setSubtitlePanelOpen(false)
+  }
+
+  // 实时识别：无字幕视频边播边转写（whisper 离线组件）
+  const toggleLiveTranscribe = async () => {
+    const api = window.aiPlayer?.subtitleLive
+    if (!api?.startTranscribe) return
+    if (liveSub) {
+      await api.stop(liveSub.requestId)
+      liveRequestIdRef.current = ''
+      setLiveSub(null)
+      liveTranslationsRef.current = new Map()
+      setSubtitleStatus('实时识别已关闭')
+      return
+    }
+    if (!videoSrc || videoSrc.startsWith('blob:') || /^https?:/i.test(videoSrc)) {
+      setSubtitlePanelOpen(true)
+      setSubtitleStatus('实时识别只支持本地文件；请先打开本地视频。')
+      return
+    }
+    const requestId = `live-tr-${Date.now()}`
+    liveRequestIdRef.current = requestId
+    liveTranslationsRef.current = new Map()
+    setSubtitleStatus('正在启动实时识别（首次需加载转写组件）…')
+    const result = await api.startTranscribe({
+      mediaPath: videoSrc,
+      currentTime: usePlayerStore.getState().currentTime,
+      duration: usePlayerStore.getState().duration,
+      requestId
+    })
+    if (!result.success) {
+      liveRequestIdRef.current = ''
+      setSubtitlePanelOpen(true)
+      setSubtitleStatus(result.error || '实时识别启动失败')
+      return
+    }
+    setLiveSub({ requestId: result.requestId || requestId, cues: [] })
+    setSubtitlePanelOpen(false)
+    setSubtitleStatus('实时识别已开启（边播边转写，识别一句显示一句）')
   }
 
   useEffect(() => {
