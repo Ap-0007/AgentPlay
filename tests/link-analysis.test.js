@@ -50,6 +50,7 @@ test('link analysis pipeline wiring: detect mode, IPC and approval-resume path',
   assert.match(main, /正在生成拉片解剖报告/)
   assert.match(main, /analysis\.requiresApproval/)
   assert.match(panel, /runLinkAnalysisTask/)
+  assert.match(panel, /下载并拉片/)
   assert.match(panel, /链接拉片/)
   assert.match(panel, /linkAnalysisVideoRef/)
 })

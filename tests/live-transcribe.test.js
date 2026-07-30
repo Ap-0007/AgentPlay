@@ -18,6 +18,9 @@ test('live transcribe service: segmented ffmpeg extraction, whisper with timesta
   assert.match(service, /segmentSec = 8/)
   assert.match(main, /languageDetect\.detect\(mediaPath\)/)
   assert.match(main, /detected\?\.lang === 'zh'/)
+  // 探测失败时语言自举：按已识别文本字符分布判定（classifyScript 繁体也在 CJK 区间）
+  assert.match(service, /classifyScript\(cues\.map\(\(cue\) => cue\.text\)/)
+  assert.match(service, /effectiveLang = 'zh'/)
   assert.match(service, /playingAt > position \+ segmentSec/)
   assert.match(service, /cue\.start \+ position/)
   // 无语音段不中断整片

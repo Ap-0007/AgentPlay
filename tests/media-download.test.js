@@ -122,6 +122,11 @@ test('media download wires IPC, preload, types and agent panel route', () => {
   assert.match(preload, /mediaDownload: \{/)
   assert.match(types, /mediaDownload\?: \{/)
   assert.match(panel, /runDownloadTask/)
+  // 链接命中后给选择，不直接执行：仅下载 / 下载并拉片
+  assert.match(panel, /linkChoice/)
+  assert.match(panel, /仅下载/)
+  assert.match(panel, /canAnalyze/)
+  assert.match(panel, /setLinkChoice\(\{ url: detection\.url/)
   assert.match(panel, /mediaDownload\.detect\(text\)/)
   assert.match(panel, /视频下载/)
 })

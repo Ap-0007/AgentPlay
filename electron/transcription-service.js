@@ -9,6 +9,25 @@ const DIRECT_AUDIO_EXTS = ['.mp3', '.ogg', '.flac', '.wav']
 const EXTRACT_AUDIO_EXTS = ['.m4a', '.aac', '.wma', '.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.3gp', '.mpg', '.mpeg']
 const TIMEOUT_MS = 15 * 60 * 1000
 
+// whisper tiny 高频繁体字 → 简体（zh 输出仍有零星繁体，如「創意」「殘」；只映射严格繁体字，不误伤简体）
+const TRADITIONAL_TO_SIMPLIFIED = {
+  創: '创', 殘: '残', 闆: '板', 總: '总', 們: '们', 軟: '软', 後: '后', 這: '这', 業: '业', 時: '时',
+  間: '间', 麼: '么', 為: '为', 過: '过', 說: '说', 話: '话', 點: '点', 擊: '击', 視: '视', 頻: '频',
+  內: '内', 應: '应', 該: '该', 現: '现', 實: '实', 發: '发', 學: '学', 習: '习', 問: '问', 題: '题',
+  無: '无', 關: '关', 係: '系', 統: '统', 經: '经', 營: '营', 環: '环', 節: '节', 將: '将', 產: '产',
+  動: '动', 見: '见', 長: '长', 開: '开', 場: '场', 聲: '声', 聽: '听', 讓: '让', 認: '认', 識: '识',
+  選: '选', 擇: '择', 換: '换', 號: '号', 團: '团', 隊: '队', 設: '设', 計: '计', 劃: '划', 準: '准',
+  項: '项', 頭: '头', 體: '体', 樣: '样', 個: '个', 來: '来', 對: '对', 與: '与', 還: '还', 進: '进',
+  鏈: '链', 條: '条', 記: '记', 錄: '录', 標: '标', 質: '质', 數: '数', 據: '据', 圖: '图', 檔: '档',
+  鍵: '键', 碼: '码', 網: '网', 頁: '页', 語: '语', 譯: '译', 寫: '写', 讀: '读', 聯: '联', 戶: '户',
+  氣: '气', 錢: '钱', 夠: '够', 試: '试', 驗: '验', 證: '证', 確: '确', 訊: '讯', 樂: '乐', 獲: '获', 測: '测'
+}
+const TRADITIONAL_RE = new RegExp('[' + Object.keys(TRADITIONAL_TO_SIMPLIFIED).join('') + ']', 'g')
+
+function toSimplified(text) {
+  return String(text || '').replace(TRADITIONAL_RE, (char) => TRADITIONAL_TO_SIMPLIFIED[char] || char)
+}
+
 class TranscriptionService {
   constructor({ whisperRoot, mpvPath, spawnImpl, timeoutMs } = {}) {
     this.whisperRoot = whisperRoot ? path.resolve(whisperRoot) : whisperRoot
@@ -79,7 +98,7 @@ class TranscriptionService {
     })
   }
 
-  async transcribe({ sourcePath, lang = 'zh', timestamps = false, onProgress, signal, timeoutMs }) {
+  async transcribe({ sourcePath, lang = 'zh', timestamps = false, onProgress, signal, timeoutMs, noSpeechThold, logprobThold }) {
     const status = this.availability()
     if (!status.available) throw new Error(`${status.reason}，请先在模型接入中心下载转写组件`)
     const ext = path.extname(sourcePath).toLowerCase()
@@ -103,6 +122,9 @@ class TranscriptionService {
       }
       onProgress?.('正在离线转写（CPU 需要数倍于音频时长，可取消）')
       const args = ['-m', 'ggml-tiny.bin', '-l', lang, '-f', input, '-nt', '-np']
+      // 幻觉抑制（音乐/静默段防乱编）：仅在调用方显式给阈值时启用，默认行为不变
+      if (Number(noSpeechThold) > 0) args.push('--no-speech-thold', String(noSpeechThold))
+      if (Number.isFinite(logprobThold)) args.push('--logprob-thold', String(logprobThold))
       if (timestamps) args.push('-osrt')
       const output = await this.exec(path.join(this.whisperRoot, 'engine', 'whisper-cli.exe'), args, timeoutMs || this.timeoutMs, { cwd: this.whisperRoot, signal })
       let text = output.trim()
@@ -111,6 +133,7 @@ class TranscriptionService {
         if (fs.existsSync(srtPath)) text = fs.readFileSync(srtPath, 'utf8').trim()
       }
       if (!text) throw new Error('没有识别到语音内容（可能是纯音乐或音量过低）')
+      if (lang === 'zh') text = toSimplified(text)
       return { text, timestamps }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true })
@@ -118,4 +141,4 @@ class TranscriptionService {
   }
 }
 
-module.exports = { TranscriptionService, DIRECT_AUDIO_EXTS, EXTRACT_AUDIO_EXTS }
+module.exports = { TranscriptionService, DIRECT_AUDIO_EXTS, EXTRACT_AUDIO_EXTS, toSimplified }

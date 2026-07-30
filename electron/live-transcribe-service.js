@@ -3,6 +3,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { parseSubtitleCues } = require('./analysis-studio-service')
+const { classifyScript } = require('./language-detect-service')
 const { formatSrtTimestamp } = require('./subtitle-bilingual-service')
 
 // 单段转写：抽 segmentSec 秒音频给 whisper，失败/无语音返回空数组（不中断整片）
@@ -18,7 +19,7 @@ async function transcribeSegment({ ffmpegPath, mediaPath, position, segmentSec, 
     return [] // 无音轨/段损坏：跳过，不中断整片
   }
   if (!fs.existsSync(wavPath) || fs.statSync(wavPath).size < 4000) return []
-  const result = await transcription.transcribe({ sourcePath: wavPath, lang, timestamps: true, signal }).catch(() => null)
+  const result = await transcription.transcribe({ sourcePath: wavPath, lang, timestamps: true, signal, noSpeechThold: 0.72, logprobThold: -0.6 }).catch(() => null)
   if (!result?.text) return []
   const cues = parseSubtitleCues(result.text, '.srt')
   const segEnd = position + segmentSec
@@ -50,13 +51,14 @@ function execFile(file, args, timeoutMs, signal) {
 
 // 主循环：从当前播放位置向前分段转写；seek 跳走时追到新位置
 async function runLiveTranscribe({
-  mediaPath, durationSec, startPosition, segmentSec = 8, lang = 'auto',
+  mediaPath, durationSec, startPosition, segmentSec = 8, getLang = () => 'auto',
   ffmpegPath, transcription, getPosition, onCues, signal
 }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-live-tr-'))
   const allCues = []
   let nextIndex = 1
   let position = Math.max(0, startPosition)
+  let effectiveLang = getLang()
   try {
     while (position < durationSec) {
       if (signal?.aborted) break
@@ -64,8 +66,13 @@ async function runLiveTranscribe({
       const playingAt = getPosition()
       if (playingAt > position + segmentSec) position = playingAt
       const cues = await transcribeSegment({
-        ffmpegPath, mediaPath, position, segmentSec, lang, transcription, tempDir, signal
+        ffmpegPath, mediaPath, position, segmentSec, lang: effectiveLang, transcription, tempDir, signal
       })
+      // 语言自举：探测失败/误判时，按已识别文本的字符分布自行判定（中文后续段强制 zh 出简体）
+      if (effectiveLang === 'auto' && cues.length && classifyScript(cues.map((cue) => cue.text).join(' ')) === 'zh') {
+        effectiveLang = 'zh'
+      }
+      if (effectiveLang === 'auto') effectiveLang = getLang()
       for (const cue of cues) {
         allCues.push({ index: nextIndex, start: cue.start, end: cue.end, text: cue.text })
         nextIndex += 1

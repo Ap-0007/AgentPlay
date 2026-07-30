@@ -35,6 +35,7 @@ export default function AgentPanel() {
   const inputRef = useRef<HTMLInputElement>(null)
   useEffect(() => { inputRef.current?.focus() }, [focusNonce])
   const [showHistory, setShowHistory] = useState(false)
+  const [linkChoice, setLinkChoice] = useState<{ url: string; text: string; direct: boolean; canAnalyze: boolean } | null>(null)
   const [attachments, setAttachments] = useState<Array<{ token: string; name: string; ext: string; size: number }>>([])
   const [docCaps, setDocCaps] = useState<{ modelConfigured: boolean; modelLocal: boolean; providerName: string; model: string } | null>(null)
   const task = useAgentStore((s) => s.task)
@@ -390,8 +391,10 @@ export default function AgentPanel() {
       try {
         const detection = await window.aiPlayer.mediaDownload.detect(text)
         if (detection?.matched && detection.url) {
-          if (detection.mode === 'analyze') await runLinkAnalysisTask(detection.url, text)
-          else await runDownloadTask(detection.url, text, detection.direct !== false)
+          // 选择权交给用户：仅下载 / 下载并拉片
+          addMessage('user', text)
+          setInputText('')
+          setLinkChoice({ url: detection.url, text, direct: detection.direct !== false, canAnalyze: detection.mode === 'analyze' })
           return
         }
       } catch { /* 意图检测失败时按普通对话处理 */ }
@@ -714,6 +717,22 @@ export default function AgentPanel() {
               <option value="md">Markdown</option>
               <option value="txt">纯文本</option>
             </select>
+          </div>
+        )}
+        {linkChoice && (
+          <div className="px-4 py-2 border-b border-white/10 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-gray-500">链接已就绪：</span>
+            <button
+              onClick={() => { const choice = linkChoice; setLinkChoice(null); void runDownloadTaskRef.current(choice.url, choice.text, choice.direct) }}
+              className="rounded-full border border-player-accent/40 bg-player-accent/10 px-3 py-1 text-xs text-player-accent hover:bg-player-accent/20"
+            >⬇ 仅下载</button>
+            {linkChoice.canAnalyze && (
+              <button
+                onClick={() => { const choice = linkChoice; setLinkChoice(null); void runLinkAnalysisTaskRef.current(choice.url, choice.text) }}
+                className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20"
+              >🎬 下载并拉片</button>
+            )}
+            <button onClick={() => setLinkChoice(null)} className="px-2 py-1 text-xs text-gray-500 hover:text-white">忽略</button>
           </div>
         )}
         {suggestedActions.length > 0 && (
