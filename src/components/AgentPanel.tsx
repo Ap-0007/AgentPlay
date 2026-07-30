@@ -36,6 +36,7 @@ export default function AgentPanel() {
   useEffect(() => { inputRef.current?.focus() }, [focusNonce])
   const [showHistory, setShowHistory] = useState(false)
   const [linkChoice, setLinkChoice] = useState<{ url: string; text: string; direct: boolean; canAnalyze: boolean } | null>(null)
+  const [recutOffer, setRecutOffer] = useState<{ reportText: string; mediaName: string } | null>(null)
   const [attachments, setAttachments] = useState<Array<{ token: string; name: string; ext: string; size: number }>>([])
   const [docCaps, setDocCaps] = useState<{ modelConfigured: boolean; modelLocal: boolean; providerName: string; model: string } | null>(null)
   const task = useAgentStore((s) => s.task)
@@ -204,6 +205,32 @@ export default function AgentPanel() {
     window.setTimeout(() => void runDocTaskRef.current(), 0)
   }
 
+  // 生成重构短片：报告 → AI 镜头脚本 → 逐镜头生视频 → 拼接成片，完成自动播放
+  const runRecutShort = async () => {
+    const offer = recutOffer
+    if (!offer) return
+    setRecutOffer(null)
+    addMessage('user', '🎬 生成重构短片')
+    setTask({ kind: 'analysis', label: '生成重构短片', running: true, status: '正在准备镜头脚本…', outputs: [], error: '' })
+    const requestId = `recut-${Date.now()}`
+    const off = window.aiPlayer?.studio?.onRecutProgress?.((event) => {
+      if (event.requestId === requestId || !event.requestId) setDocStatus(event.stage)
+    })
+    try {
+      const result = await window.aiPlayer?.studio?.recutShort({ reportText: offer.reportText, mediaName: offer.mediaName, requestId })
+      if (!result?.success || !result.outputPath) throw new Error(result?.error || '重构短片生成失败')
+      setTask({ running: false, status: '', outputs: [result.outputPath], error: '' })
+      addMessage('agent', `重构短片已生成（${result.clips || 3} 个 AI 镜头拼接），正在为你播放：${result.outputPath}`)
+      window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ running: false, status: '', outputs: [], error: message })
+      addMessage('agent', `[错误] ${message}`)
+    } finally {
+      off?.()
+    }
+  }
+
   // 屏幕指路：截图发给视觉模型，在屏幕上画出操作标注，步骤同时回到对话里
   const runGuide = async () => {
     const question = inputText.trim()
@@ -326,6 +353,7 @@ export default function AgentPanel() {
       }
       if (!result.success) throw new Error(result.error || '视频解剖失败')
       addMessage('agent', result.summary || '解剖完成')
+      if (result.usedAi) setRecutOffer({ reportText: result.excerpt || result.summary || '', mediaName: mediaName || '当前视频' })
       setDocOutputs(result.outputs || [])
       setNeedsApproval(false)
       setCloudApproved(false)
@@ -516,6 +544,7 @@ export default function AgentPanel() {
       if (!result.success) throw new Error(result.error || '链接拉片失败')
       setDocOutputs(result.outputs || [])
       addMessage('agent', `${result.summary || '拉片完成'}${result.whispered ? '' : '（未装转写组件，报告仅基于基础结构）'}`)
+      if (result.usedAi) setRecutOffer({ reportText: result.excerpt || result.summary || '', mediaName: linkAnalysisVideoRef.current.split(/[\\/]/).pop() || '拉片视频' })
       if (result.videoPath) window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.videoPath }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -717,6 +746,16 @@ export default function AgentPanel() {
               <option value="md">Markdown</option>
               <option value="txt">纯文本</option>
             </select>
+          </div>
+        )}
+        {recutOffer && (
+          <div className="px-4 py-2 border-b border-white/10 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-gray-500">拉片完成，下一步：</span>
+            <button
+              onClick={() => void runRecutShort()}
+              className="rounded-full border border-violet-400/40 bg-violet-500/10 px-3 py-1 text-xs text-violet-300 hover:bg-violet-500/20"
+            >🎬 生成重构短片（3 个 AI 镜头拼接）</button>
+            <button onClick={() => setRecutOffer(null)} className="px-2 py-1 text-xs text-gray-500 hover:text-white">✕</button>
           </div>
         )}
         {linkChoice && (

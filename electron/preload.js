@@ -164,6 +164,12 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     creativePlan: (input) => ipcRenderer.invoke('studio:creative-plan', input),
     generateImage: (input) => ipcRenderer.invoke('studio:generate-image', input),
     generateVideo: (input) => ipcRenderer.invoke('studio:generate-video', input),
+    recutShort: (input) => ipcRenderer.invoke('studio:recut-short', input),
+    onRecutProgress: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('studio:recut-progress', handler)
+      return () => ipcRenderer.removeListener('studio:recut-progress', handler)
+    },
     generateVoice: (input) => ipcRenderer.invoke('studio:generate-voice', input),
     selectAsset: (kind) => ipcRenderer.invoke('studio:select-asset', kind),
     renderCreative: (input) => ipcRenderer.invoke('studio:render-creative', input),

@@ -196,7 +196,7 @@ async function runChatAnalysis({
   }
   const written = await workspace.writeGenerated(plan, aiPlan)
   const historyId = workspace.recordHistory(plan, written)
-  return { success: true, outputs: written.outputs, summary, historyId, usedAi: Boolean(aiText), cueCount: context.cues.length, frameCount, visionNote }
+  return { success: true, outputs: written.outputs, summary, historyId, usedAi: Boolean(aiText), cueCount: context.cues.length, frameCount, visionNote, excerpt: String(aiText || '').slice(0, 2000) }
 }
 
 module.exports = {

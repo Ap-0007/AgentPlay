@@ -90,6 +90,7 @@ interface AiPlayerAPI {
       summary?: string
       historyId?: string
       usedAi?: boolean
+      excerpt?: string
       cueCount?: number
       error?: string
     }>
@@ -140,7 +141,7 @@ interface AiPlayerAPI {
   mediaDownload?: {
     detect: (text: string) => Promise<{ matched: boolean; url: string; direct?: boolean; mode?: 'analyze' | 'download' | null }>
     download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; finalUrl?: string }>
-    linkAnalysis: (input: { url?: string; videoPath?: string; instruction?: string; outputFormat?: string; cloudApproved?: boolean; requestId: string }) => Promise<{ success: boolean; error?: string; requiresApproval?: boolean; requestId?: string; videoPath?: string; info?: { title: string; duration: number; uploader: string }; outputs?: string[]; summary?: string; usedAi?: boolean; cueCount?: number; whispered?: boolean }>
+    linkAnalysis: (input: { url?: string; videoPath?: string; instruction?: string; outputFormat?: string; cloudApproved?: boolean; requestId: string }) => Promise<{ success: boolean; error?: string; requiresApproval?: boolean; requestId?: string; videoPath?: string; info?: { title: string; duration: number; uploader: string }; outputs?: string[]; summary?: string; usedAi?: boolean; excerpt?: string; cueCount?: number; whispered?: boolean }>
     cancel: (requestId: string) => Promise<boolean>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
   }
@@ -282,6 +283,8 @@ interface AiPlayerAPI {
     }>
     generateImage: (input: { id: string; prompt: string; model?: string; size?: string }) => Promise<{ success: boolean; outputPath: string; bytes: number }>
     generateVideo: (input: { id?: string; prompt: string; model?: string; duration?: number; fps?: number; size?: string; imageBase64?: string }) => Promise<{ success: boolean; outputPath?: string; bytes?: number; videoId?: string; numFrames?: number; error?: string }>
+    recutShort: (input: { reportText?: string; mediaName: string; count?: number; seconds?: number; requestId?: string }) => Promise<{ success: boolean; outputPath?: string; shots?: string[]; clips?: number; error?: string }>
+    onRecutProgress: (cb: (event: { requestId?: string; stage: string }) => void) => () => void
     generateVoice: (input: { text: string; engine: 'system' | 'cloud'; model?: string; voice?: string; rate?: number }) => Promise<{ success: boolean; outputPath: string; bytes: number; engine: string }>
     selectAsset: (kind: 'image' | 'audio') => Promise<string | null>
     renderCreative: (input: Record<string, unknown>) => Promise<{ success: boolean; cancelled?: boolean; outputPath?: string; bytes?: number; shots?: number; duration?: number }>

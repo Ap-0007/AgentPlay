@@ -24,7 +24,7 @@ const log = require('./logger')
 const { analyzeDir, clusterByTag, findDuplicates, suggestClip } = require('./media-service')
 const { DlnaServer } = require('./dlna-server')
 const { listPlugins } = require('./plugin-service')
-const { PROVIDERS, listModels, probeConnection, detectVolcenginePlan, VOLCENGINE_CODING_BASE_URL, VOLCENGINE_CODING_MODELS } = require('./model-providers')
+const { PROVIDERS, listModels, probeConnection, detectVolcenginePlan, VOLCENGINE_CODING_BASE_URL, VOLCENGINE_CODING_MODELS, normalizeConfig } = require('./model-providers')
 const { discoverLocalServices } = require('./local-model-discovery')
 const { ModelConfigStore } = require('./model-config-store')
 const { ComputerUseProvider } = require('./adapters/computer-use-provider')
@@ -202,6 +202,16 @@ app.on('open-file', (event, filePath) => {
 })
 
 queueExternalMediaArgs(process.argv)
+
+// 创作类功能（生图/生视频/重构短片）天然需要云端大模型：当前 chat 切了本地小模型时，
+// 自动使用一键切换时 stash 的云端配置（含加密 Key），用户无感；无 stash 才回落当前配置。
+function creativeConfig() {
+  const config = modelConfigStore.resolved('chat')
+  if (config.providerId !== 'bundled-lite') return config
+  const stashed = modelConfigStore.readDocument().stash?.chat
+  if (!stashed) return config
+  return normalizeConfig({ ...stashed, role: 'chat', apiKey: modelConfigStore.decrypt(stashed.encryptedApiKey) }, 'chat')
+}
 
 function assertTrustedSender(event) {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) {
@@ -2245,17 +2255,60 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('studio:generate-image', async (event, input = {}) => {
     assertTrustedSender(event)
-    return generateImageAsset(modelConfigStore.resolved('chat'), {
+    return generateImageAsset(creativeConfig(), {
       ...input,
       outputDir: path.join(app.getPath('userData'), 'creative-assets', 'images')
     })
   })
   ipcMain.handle('studio:generate-video', async (event, input = {}) => {
     assertTrustedSender(event)
-    return generateVideoAsset(modelConfigStore.resolved('chat'), {
+    return generateVideoAsset(creativeConfig(), {
       ...input,
       outputDir: path.join(app.getPath('userData'), 'creative-assets', 'videos')
     })
+  })
+  // 拉片重构短片：报告 → AI 镜头脚本 → 逐镜头生视频 → ffmpeg 拼接成片（视频→报告→新成片闭环）
+  ipcMain.handle('studio:recut-short', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const reportText = String(input.reportText || '').slice(0, 3000)
+    const mediaName = String(input.mediaName || '视频').slice(0, 80)
+    const count = Math.max(2, Math.min(4, Number(input.count) || 3))
+    const seconds = Math.max(2, Math.min(8, Number(input.seconds) || 4))
+    const send = (stage) => {
+      if (!event.sender.isDestroyed()) event.sender.send('studio:recut-progress', { requestId: input.requestId, stage })
+    }
+    try {
+      send('正在把报告浓缩成镜头脚本')
+      const shotPlan = await llmComplete({
+        systemPrompt: '你是短视频导演，只返回 JSON。',
+        prompt: `根据这份视频拉片报告，为《${mediaName}》设计 ${count} 个重构镜头，每个镜头一句中文画面提示词（适合 AI 生视频：具象场景、动作、光线；不要人物正脸特写，不要画面文字）。返回 {"shots":["提示词1","提示词2","提示词3"]}，正好 ${count} 条。\n\n报告：\n${reportText || `主题：${mediaName}`}`,
+        timeoutMs: 90000
+      })
+      const planJson = JSON.parse(/\{[\s\S]*\}/.exec(shotPlan.text || '')?.[0] || '{}')
+      const shots = (Array.isArray(planJson.shots) ? planJson.shots : []).map((shot) => String(shot || '').trim()).filter(Boolean).slice(0, count)
+      if (!shots.length) throw new Error('镜头脚本生成失败，请重试')
+      const clipPaths = []
+      for (let index = 0; index < shots.length; index += 1) {
+        send(`正在生成镜头 ${index + 1}/${shots.length}（每个约 1-2 分钟）`)
+        const clip = await generateVideoAsset(creativeConfig(), {
+          prompt: shots[index], duration: seconds, id: `recut-${Date.now()}-${index + 1}`,
+          outputDir: path.join(app.getPath('userData'), 'creative-assets', 'videos')
+        })
+        clipPaths.push(clip.outputPath)
+      }
+      send('正在拼接成片')
+      if (!videoFrames.availability().available) throw new Error('缺少 ffmpeg 组件（随 yt-dlp 组件包提供）')
+      const listFile = path.join(app.getPath('temp'), `recut-list-${Date.now()}.txt`)
+      fs.writeFileSync(listFile, clipPaths.map((clipPath) => `file '${clipPath.replace(/\\/g, '/')}'`).join('\n'), 'utf8')
+      const safeName = mediaName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.[^.]+$/, '')
+      const outputPath = path.join(app.getPath('documents'), 'AgentPlay 输出', `${safeName}-AgentPlay重构短片-${Date.now()}.mp4`)
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+      await videoFrames.run(['-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', outputPath], { timeoutMs: 300000 })
+      fs.rmSync(listFile, { force: true })
+      return { success: true, outputPath, shots, clips: clipPaths.length }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle('studio:generate-voice', async (event, input = {}) => {
     assertTrustedSender(event)
