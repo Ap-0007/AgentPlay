@@ -2011,7 +2011,13 @@ app.whenReady().then(async () => {
     liveTranscribeSession?.controller.abort()
     const requestId = normalizeRequestId(input.requestId, 'live-tr')
     const controller = new AbortController()
-    liveTranscribeSession = { requestId, controller, position: Number(input.currentTime) || 0 }
+    liveTranscribeSession = {
+      requestId, controller,
+      position: Number(input.currentTime) || 0,
+      cues: [],
+      liveSrtPath: path.join(app.getPath('temp'), `agentplay-live-tr-${requestId}.srt`),
+      liveSrtAttached: false
+    }
     const send = (payload) => {
       if (!event.sender.isDestroyed()) event.sender.send('subtitle:live-event', { requestId, ...payload })
     }
@@ -2022,7 +2028,22 @@ app.whenReady().then(async () => {
           ffmpegPath: videoFrames.ffmpegPath, transcription: transcriptionService,
           getPosition: () => (liveTranscribeSession?.requestId === requestId ? liveTranscribeSession.position : 0),
           signal: controller.signal,
-          onCues: (cues) => send({ type: 'transcribe-cues', cues })
+          onCues: (cues) => {
+            send({ type: 'transcribe-cues', cues })
+            // mpv 即时可见：渲染层只在非 mpv 时直接叠显；mpv 走累积 srt + sub-add/sub-reload
+            const session = liveTranscribeSession
+            if (!session || session.requestId !== requestId || !mpvReady || !mpv) return
+            try {
+              session.cues.push(...cues)
+              fs.writeFileSync(session.liveSrtPath, cuesToSrt(session.cues), 'utf8')
+              if (!session.liveSrtAttached) {
+                session.liveSrtAttached = true
+                void mpv.loadSubtitle(session.liveSrtPath)
+              } else {
+                void mpv.send({ command: ['sub-reload'] })
+              }
+            } catch (error) { log.error('实时识别字幕即时加载失败', error) }
+          }
         })
         let srtPath = null
         if (result.cues.length) {
@@ -2036,7 +2057,10 @@ app.whenReady().then(async () => {
       } catch (error) {
         send({ type: 'error', error: error instanceof Error ? error.message : String(error) })
       } finally {
-        if (liveTranscribeSession?.requestId === requestId) liveTranscribeSession = null
+        if (liveTranscribeSession?.requestId === requestId) {
+          try { fs.rmSync(liveTranscribeSession.liveSrtPath, { force: true }) } catch { /* 忽略 */ }
+          liveTranscribeSession = null
+        }
       }
     })()
     return { success: true, requestId, durationSec }

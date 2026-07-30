@@ -34,6 +34,14 @@ test('live transcribe IPC: availability gates, session, srt written without over
   assert.match(preload, /startTranscribe: \(input\) => ipcRenderer\.invoke\('subtitle:live-transcribe-start', input\)/)
 })
 
+test('mpv live bridge: accumulating srt attached then reloaded for instant visibility', () => {
+  // mpv 播放时渲染层不叠显实时字幕，必须走累积 srt + sub-add/sub-reload，否则用户全程看不到
+  assert.match(main, /liveSrtPath: path\.join\(app\.getPath\('temp'\)/)
+  assert.match(main, /mpv\.loadSubtitle\(session\.liveSrtPath\)/)
+  assert.match(main, /mpv\.send\(\{ command: \['sub-reload'\] \}\)/)
+  assert.match(main, /rmSync\(liveTranscribeSession\.liveSrtPath/)
+})
+
 test('player view: transcribe-cues append to live subtitle track, action routed', () => {
   assert.match(playerView, /event\.type === 'transcribe-cues'/)
   assert.match(playerView, /toggleLiveTranscribe/)
