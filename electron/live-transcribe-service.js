@@ -6,7 +6,7 @@ const { parseSubtitleCues } = require('./analysis-studio-service')
 const { formatSrtTimestamp } = require('./subtitle-bilingual-service')
 
 // 单段转写：抽 segmentSec 秒音频给 whisper，失败/无语音返回空数组（不中断整片）
-async function transcribeSegment({ ffmpegPath, ffprobeDuration, mediaPath, position, segmentSec, transcription, tempDir, signal }) {
+async function transcribeSegment({ ffmpegPath, mediaPath, position, segmentSec, lang = 'auto', transcription, tempDir, signal }) {
   const wavPath = path.join(tempDir, `seg-${Math.round(position * 10)}.wav`)
   const args = [
     '-ss', String(position), '-t', String(segmentSec), '-i', mediaPath,
@@ -18,10 +18,10 @@ async function transcribeSegment({ ffmpegPath, ffprobeDuration, mediaPath, posit
     return [] // 无音轨/段损坏：跳过，不中断整片
   }
   if (!fs.existsSync(wavPath) || fs.statSync(wavPath).size < 4000) return []
-  const result = await transcription.transcribe({ sourcePath: wavPath, lang: 'auto', timestamps: true, signal }).catch(() => null)
+  const result = await transcription.transcribe({ sourcePath: wavPath, lang, timestamps: true, signal }).catch(() => null)
   if (!result?.text) return []
   const cues = parseSubtitleCues(result.text, '.srt')
-  const segEnd = position + segmentSec + 1
+  const segEnd = position + segmentSec
   return cues.map((cue) => ({
     index: 0, // 由调用方统一编号
     start: Math.min(cue.start + position, segEnd - 1),
@@ -50,7 +50,7 @@ function execFile(file, args, timeoutMs, signal) {
 
 // 主循环：从当前播放位置向前分段转写；seek 跳走时追到新位置
 async function runLiveTranscribe({
-  mediaPath, durationSec, startPosition, segmentSec = 15,
+  mediaPath, durationSec, startPosition, segmentSec = 8, lang = 'auto',
   ffmpegPath, transcription, getPosition, onCues, signal
 }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-live-tr-'))
@@ -64,7 +64,7 @@ async function runLiveTranscribe({
       const playingAt = getPosition()
       if (playingAt > position + segmentSec) position = playingAt
       const cues = await transcribeSegment({
-        ffmpegPath, mediaPath, position, segmentSec, transcription, tempDir, signal
+        ffmpegPath, mediaPath, position, segmentSec, lang, transcription, tempDir, signal
       })
       for (const cue of cues) {
         allCues.push({ index: nextIndex, start: cue.start, end: cue.end, text: cue.text })

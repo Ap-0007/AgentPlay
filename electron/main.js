@@ -2023,8 +2023,14 @@ app.whenReady().then(async () => {
     }
     ;(async () => {
       try {
+        // 探测语言：中文强制 -l zh 出简体（auto 会出繁体），其它保持 auto
+        let whisperLang = 'auto'
+        try {
+          const detected = await languageDetect.detect(mediaPath)
+          if (detected?.lang === 'zh') whisperLang = 'zh'
+        } catch { /* 探测失败保持 auto */ }
         const result = await runLiveTranscribe({
-          mediaPath, durationSec, startPosition: liveTranscribeSession.position,
+          mediaPath, durationSec, startPosition: liveTranscribeSession.position, lang: whisperLang,
           ffmpegPath: videoFrames.ffmpegPath, transcription: transcriptionService,
           getPosition: () => (liveTranscribeSession?.requestId === requestId ? liveTranscribeSession.position : 0),
           signal: controller.signal,

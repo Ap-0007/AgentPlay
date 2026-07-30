@@ -13,7 +13,11 @@ const { cuesToSrt } = require('../electron/live-transcribe-service.js')
 test('live transcribe service: segmented ffmpeg extraction, whisper with timestamps, seek catch-up', () => {
   assert.match(service, /'-ss', String\(position\), '-t', String\(segmentSec\)/)
   assert.match(service, /'-ac', '1', '-ar', '16000'/)
-  assert.match(service, /lang: 'auto', timestamps: true/)
+  assert.match(service, /lang, timestamps: true/)
+  // 短段 8 秒：字幕更短、首批更快；语言由检测决定（中文强制 zh 出简体）
+  assert.match(service, /segmentSec = 8/)
+  assert.match(main, /languageDetect\.detect\(mediaPath\)/)
+  assert.match(main, /detected\?\.lang === 'zh'/)
   assert.match(service, /playingAt > position \+ segmentSec/)
   assert.match(service, /cue\.start \+ position/)
   // 无语音段不中断整片
