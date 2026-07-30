@@ -48,10 +48,12 @@ class TranscriptionService {
   availability() {
     const engineOk = fs.existsSync(path.join(this.whisperRoot, 'engine', 'whisper-cli.exe'))
     const modelOk = fs.existsSync(path.join(this.whisperRoot, 'ggml-tiny.bin'))
+    const smallAvailable = fs.existsSync(path.join(this.whisperRoot, 'ggml-small.bin'))
     return {
       available: engineOk && modelOk,
       engineOk,
       modelOk,
+      smallAvailable,
       reason: !engineOk ? '转写引擎未安装（whisper 组件包）' : !modelOk ? '转写模型未安装（ggml-tiny）' : ''
     }
   }
@@ -98,7 +100,7 @@ class TranscriptionService {
     })
   }
 
-  async transcribe({ sourcePath, lang = 'zh', timestamps = false, onProgress, signal, timeoutMs, noSpeechThold, logprobThold }) {
+  async transcribe({ sourcePath, lang = 'zh', timestamps = false, onProgress, signal, timeoutMs, noSpeechThold, logprobThold, model }) {
     const status = this.availability()
     if (!status.available) throw new Error(`${status.reason}，请先在模型接入中心下载转写组件`)
     const ext = path.extname(sourcePath).toLowerCase()
@@ -121,7 +123,9 @@ class TranscriptionService {
         input = staged
       }
       onProgress?.('正在离线转写（CPU 需要数倍于音频时长，可取消）')
-      const args = ['-m', 'ggml-tiny.bin', '-l', lang, '-f', input, '-nt', '-np']
+      // 模型可选（默认 tiny；精修用 ggml-small.bin），白名单文件名防路径穿越
+      const modelFile = /^ggml-[\w.-]+\.bin$/.test(String(model || '')) ? String(model) : 'ggml-tiny.bin'
+      const args = ['-m', modelFile, '-l', lang, '-f', input, '-nt', '-np']
       // 幻觉抑制（音乐/静默段防乱编）：仅在调用方显式给阈值时启用，默认行为不变
       if (Number(noSpeechThold) > 0) args.push('--no-speech-thold', String(noSpeechThold))
       if (Number.isFinite(logprobThold)) args.push('--logprob-thold', String(logprobThold))

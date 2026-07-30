@@ -488,9 +488,16 @@ const transcriptionService = new TranscriptionService({
     : path.join(__dirname, '..', 'resources', 'bin', 'win', 'mpv.com')
 })
 const WHISPER_PACK = require('./whisper-pack-manifest')
+const WHISPER_SMALL_PACK = require('./whisper-small-pack-manifest')
 const whisperDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'whisper-pack'),
   manifest: WHISPER_PACK,
+  logger: log
+})
+// 精修模型（ggml-small）：与 whisper-pack 同目录安装，引擎共用
+const whisperSmallDownload = new LocalAiDownloadService({
+  installRoot: path.join(app.getPath('userData'), 'whisper-pack'),
+  manifest: WHISPER_SMALL_PACK,
   logger: log
 })
 const TRANSLATE_PACK = require('./translate-pack-manifest')
@@ -1743,7 +1750,9 @@ app.whenReady().then(async () => {
     return {
       ...availability,
       download: whisperDownload.status(),
-      pack: whisperDownload.packInfo()
+      pack: whisperDownload.packInfo(),
+      smallDownload: whisperSmallDownload.status(),
+      smallPack: whisperSmallDownload.packInfo()
     }
   })
   // 对话窗麦克风：接收录音二进制 → 暂存 → 本地 whisper 离线转写 → 文本返回（不出机）
@@ -1782,6 +1791,23 @@ app.whenReady().then(async () => {
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
+  })
+  ipcMain.handle('transcribe:download-small', async (event) => {
+    assertTrustedSender(event)
+    try {
+      await whisperSmallDownload.start({
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('transcribe:progress', progress)
+        }
+      })
+      return { success: true, status: transcriptionService.availability() }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('transcribe:cancel-download-small', (event) => {
+    assertTrustedSender(event)
+    return whisperSmallDownload.cancel()
   })
   ipcMain.handle('transcribe:cancel-download', (event) => {
     assertTrustedSender(event)
@@ -2062,6 +2088,25 @@ app.whenReady().then(async () => {
           } catch (error) { log.error('实时识别字幕写盘失败', error) }
         }
         send({ type: 'finish', done: result.cues.length, failed: 0, total: result.cues.length, srtPath, cancelled: result.cancelled })
+        // 双轨：tiny 初稿完成后，small 精修模型在位且任务完整 → 后台 small 整片精修并落盘替换
+        if (!result.cancelled && result.cues.length && srtPath && transcriptionService.availability().smallAvailable) {
+          ;(async () => {
+            try {
+              send({ type: 'refining' })
+              const refined = await transcriptionService.transcribe({
+                sourcePath: mediaPath, lang: whisperLang, timestamps: true,
+                model: 'ggml-small.bin', timeoutMs: 3 * 60 * 60 * 1000
+              })
+              const refinedCues = parseSubtitleCues(refined.text, '.srt')
+                .map((cue, index) => ({ index: index + 1, start: cue.start, end: cue.end, text: cue.text }))
+              if (!refinedCues.length) throw new Error('精修没有识别到内容')
+              fs.writeFileSync(srtPath, cuesToSrt(refinedCues), 'utf8')
+              send({ type: 'refined', srtPath, cueCount: refinedCues.length })
+            } catch (refineError) {
+              send({ type: 'refine-failed', error: refineError instanceof Error ? refineError.message : String(refineError) })
+            }
+          })()
+        }
       } catch (error) {
         send({ type: 'error', error: error instanceof Error ? error.message : String(error) })
       } finally {

@@ -113,6 +113,8 @@ interface AiPlayerAPI {
   transcribe?: {
     status: () => Promise<{ available: boolean; engineOk: boolean; modelOk: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
     download: () => Promise<{ success: boolean; error?: string; availability?: unknown }>
+    downloadSmall: () => Promise<{ success: boolean; error?: string; availability?: unknown }>
+    cancelDownloadSmall: () => Promise<boolean>
     cancelDownload: () => Promise<boolean>
     blob: (input: { data: Uint8Array; ext?: string }) => Promise<{ success: boolean; text?: string; error?: string }>
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
@@ -172,11 +174,12 @@ interface AiPlayerAPI {
     stop: (requestId?: string) => Promise<boolean>
     onEvent: (cb: (event: {
       requestId: string
-      type: 'progress' | 'finish' | 'error' | 'transcribe-cues'
+      type: 'progress' | 'finish' | 'error' | 'transcribe-cues' | 'refining' | 'refined' | 'refine-failed'
       done?: number
       failed?: number
       total?: number
       batch?: Array<{ index: number; text: string }>
+      cueCount?: number
       cues?: Array<{ index: number; start: number; end: number; text: string }>
       srtPath?: string | null
       cancelled?: boolean

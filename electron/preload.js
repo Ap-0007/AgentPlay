@@ -222,6 +222,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   transcribe: {
     status: () => ipcRenderer.invoke('transcribe:status'),
     download: () => ipcRenderer.invoke('transcribe:download'),
+    downloadSmall: () => ipcRenderer.invoke('transcribe:download-small'),
+    cancelDownloadSmall: () => ipcRenderer.invoke('transcribe:cancel-download-small'),
     blob: (input) => ipcRenderer.invoke('transcribe:blob', input),
     cancelDownload: () => ipcRenderer.invoke('transcribe:cancel-download'),
     onProgress: (cb) => {

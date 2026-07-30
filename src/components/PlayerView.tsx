@@ -498,6 +498,15 @@ export default function PlayerView({ onBack }: Props) {
           setLiveSub(null)
           liveRequestIdRef.current = ''
         }
+      } else if (event.type === 'refining') {
+        setSubtitleStatus('初稿字幕完成，正在用精修模型后台精修（不占播放）…')
+      } else if (event.type === 'refined' && event.srtPath) {
+        setSubtitleStatus(`字幕已精修（${event.cueCount} 句，small 模型）`)
+        void applySubtitle(event.srtPath, 'srt')
+        setLiveSub(null)
+        liveRequestIdRef.current = ''
+      } else if (event.type === 'refine-failed') {
+        setSubtitleStatus(`精修未完成（保留初稿字幕）：${event.error || ''}`)
       } else if (event.type === 'error') {
         setSubtitleStatus(event.error || '实时翻译出错')
         setLiveSub(null)

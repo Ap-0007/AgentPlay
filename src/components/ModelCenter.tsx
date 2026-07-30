@@ -42,7 +42,7 @@ export default function ModelCenter({ onClose }: Props) {
   const [busy, setBusy] = useState(false)
   const [discovered, setDiscovered] = useState<DiscoveredService[]>([])
   const [bundledStatus, setBundledStatus] = useState<BundledModelStatus | null>(null)
-  const [whisperStatus, setWhisperStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
+  const [whisperStatus, setWhisperStatus] = useState<{ available: boolean; smallAvailable?: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; smallDownload?: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number }; smallPack?: { totalBytes: number } } | null>(null)
   const [whisperError, setWhisperError] = useState('')
   const [translateStatus, setTranslateStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
   const [translateError, setTranslateError] = useState('')
@@ -225,6 +225,22 @@ export default function ModelCenter({ onClose }: Props) {
 
   const cancelWhisperDownload = async () => {
     await window.aiPlayer?.transcribe?.cancelDownload()
+  }
+
+  const startSmallDownload = async () => {
+    setWhisperError('')
+    try {
+      const result = await window.aiPlayer?.transcribe?.downloadSmall()
+      if (!result?.success) throw new Error(result?.error || '下载失败')
+      const status = await window.aiPlayer?.transcribe?.status()
+      if (status) setWhisperStatus(status)
+    } catch (error) {
+      setWhisperError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const cancelSmallDownload = async () => {
+    await window.aiPlayer?.transcribe?.cancelDownloadSmall()
   }
 
   const startTranslateDownload = async () => {
@@ -423,6 +439,27 @@ export default function ModelCenter({ onClose }: Props) {
               <div className="mt-3">
                 <div className="h-2 overflow-hidden rounded-full bg-black/40"><div className="h-full bg-violet-500 transition-all" style={{ width: `${Math.min(100, Math.round(((whisperStatus.download.receivedBytes || 0) / (whisperStatus.download.totalBytes || 1)) * 100))}%` }} /></div>
                 <div className="mt-1 text-xs text-gray-400">{whisperStatus.download.currentFile || '下载中'} · {((whisperStatus.download.receivedBytes || 0) / 1024 / 1024).toFixed(0)}/{((whisperStatus.download.totalBytes || 0) / 1024 / 1024).toFixed(0)}MB</div>
+              </div>
+            )}
+          </div>}
+
+          {role === 'chat' && whisperStatus?.available && <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 px-4 py-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm text-cyan-100">精修转写模型 · ggml-small（可选）</div>
+                <div className="mt-1 text-xs text-gray-500">约 {Math.round((whisperStatus.smallPack?.totalBytes || 0) / 1024 / 1024)}MB · 字幕质量显著优于 tiny（“三经外”→“三千万”级提升）；实时识别先出 tiny 初稿，small 后台自动精修替换</div>
+                {!whisperStatus.smallAvailable && !whisperStatus.smallDownload?.active && <div className="mt-2 text-xs text-amber-300">未安装；下载一次即可，与转写组件共用引擎。</div>}
+                {whisperStatus.smallAvailable && <div className="mt-2 text-xs text-emerald-300">已就绪：实时识别完成后自动后台精修并替换字幕。</div>}
+                {whisperError && <div className="mt-2 text-xs text-red-300">{whisperError}</div>}
+              </div>
+              {!whisperStatus.smallAvailable && (whisperStatus.smallDownload?.active
+                ? <button onClick={() => void cancelSmallDownload()} className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15">取消下载</button>
+                : <button disabled={busy} onClick={() => void startSmallDownload()} className="rounded-lg bg-cyan-600/80 px-4 py-2 text-sm hover:bg-cyan-600 disabled:opacity-40">下载精修模型</button>)}
+            </div>
+            {whisperStatus.smallDownload?.active && (
+              <div className="mt-3">
+                <div className="h-2 overflow-hidden rounded-full bg-black/40"><div className="h-full bg-cyan-500 transition-all" style={{ width: `${Math.min(100, Math.round(((whisperStatus.smallDownload?.receivedBytes || 0) / (whisperStatus.smallDownload?.totalBytes || 1)) * 100))}%` }} /></div>
+                <div className="mt-1 text-xs text-gray-400">{whisperStatus.smallDownload?.currentFile || '下载中'} · {((whisperStatus.smallDownload?.receivedBytes || 0) / 1024 / 1024).toFixed(0)}/{((whisperStatus.smallDownload?.totalBytes || 0) / 1024 / 1024).toFixed(0)}MB</div>
               </div>
             )}
           </div>}
