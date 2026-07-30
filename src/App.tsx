@@ -10,7 +10,7 @@ import { useThemeStore, applyThemeToDocument } from './stores/themeStore'
 import ErrorBoundary from './components/ErrorBoundary'
 import ModelCenter from './components/ModelCenter'
 import ComputerUsePanel from './components/ComputerUsePanel'
-import AnalysisStudio from './components/AnalysisStudio'
+
 
 function AppInner() {
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -18,7 +18,6 @@ function AppInner() {
   const [modelCenterOpen, setModelCenterOpen] = useState(false)
   const [computerUseOpen, setComputerUseOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
-  const [analysisStudioOpen, setAnalysisStudioOpen] = useState(false)
   // 右栏：有播放内容即自动展开
   const videoSrc = usePlayerStore((s) => s.videoSrc)
   const rightOpen = Boolean(videoSrc)
@@ -159,7 +158,6 @@ function AppInner() {
     const offDocumentOpen = window.aiPlayer?.documents?.onOpenExternal?.((seedFiles) => {
       setComputerUseOpen(false)
       setModelCenterOpen(false)
-      setAnalysisStudioOpen(false)
       if (useAgentStore.getState().open) {
         window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: seedFiles }))
       } else {
@@ -175,15 +173,15 @@ function AppInner() {
       }
       else if (action === 'computer-use') setComputerUseOpen(true)
       else if (action === 'analysis-studio') {
+        // 分析工作室退役：拉片统一走对话流（说"深度解剖这个视频"即可）
         setComputerUseOpen(false)
         setModelCenterOpen(false)
-        setAnalysisStudioOpen(true)
+        useAgentStore.getState().openPanel()
       }
       else if (action === 'document-workspace') {
         setComputerUseOpen(false)
         setModelCenterOpen(false)
-        setAnalysisStudioOpen(false)
-        useAgentStore.getState().openPanel()
+          useAgentStore.getState().openPanel()
       }
       else if (action === 'shortcuts') setShortcutsOpen(true)
       else if (action === 'open-file') {
@@ -222,7 +220,7 @@ function AppInner() {
         setModelCenterOpen(true)
       }
       if (action === 'computer-use') setComputerUseOpen(true)
-      if (action === 'analysis-studio') setAnalysisStudioOpen(true)
+      if (action === 'analysis-studio') useAgentStore.getState().openPanel()
       if (action === 'document-workspace') useAgentStore.getState().openPanel()
       if (action === 'agent-voice') {
         // 全局热键唤起：聚焦中栏输入并直接开麦（再按热键由系统层聚焦，不打断录音）
@@ -256,7 +254,6 @@ function AppInner() {
             onTogglePin={onTogglePin}
             onOpenLibrary={() => setLibraryOpen(true)}
             onOpenModelCenter={() => { setComputerUseOpen(false); setModelCenterOpen(true) }}
-            onOpenComputerUse={() => setComputerUseOpen(true)}
           />
         )}
         center={<AgentPanel />}
@@ -292,7 +289,6 @@ function AppInner() {
       )}
       {computerUseOpen && <ComputerUsePanel onClose={() => setComputerUseOpen(false)} />}
       {modelCenterOpen && <ModelCenter onClose={() => setModelCenterOpen(false)} />}
-      {analysisStudioOpen && <AnalysisStudio onClose={() => setAnalysisStudioOpen(false)} />}
       {shortcutsOpen && (
         <div className="fixed inset-0 z-[75] bg-black/70 flex items-center justify-center p-6" onClick={() => setShortcutsOpen(false)}>
           <div className="w-full max-w-md rounded-2xl bg-player-surface border border-white/10 p-6" onClick={(event) => event.stopPropagation()}>

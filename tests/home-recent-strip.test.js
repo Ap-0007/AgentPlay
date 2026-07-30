@@ -21,8 +21,8 @@ test('home:open combines file and directory selection in one dialog', () => {
   assert.match(types, /folders: string\[\]/)
 })
 
-test('sidebar exposes open, analysis, cast, model center and computer use entries', () => {
-  for (const label of ['📂', '打开', '🎬', '拉片', '📺', '投屏', '🧩', '模型接入中心', '🖥', '电脑观察']) {
+test('sidebar exposes open, analysis, cast and model center entries', () => {
+  for (const label of ['📂', '打开', '🎬', '拉片', '📺', '投屏', '🧩', '模型接入中心']) {
     assert.ok(sidebar.includes(label), `左栏缺：${label}`)
   }
   // Windows 组合对话框看不到文件：「打开」改为应用内两段式（文件走 chat.openAny，文件夹走 home.openFolder）

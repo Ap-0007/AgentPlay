@@ -86,6 +86,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   const [syncStatus, setSyncStatus] = useState('')
   const [urlInput, setUrlInput] = useState('')
   const [showMore, setShowMore] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [posters, setPosters] = useState<Record<string, { poster: string | null; title: string; overview: string; year: string | null }>>(() => {
     try { return JSON.parse(localStorage.getItem('aiplayer_metadata_cache') || '{}') } catch { return {} }
   })
@@ -350,7 +351,12 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
             )}
           </div>
         )}
-        {showMore && (
+        {showMore && !showAdvanced && (
+          <button onClick={() => setShowAdvanced(true)} className="mb-6 rounded-lg border border-white/10 px-3 py-2 text-xs text-gray-400 hover:border-player-accent hover:text-gray-200">
+            ⚙ 高级设备功能（WiFi 传文件 · 互投 · 同步 · DLNA）▸
+          </button>
+        )}
+        {showMore && showAdvanced && (
           <div className="mb-6 bg-player-surface rounded-lg p-4">
             <p className="text-sm">📱 WiFi 传文件</p>
             {wifiUrl ? <>
@@ -368,7 +374,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
                         <button onClick={() => setCastStatus(null)} className="px-2 py-1 text-gray-500 text-xs">✕</button>
                       </div>
                     )}
-                  {showMore && (
+                  {showMore && showAdvanced && (
           <div className="mb-6 bg-player-surface rounded-lg p-4">
                       <p className="text-sm">🖥️ AgentPlay 互投（屏幕镜像）</p>
                       {mirrorRecv ? (
@@ -400,7 +406,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
                       {mirrorError && <p className="text-xs text-red-300 mt-2">{mirrorError}</p>}
                     </div>
         )}
-        {showMore && (
+        {showMore && showAdvanced && (
           <div className="mb-6 bg-player-surface rounded-lg p-4">
             <p className="text-sm">🔄 跨设备同步</p>
             {syncUrl ? <>
@@ -421,7 +427,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
             </> : <button onClick={() => void enableSync()} className="mt-2 px-3 py-1 bg-player-accent rounded text-xs">启用跨设备同步</button>}
           </div>
         )}
-        {showMore && (
+        {showMore && showAdvanced && (
           <div className="mb-6 bg-player-surface rounded-lg p-4">
             <p className="text-sm">📺 DLNA 共享与接收</p>
             {dlnaServerUrl ? <>

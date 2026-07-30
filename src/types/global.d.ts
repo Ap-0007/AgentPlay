@@ -333,6 +333,9 @@ interface AiPlayerAPI {
     stopBundled: () => Promise<BundledModelStatus>
     quickSwitch: (input: { role?: 'chat' | 'computerUse'; target: 'cloud' | 'bundled' }) => Promise<{ switched: boolean; needDownload?: boolean; reason?: string; config?: { providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean } }>
   }
+  mediaTools?: {
+    compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress' }) => Promise<{ success: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
+  }
   guide?: {
     annotate: (question: string) => Promise<{ success: boolean; steps?: Array<{ text: string; mark: unknown }>; annotated?: boolean; error?: string }>
     askFrame: (input: { question: string; dataUrl?: string }) => Promise<{ success: boolean; answer?: string; error?: string }>

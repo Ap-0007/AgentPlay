@@ -100,6 +100,9 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     stopBundled: () => ipcRenderer.invoke('models:stop-bundled'),
     quickSwitch: (input) => ipcRenderer.invoke('models:quick-switch', input)
   },
+  mediaTools: {
+    compress: (input) => ipcRenderer.invoke('media:compress', input)
+  },
   guide: {
     annotate: (question) => ipcRenderer.invoke('guide:annotate', question),
     askFrame: (input) => ipcRenderer.invoke('guide:askFrame', input),

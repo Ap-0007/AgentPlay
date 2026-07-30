@@ -718,7 +718,7 @@ const menuTemplate = [
   { label: '功能', submenu: [
     { label: 'AI 对话窗', accelerator: 'CmdOrCtrl+D', click: () => sendAction('agent') },
     { label: '模型接入中心…', click: () => sendAction('model-center') },
-    { label: '拉片、深度解剖与原创重构…', accelerator: 'CmdOrCtrl+L', click: () => sendAction('analysis-studio') },
+    { label: '拉片（AI 对话解剖）…', accelerator: 'CmdOrCtrl+L', click: () => sendAction('analysis-studio') },
     { label: '设备、投屏与同步', click: () => sendAction('devices') }
   ] },
   { label: '窗口', submenu: [
@@ -1078,7 +1078,7 @@ app.whenReady().then(async () => {
       item('生成双语字幕（离线识别+云端翻译）', 'bilingual-subtitle', { enabled: !!state.hasMedia }),
       item(state.liveTranslate ? '停止实时翻译字幕' : '实时翻译字幕（译文排在原文下方）', 'live-translate-subtitle', { enabled: !!state.hasMedia }),
       item('实时识别字幕（无字幕视频边播边转写）', 'live-transcribe-subtitle', { enabled: !!state.hasMedia }),
-      item('拉片与原创重构…', 'analysis-studio', { enabled: !!state.hasMedia }),
+      item('拉片（AI 对话解剖）', 'analysis-studio', { enabled: !!state.hasMedia }),
       { label: '播放速度', submenu: [0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => item(`${rate}×`, `speed-${rate}`, { type: 'radio', checked: state.playbackRate === rate })) },
       { label: '画面比例', submenu: [
         item('原始比例（大画面自动缩小）', 'picture-original', { type: 'radio', checked: state.pictureMode === 'original' }),
@@ -1123,6 +1123,41 @@ app.whenReady().then(async () => {
       })
       if (result.marks.length) showGuideOverlay(result.marks)
       return { success: true, steps: result.steps, annotated: result.marks.length > 0 }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  // 视频压缩/转码：默认压到微信可发（25MB 目标码率），remux 模式不重编码秒级换封装；原文件不动
+  ipcMain.handle('media:compress', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const sourcePath = path.resolve(String(input.sourcePath || ''))
+      if (!fs.existsSync(sourcePath)) return { success: false, error: '视频文件不存在或已被移动' }
+      if (!videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
+      const mode = input.mode === 'remux' ? 'remux' : 'compress'
+      const parsed = path.parse(sourcePath)
+      let outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版.mp4`)
+      if (fs.existsSync(outputPath)) {
+        outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版-${Date.now()}.mp4`)
+      }
+      const args = ['-i', sourcePath]
+      if (mode === 'remux') {
+        args.push('-c', 'copy', '-movflags', '+faststart', '-y', outputPath)
+      } else {
+        const targetMb = Math.max(5, Math.min(500, Number(input.targetMb) || 25))
+        const duration = await videoFrames.probeDuration(sourcePath).catch(() => 0)
+        if (duration > 0) {
+          const totalKbps = Math.max(300, Math.floor((targetMb * 8 * 1024) / duration) - 96)
+          args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${totalKbps}k`, '-maxrate', `${totalKbps}k`, '-bufsize', `${totalKbps * 2}k`)
+        } else {
+          args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28')
+        }
+        args.push('-vf', "scale='min(1280,iw)':-2", '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', '-y', outputPath)
+      }
+      await videoFrames.run(args, { timeoutMs: 30 * 60 * 1000 })
+      const beforeBytes = fs.statSync(sourcePath).size
+      const afterBytes = fs.statSync(outputPath).size
+      return { success: true, outputPath, beforeBytes, afterBytes, mode }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -2631,6 +2666,28 @@ app.whenReady().then(async () => {
     syncService.setProgress(key, position, preferences)
     return true
   })
+
+  // 首启自动化：新装用户后台静默装好核心组件（离线转写 + 站点视频），不用用户去猜去找
+  void (async () => {
+    try {
+      const markerPath = path.join(app.getPath('userData'), 'first-run-components.json')
+      let marker = null
+      try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')) } catch { /* 首次启动 */ }
+      if (marker?.done || (marker?.attempts || 0) >= 3) return
+      log.info('首启自动化：开始后台安装核心组件（离线转写 + 站点视频）')
+      if (!transcriptionService.availability().available) {
+        await whisperDownload.start({}).catch((error) => log.warn('首启转写组件下载失败', error))
+      }
+      if (!siteVideo.availability().available) {
+        await ytdlpDownload.start({}).catch((error) => log.warn('首启站点视频组件下载失败', error))
+      }
+      const done = transcriptionService.availability().available && siteVideo.availability().available
+      fs.writeFileSync(markerPath, JSON.stringify({ done, attempts: (marker?.attempts || 0) + 1, at: new Date().toISOString() }))
+      log.info(done ? '首启自动化：核心组件已就绪' : '首启自动化：组件未全部就绪，下次启动再试')
+    } catch (error) {
+      log.warn('首启自动化失败（下次启动再试）', error)
+    }
+  })()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -8,11 +8,10 @@ interface Props {
   onTogglePin: () => void
   onOpenLibrary: () => void
   onOpenModelCenter: () => void
-  onOpenComputerUse: () => void
 }
 
 // 左栏：功能按钮组（上）+ 播放记录（下）+ 主题切换与钉住（底）
-export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenModelCenter, onOpenComputerUse }: Props) {
+export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenModelCenter }: Props) {
   const recentMedia = usePlayerStore((state) => state.recentMedia)
   const theme = useThemeStore((state) => state.theme)
   const setTheme = useThemeStore((state) => state.setTheme)
@@ -58,7 +57,6 @@ export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenMode
             window.setTimeout(() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'devices' })), 50)
           })}
           {actionButton('🧩', '模型接入中心', onOpenModelCenter)}
-          {actionButton('🖥', '电脑观察', onOpenComputerUse)}
         </div>
       </div>
 

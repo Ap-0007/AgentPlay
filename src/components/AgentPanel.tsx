@@ -390,11 +390,41 @@ export default function AgentPanel() {
     }
   }
 
+  // 压缩/转码当前视频：默认压到微信可发（25MB），「压到 N MB」可指定；「转码成 mp4」不重编码秒级换封装
+  const runCompressTask = async (text: string) => {
+    const { videoSrc: source } = usePlayerStore.getState()
+    if (!source || /^(https?|blob):/i.test(source)) {
+      addMessage('agent', '压缩/转码只支持本地视频文件；请先用「打开」选一个本地视频')
+      return
+    }
+    addMessage('user', text)
+    setInputText('')
+    const remux = /转码|转成 ?mp4|转换为 ?mp4/.test(text)
+    const targetMb = remux ? 0 : Math.max(5, Math.min(500, Number(/(\d+)\s*(?:MB|mb|兆)/.exec(text)?.[1]) || 25))
+    setTask({ kind: 'doc', label: remux ? '转码为 MP4' : `压缩到 ${targetMb}MB`, running: true, status: remux ? '正在转封装（不重编码，秒级）…' : '正在压缩（时长越久越慢）…', outputs: [], error: '' })
+    try {
+      const result = await window.aiPlayer?.mediaTools?.compress({ sourcePath: source, targetMb, mode: remux ? 'remux' : 'compress' })
+      if (!result?.success || !result.outputPath) throw new Error(result?.error || '处理失败')
+      const before = ((result.beforeBytes || 0) / 1024 / 1024).toFixed(1)
+      const after = ((result.afterBytes || 0) / 1024 / 1024).toFixed(1)
+      setTask({ running: false, status: '', outputs: [result.outputPath], error: '' })
+      addMessage('agent', `${remux ? '转码' : '压缩'}完成：${before}MB → ${after}MB，已另存为 ${result.outputPath}（原文件未动）`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ running: false, status: '', outputs: [], error: message })
+      addMessage('agent', `[错误] ${message}`)
+    }
+  }
+
   const routeTextSend = async () => {
     const text = inputText.trim()
     const { videoSrc } = usePlayerStore.getState()
     if (videoGenIntents.test(text) && window.aiPlayer?.studio?.generateVideo) {
       await runVideoGenTask(text)
+      return
+    }
+    if (videoSrc && window.aiPlayer?.mediaTools && (/压缩|压到|视频太大/.test(text) || /转码|转成 ?mp4|转换为 ?mp4/.test(text))) {
+      await runCompressTask(text)
       return
     }
     if (/^去重|重复文件|查重/.test(text)) {

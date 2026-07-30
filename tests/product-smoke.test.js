@@ -253,7 +253,7 @@ test('feature menu is trimmed to daily entries while background actions stay wir
   const library = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MediaLibrary.tsx'), 'utf8')
   const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
   const menuBlock = main.slice(main.indexOf("{ label: '功能', submenu: ["), main.indexOf("{ label: '窗口', submenu: ["))
-  for (const keep of ['AI 对话窗', '模型接入中心', '拉片、深度解剖与原创重构', '设备、投屏与同步']) {
+  for (const keep of ['AI 对话窗', '模型接入中心', '拉片（AI 对话解剖）', '设备、投屏与同步']) {
     assert.ok(menuBlock.includes(keep), `菜单应保留：${keep}`)
   }
   for (const removed of ['AI 助手', '屏幕录制', '重复文件检查', '智能整理建议', '海报信息刮削', '插件管理', '电脑操作建议', '语音唤醒']) {
@@ -268,18 +268,14 @@ test('feature menu is trimmed to daily entries while background actions stay wir
   assert.doesNotMatch(library, />\s*海报\s*</)
 })
 
-test('analysis studio provides breakdown, evidence-bound deep analysis and original recut rendering', () => {
+test('analysis studio entry retired: analysis goes through the unified chat flow', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
-  const studio = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AnalysisStudio.tsx'), 'utf8')
-  const packageConfig = fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
+  // 工作室面板退役：拉片统一走对话流（与「拉片→重构短片」闭环一致），App 不再渲染 AnalysisStudio
   assert.match(main, /sendAction\(['"]analysis-studio['"]\)/)
-  assert.match(main, /studio:render/)
-  assert.match(packageConfig, /mpv\.com/)
-  assert.match(app, /<AnalysisStudio/)
-  for (const capability of ['标记当前镜头', 'AI 深度解剖', '一键渲染 MP4', '导出项目']) {
-    assert.match(studio, new RegExp(capability))
-  }
+  assert.match(main, /拉片（AI 对话解剖）/)
+  assert.doesNotMatch(app, /<AnalysisStudio/)
+  assert.match(app, /分析工作室退役/)
 })
 
 test('analysis studio parses subtitle evidence and builds UTF-8-safe mpv recut EDL', () => {

@@ -21,7 +21,7 @@ test('task card lives in agent store and panel renders progress, retry and outpu
 
 test('feature menu is trimmed to the four daily entries', () => {
   const menuBlock = main.slice(main.indexOf("{ label: '功能', submenu: ["), main.indexOf("{ label: '窗口', submenu: ["))
-  for (const keep of ['AI 对话窗', '模型接入中心', '拉片、深度解剖与原创重构', '设备、投屏与同步']) {
+  for (const keep of ['AI 对话窗', '模型接入中心', '拉片（AI 对话解剖）', '设备、投屏与同步']) {
     assert.ok(menuBlock.includes(keep), `应保留：${keep}`)
   }
   for (const removed of ['AI 助手', '屏幕录制', '重复文件检查', '智能整理建议', '海报信息刮削', '插件管理', '电脑操作建议', '语音唤醒']) {
