@@ -104,6 +104,7 @@ interface AiPlayerAPI {
   }
   home?: {
     open: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number }>; folders: string[] }>
+    openFolder: () => Promise<{ folders: string[] }>
   }
   chat?: {
     openAny: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number }> }>

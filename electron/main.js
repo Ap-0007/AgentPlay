@@ -1591,6 +1591,20 @@ app.whenReady().then(async () => {
     return splitAndApproveAny(result.filePaths)
   })
   // 首页“打开”：一个对话框同时接受文件与文件夹；文件按类型分流，文件夹授权并回报给媒体库
+  // 两段式「打开」的文件夹半段：Windows 上 openFile+openDirectory 同用会退化成目录选择器，
+  // 必须分开弹窗——文件走 chat:open-any，文件夹走这里
+  ipcMain.handle('home:open-folder', async (event) => {
+    assertTrustedSender(event)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择要加入媒体库的文件夹',
+      properties: ['openDirectory', 'multiSelections']
+    })
+    if (result.canceled) return { folders: [] }
+    const folders = result.filePaths.slice(0, 10).map((folder) => path.resolve(folder))
+    for (const folder of folders) authorizedFolders.add(folder)
+    return { folders }
+  })
+
   ipcMain.handle('home:open', async (event) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -1988,7 +2002,7 @@ app.whenReady().then(async () => {
     if (!mediaPath || !fs.existsSync(mediaPath)) return { success: false, error: '视频文件不存在或已被移动' }
     const whisperStatus = transcriptionService.availability()
     if (!whisperStatus.available) return { success: false, error: `${whisperStatus.reason}，请先在模型接入中心下载转写组件` }
-    if (!videoFrames.available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
+    if (!videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
     let durationSec = Number(input.duration) || 0
     if (!(durationSec > 0)) {
       try { durationSec = await videoFrames.probeDuration(mediaPath) } catch { /* 保留 0 */ }

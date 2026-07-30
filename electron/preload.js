@@ -46,7 +46,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     }
   },
   home: {
-    open: () => ipcRenderer.invoke('home:open')
+    open: () => ipcRenderer.invoke('home:open'),
+    openFolder: () => ipcRenderer.invoke('home:open-folder')
   },
   chat: {
     openAny: () => ipcRenderer.invoke('chat:open-any'),

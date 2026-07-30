@@ -18,22 +18,9 @@ export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenMode
   const setTheme = useThemeStore((state) => state.setTheme)
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
 
-  // 一个「打开」：文件按类型分流（视频进右栏播放、文档进中栏对话附件），文件夹授权进媒体库
-  const handleOpen = async () => {
-    const result = await window.aiPlayer?.home?.open()
-    if (!result) return
-    for (const folder of result.folders || []) {
-      window.dispatchEvent(new CustomEvent('ai-player-open-folder', { detail: folder }))
-    }
-    if (result.documents?.length) {
-      useAgentStore.getState().openPanel()
-      window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: result.documents }))
-      return
-    }
-    if (result.media?.length) {
-      const first = result.media[0]
-      usePlayerStore.getState().setMedia(first.split(/[\\/]/).pop() || first, first)
-    }
+  // 一个「打开」：先问文件还是文件夹（Windows 组合对话框看不到文件，必须两段式）
+  const handleOpen = () => {
+    window.dispatchEvent(new CustomEvent('ai-player-ask-open-mode'))
   }
 
   // 拉片进对话流：粘贴链接即发全管道；本地视频打开后说「深度解剖」

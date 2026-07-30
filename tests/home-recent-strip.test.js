@@ -25,9 +25,13 @@ test('sidebar exposes open, analysis, cast, model center and computer use entrie
   for (const label of ['📂', '打开', '🎬', '拉片', '📺', '投屏', '🧩', '模型接入中心', '🖥', '电脑观察']) {
     assert.ok(sidebar.includes(label), `左栏缺：${label}`)
   }
-  assert.match(sidebar, /window\.aiPlayer\?\.home\?\.open\(\)/)
-  assert.match(sidebar, /ai-player-open-folder/)
-  assert.match(sidebar, /ai-player-attach-docs/)
+  // Windows 组合对话框看不到文件：「打开」改为应用内两段式（文件走 chat.openAny，文件夹走 home.openFolder）
+  assert.match(sidebar, /ai-player-ask-open-mode/)
+  assert.match(main, /ipcMain\.handle\('home:open-folder'/)
+  assert.match(preload, /openFolder: \(\) => ipcRenderer\.invoke\('home:open-folder'\)/)
+  // 分流逻辑在 App 层：文件走 chat.openAny，文件夹进媒体库浮层
+  assert.match(app, /ai-player-open-folder/)
+  assert.match(app, /ai-player-attach-docs/)
   // 媒体库入口并入「打开」的文件夹授权，不再是左栏独立按钮；媒体库本身为浮层
   assert.ok(!library.includes('📂 打开'), '媒体库内不应再有打开动作行')
   assert.match(app, /<Workbench/)

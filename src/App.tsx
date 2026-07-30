@@ -33,6 +33,37 @@ function AppInner() {
     setLibraryOpen(false)
   }
 
+  // 两段式「打开」：Windows 组合对话框看不到文件，先在应用内问文件还是文件夹
+  const [openModeOpen, setOpenModeOpen] = useState(false)
+  useEffect(() => {
+    const handler = () => setOpenModeOpen(true)
+    window.addEventListener('ai-player-ask-open-mode', handler)
+    return () => window.removeEventListener('ai-player-ask-open-mode', handler)
+  }, [])
+
+  const openFiles = async () => {
+    setOpenModeOpen(false)
+    const result = await window.aiPlayer?.chat?.openAny?.()
+    if (!result) return
+    if (result.documents?.length) {
+      useAgentStore.getState().openPanel()
+      window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: result.documents }))
+      return
+    }
+    if (result.media?.length) {
+      const first = result.media[0]
+      usePlayerStore.getState().setMedia(first.split(/[\\/]/).pop() || first, first)
+    }
+  }
+
+  const openFolder = async () => {
+    setOpenModeOpen(false)
+    const result = await window.aiPlayer?.home?.openFolder?.()
+    for (const folder of result?.folders || []) {
+      window.dispatchEvent(new CustomEvent('ai-player-open-folder', { detail: folder }))
+    }
+  }
+
   const closeRightPane = () => {
     void window.aiPlayer?.player?.stop()
     usePlayerStore.getState().clearMedia()
@@ -239,6 +270,23 @@ function AppInner() {
               <button onClick={() => setLibraryOpen(false)} className="text-gray-400 hover:text-white">✕</button>
             </div>
             <MediaLibrary onPlay={playMedia} rootDir={libraryRoot} />
+          </div>
+        </div>
+      )}
+      {openModeOpen && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-6" onClick={() => setOpenModeOpen(false)}>
+          <div className="w-72 theme-panel rounded-2xl p-5" onClick={(event) => event.stopPropagation()}>
+            <p className="mb-4 text-center text-sm text-gray-200">要打开什么？</p>
+            <div className="space-y-2">
+              <button onClick={() => void openFiles()} className="w-full rounded-xl bg-player-accent px-4 py-3 text-left text-sm text-white transition-opacity hover:opacity-90">
+                <span className="block font-medium">📄 选择文件</span>
+                <span className="mt-0.5 block text-[11px] opacity-80">视频 / 音频 / 图片 / 文档</span>
+              </button>
+              <button onClick={() => void openFolder()} className="w-full rounded-xl bg-white/10 px-4 py-3 text-left text-sm text-gray-200 transition-colors hover:bg-white/15">
+                <span className="block font-medium">📁 选择文件夹</span>
+                <span className="mt-0.5 block text-[11px] text-gray-400">整个文件夹加入媒体库</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

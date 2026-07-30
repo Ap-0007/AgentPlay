@@ -23,7 +23,7 @@ test('live transcribe service: segmented ffmpeg extraction, whisper with timesta
 test('live transcribe IPC: availability gates, session, srt written without overwriting', () => {
   assert.match(main, /ipcMain\.handle\('subtitle:live-transcribe-start'/)
   assert.match(main, /transcriptionService\.availability\(\)/)
-  assert.match(main, /videoFrames\.available/)
+  assert.match(main, /videoFrames\.availability\(\)\.available/)
   assert.match(main, /videoFrames\.probeDuration/)
   assert.match(main, /type: 'transcribe-cues', cues/)
   assert.match(main, /-AgentPlay识别\.srt/)
