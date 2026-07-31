@@ -42,6 +42,11 @@ export default function ModelCenter({ onClose }: Props) {
   const [busy, setBusy] = useState(false)
   const [discovered, setDiscovered] = useState<DiscoveredService[]>([])
   const [bundledStatus, setBundledStatus] = useState<BundledModelStatus | null>(null)
+  // 一键接入：粘贴 Key 自动识别厂商（并发探测，真实模型列表，按延迟排序）
+  const [oneKey, setOneKey] = useState('')
+  const [oneKeyBusy, setOneKeyBusy] = useState(false)
+  const [oneKeyError, setOneKeyError] = useState('')
+  const [oneKeyMatches, setOneKeyMatches] = useState<Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>>([])
   const [whisperStatus, setWhisperStatus] = useState<{ available: boolean; smallAvailable?: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; smallDownload?: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number }; smallPack?: { totalBytes: number } } | null>(null)
   const [whisperError, setWhisperError] = useState('')
   const [translateStatus, setTranslateStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
@@ -209,6 +214,43 @@ export default function ModelCenter({ onClose }: Props) {
 
   const cancelLocalAiDownload = async () => {
     await window.aiPlayer?.localAI?.cancel()
+  }
+
+  const runAutoDetect = async () => {
+    setOneKeyBusy(true)
+    setOneKeyError('')
+    setOneKeyMatches([])
+    try {
+      const result = await window.aiPlayer?.models?.autoDetect?.({ apiKey: oneKey.trim() })
+      if (!result?.success || !result.matches?.length) throw new Error(result?.error || '没有识别到可用厂商')
+      setOneKeyMatches(result.matches)
+    } catch (error) {
+      setOneKeyError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setOneKeyBusy(false)
+    }
+  }
+
+  const applyMatch = async (match: { providerId: string; providerName: string; models: string[]; latencyMs: number }) => {
+    const provider = roleProviders.find((item) => item.id === match.providerId)
+    const preferred = provider?.models?.[0]
+    const modelToUse = preferred && match.models.includes(preferred) ? preferred : match.models[0]
+    const saved = await window.aiPlayer?.models?.save({
+      role, providerId: match.providerId, model: modelToUse,
+      baseUrl: provider?.baseUrl || '', apiKey: oneKey.trim()
+    })
+    if (saved) {
+      setOneKeyMatches([])
+      setOneKey('')
+      setStatus(`已接入 ${match.providerName}（${modelToUse}），可以开始对话了`)
+      const config = await window.aiPlayer?.models?.config(role)
+      if (config) {
+        setProviderId(config.providerId)
+        setModel(config.model)
+        setBaseUrl(config.baseUrl)
+        setHasApiKey(config.hasApiKey)
+      }
+    }
   }
 
   const startWhisperDownload = async () => {
@@ -388,6 +430,40 @@ export default function ModelCenter({ onClose }: Props) {
           </div>
 
           {role === 'computerUse' && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">安全预览阶段：模型只观察当前应用画面并给出建议，不会点击鼠标、输入键盘或执行命令。</div>}
+
+          {role === 'chat' && <div className="rounded-xl border border-player-accent/30 bg-player-accent/5 px-4 py-4">
+            <div className="text-sm text-gray-200">⚡ 一键接入（推荐）</div>
+            <div className="mt-1 text-xs text-gray-500">粘贴 API Key，自动识别厂商并列出可用模型，不用知道该选哪家</div>
+            <div className="mt-2.5 flex gap-2">
+              <input
+                type="password"
+                value={oneKey}
+                onChange={(event) => setOneKey(event.target.value)}
+                onKeyDown={(event) => event.key === 'Enter' && !oneKeyBusy && oneKey.trim().length >= 8 && void runAutoDetect()}
+                placeholder="粘贴 API Key…"
+                className="flex-1 rounded-lg border border-white/10 bg-black/35 px-3 py-2 text-sm outline-none focus:border-player-accent"
+              />
+              <button
+                disabled={oneKeyBusy || oneKey.trim().length < 8}
+                onClick={() => void runAutoDetect()}
+                className="shrink-0 rounded-lg bg-player-accent px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-40"
+              >{oneKeyBusy ? '识别中…' : '自动识别'}</button>
+            </div>
+            {oneKeyError && <div className="mt-2 text-xs text-red-300">{oneKeyError}</div>}
+            {oneKeyMatches.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {oneKeyMatches.map((match) => (
+                  <div key={match.providerId} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm text-gray-200">{match.providerName}</div>
+                      <div className="text-[11px] text-gray-500">{match.latencyMs}ms · {match.models.length} 个模型</div>
+                    </div>
+                    <button onClick={() => void applyMatch(match)} className="shrink-0 rounded-lg bg-emerald-600/80 px-3 py-1.5 text-xs text-white hover:bg-emerald-600">用它接入</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>}
 
           {role === 'chat' && bundledStatus && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

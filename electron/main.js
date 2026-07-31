@@ -1152,6 +1152,29 @@ app.whenReady().then(async () => {
   }
 
   // 批量任务：按授权 token 批量压缩或批量转写（附件多选后说「全部压缩/全部转写」）
+  // 一键接入：粘贴 Key 自动识别厂商——并发探测所有 OpenAI 兼容厂商，返回按延迟排序的匹配与真实模型列表
+  ipcMain.handle('models:auto-detect', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const apiKey = String(input.apiKey || '').trim()
+    if (apiKey.length < 8) return { success: false, error: 'Key 太短，请粘贴完整 API Key' }
+    const candidates = PROVIDERS.filter((provider) => provider.protocol === 'openai' && provider.baseUrl && !['bundled-lite', 'fara-local', 'custom'].includes(provider.id))
+    const probes = candidates.map(async (provider) => {
+      const started = Date.now()
+      try {
+        const models = await listModels(
+          { providerId: provider.id, baseUrl: provider.baseUrl, model: provider.models[0], apiKey, role: 'chat' },
+          { timeoutMs: 8000 }
+        )
+        if (models.length) return { providerId: provider.id, providerName: provider.name, models, latencyMs: Date.now() - started }
+      } catch { /* 该厂商不通 */ }
+      return null
+    })
+    const matches = (await Promise.all(probes)).filter(Boolean)
+    if (!matches.length) return { success: false, error: '所有候选厂商都不通：请检查 Key 是否完整、网络是否可达（也可下方手动配置）' }
+    matches.sort((a, b) => a.latencyMs - b.latencyMs)
+    return { success: true, matches }
+  })
+
   ipcMain.handle('media:batch', async (event, input = {}) => {
     assertTrustedSender(event)
     const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 30) : []

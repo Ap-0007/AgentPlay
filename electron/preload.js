@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     list: (config) => ipcRenderer.invoke('models:list', config),
     test: (config) => ipcRenderer.invoke('models:test', config),
     discoverLocal: (role = 'chat') => ipcRenderer.invoke('models:discover-local', role),
+    autoDetect: (input) => ipcRenderer.invoke('models:auto-detect', input),
     bundledStatus: () => ipcRenderer.invoke('models:bundled-status'),
     startBundled: () => ipcRenderer.invoke('models:start-bundled'),
     stopBundled: () => ipcRenderer.invoke('models:stop-bundled'),
