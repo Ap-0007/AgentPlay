@@ -44,6 +44,10 @@
 4. 网页、新闻和社交网站的全局翻译需要独立的浏览器扩展/受控浏览器方案，不能用桌面播放器按钮冒充全局能力。
 5. 文档工作台和视频工作台打通：视频/网页 → 字幕/正文 → 拉片表 → 报告 → PPT/PDF → 新成片。【07-30 末段闭环落地：拉片（含链接拉片）成功且为 AI 报告后给出「生成重构短片」入口——报告浓缩镜头脚本 → Agnes 逐镜头生视频 → ffmpeg 重编码拼接，成片自动播放并落盘 文档/AgentPlay 输出；实测 2 镜头 3 秒片 861KB 画面内容与主题一致。创作类功能（生图/生视频/重构）在 chat 切本地小模型时自动使用 quickSwitch stash 的云端配置（creativeConfig），不再静默拒绝】
 
+## 订阅账号接入（待办）
+
+ChatGPT Plus / Claude Pro 这类订阅制账号没有面向第三方的免费 API；可行路径（按优先级）：复用本机已登录的 Codex CLI（ChatGPT 账号 OAuth 凭证）与 Claude Code（Claude Pro/Max 凭证）完成模型调用（opencode 等开源工具同款）；或实现各自的官方 OAuth 登录流程。注意协议均为私有（Codex responses 接口 / Anthropic OAuth token），需各自做适配层与失效重登引导。
+
 ## 其他平台
 
 1. macOS：在真实Mac完成安装、播放、文件关联、系统配音、文档工作台和创意渲染验收。
