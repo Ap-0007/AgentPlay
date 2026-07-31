@@ -390,6 +390,40 @@ export default function AgentPanel() {
     }
   }
 
+  // 批量任务：多选附件后说「全部压缩/全部转写」，逐个处理并汇总（可📂定位）
+  const runBatchTask = async (text: string) => {
+    const kind = /转写/.test(text) ? 'transcribe' : 'compress'
+    const targets = kind === 'transcribe'
+      ? attachments.filter((file) => ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv'].includes(file.ext))
+      : attachments.filter((file) => ['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'].includes(file.ext))
+    if (!targets.length) {
+      addMessage('agent', kind === 'transcribe' ? '附件里没有可转写的音视频文件' : '附件里没有可压缩的视频文件')
+      return
+    }
+    addMessage('user', text)
+    setInputText('')
+    const label = kind === 'transcribe' ? `批量转写 ${targets.length} 个文件` : `批量压缩 ${targets.length} 个视频`
+    setTask({ kind: 'doc', label, running: true, status: '准备中…', outputs: [], error: '' })
+    const requestId = `batch-${Date.now()}`
+    const off = window.aiPlayer?.mediaBatch?.onProgress?.((event) => {
+      if (event.requestId === requestId || !event.requestId) setDocStatus(`（${event.done}/${event.total}）${event.name}`)
+    })
+    try {
+      const result = await window.aiPlayer?.mediaBatch?.run({ tokens: targets.map((file) => file.token), kind, requestId })
+      const succeeded = (result?.results || []).filter((item) => item.success)
+      const failed = (result?.results || []).filter((item) => !item.success)
+      const outputs = succeeded.map((item) => item.outputPath).filter(Boolean) as string[]
+      setTask({ running: false, status: '', outputs, error: '' })
+      addMessage('agent', `${label}完成：成功 ${succeeded.length}/${targets.length}${failed.length ? `；失败 ${failed.length} 个（${failed[0]?.error || ''}）` : ''}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTask({ running: false, status: '', outputs: [], error: message })
+      addMessage('agent', `[错误] ${message}`)
+    } finally {
+      off?.()
+    }
+  }
+
   // 压缩/转码当前视频：默认压到微信可发（25MB），「压到 N MB」可指定；「转码成 mp4」不重编码秒级换封装
   const runCompressTask = async (text: string) => {
     const { videoSrc: source } = usePlayerStore.getState()
@@ -419,6 +453,10 @@ export default function AgentPanel() {
   const routeTextSend = async () => {
     const text = inputText.trim()
     const { videoSrc } = usePlayerStore.getState()
+    if (attachments.length > 0 && /全部|批量|每个|逐一|一起/.test(text) && /压缩|转写/.test(text) && window.aiPlayer?.mediaBatch) {
+      await runBatchTask(text)
+      return
+    }
     if (videoGenIntents.test(text) && window.aiPlayer?.studio?.generateVideo) {
       await runVideoGenTask(text)
       return
@@ -900,7 +938,10 @@ export default function AgentPanel() {
                 </div>
               )}
               {docOutputs.length > 0 && <div className="mt-1 space-y-1">{docOutputs.map((output) => (
-                <button key={output} onClick={() => void window.aiPlayer?.system?.openPath(output)} className="block w-full truncate rounded bg-black/20 px-2 py-1.5 text-left text-xs text-emerald-200 hover:bg-black/30" title={output}>打开结果：{output}</button>
+                <div key={output} className="flex items-center gap-1">
+                  <button onClick={() => void window.aiPlayer?.system?.openPath(output)} className="min-w-0 flex-1 truncate rounded bg-black/20 px-2 py-1.5 text-left text-xs text-emerald-200 hover:bg-black/30" title={output}>打开结果：{output}</button>
+                  <button onClick={() => void window.aiPlayer?.system?.showInFolder(output)} title="在文件夹中定位（方便转发/拖走）" className="shrink-0 rounded bg-white/10 px-2 py-1.5 text-xs hover:bg-white/20">📂</button>
+                </div>
               ))}</div>}
             </div>
           )}

@@ -1127,6 +1127,66 @@ app.whenReady().then(async () => {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
+  // 单文件压缩/转码核心：返回 { success, outputPath, beforeBytes, afterBytes, error? }
+  async function compressOne(sourcePath, targetMb, mode) {
+    const parsed = path.parse(sourcePath)
+    let outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版.mp4`)
+    if (fs.existsSync(outputPath)) {
+      outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版-${Date.now()}.mp4`)
+    }
+    const args = ['-i', sourcePath]
+    if (mode === 'remux') {
+      args.push('-c', 'copy', '-movflags', '+faststart', '-y', outputPath)
+    } else {
+      const duration = await videoFrames.probeDuration(sourcePath).catch(() => 0)
+      if (duration > 0) {
+        const totalKbps = Math.max(300, Math.floor((targetMb * 8 * 1024) / duration) - 96)
+        args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${totalKbps}k`, '-maxrate', `${totalKbps}k`, '-bufsize', `${totalKbps * 2}k`)
+      } else {
+        args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28')
+      }
+      args.push('-vf', "scale='min(1280,iw)':-2", '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', '-y', outputPath)
+    }
+    await videoFrames.run(args, { timeoutMs: 30 * 60 * 1000 })
+    return { success: true, outputPath, beforeBytes: fs.statSync(sourcePath).size, afterBytes: fs.statSync(outputPath).size }
+  }
+
+  // 批量任务：按授权 token 批量压缩或批量转写（附件多选后说「全部压缩/全部转写」）
+  ipcMain.handle('media:batch', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 30) : []
+    const kind = input.kind === 'transcribe' ? 'transcribe' : 'compress'
+    const send = (done, total, name) => {
+      if (!event.sender.isDestroyed()) event.sender.send('media:batch-progress', { requestId: input.requestId, done, total, name })
+    }
+    const results = []
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = String(tokens[index])
+      const record = approvedDocumentSelections.get(token)
+      if (!record?.path || !fs.existsSync(record.path)) {
+        results.push({ token, success: false, error: '文件授权已失效或已被移动' })
+        continue
+      }
+      send(index, tokens.length, path.basename(record.path))
+      try {
+        if (kind === 'transcribe') {
+          const parsed = path.parse(record.path)
+          const srtPath = path.join(parsed.dir, `${parsed.name}-AgentPlay转写.srt`)
+          const transcription = await transcriptionService.transcribe({ sourcePath: record.path, lang: 'auto', timestamps: true, timeoutMs: 60 * 60 * 1000, noSpeechThold: 0.72, logprobThold: -0.6 })
+          fs.writeFileSync(srtPath, transcription.text, 'utf8')
+          results.push({ token, success: true, outputPath: srtPath })
+        } else {
+          const result = await compressOne(record.path, Math.max(5, Math.min(500, Number(input.targetMb) || 25)), 'compress')
+          results.push({ token, ...result })
+        }
+      } catch (error) {
+        results.push({ token, success: false, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    send(tokens.length, tokens.length, '')
+    return { success: true, results, kind }
+  })
+
   // 视频压缩/转码：默认压到微信可发（25MB 目标码率），remux 模式不重编码秒级换封装；原文件不动
   ipcMain.handle('media:compress', async (event, input = {}) => {
     assertTrustedSender(event)
@@ -2612,6 +2672,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('dialog:openFolder', async (event) => {
     assertTrustedSender(event);
     const { dialog } = require('electron'); const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); if (r.canceled) return null; authorizedFolders.add(r.filePaths[0]); return r.filePaths[0] })
+  ipcMain.handle('system:showInFolder', async (_e, filePath) => {
+    assertTrustedSender(_e)
+    const { shell } = require('electron')
+    shell.showItemInFolder(path.resolve(String(filePath || '')))
+    return true
+  })
   ipcMain.handle('system:openPath', async (_e, filePath) => {
     assertTrustedSender(_e)
     const { shell } = require('electron')

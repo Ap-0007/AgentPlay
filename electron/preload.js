@@ -100,6 +100,14 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     stopBundled: () => ipcRenderer.invoke('models:stop-bundled'),
     quickSwitch: (input) => ipcRenderer.invoke('models:quick-switch', input)
   },
+  mediaBatch: {
+    run: (input) => ipcRenderer.invoke('media:batch', input),
+    onProgress: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('media:batch-progress', handler)
+      return () => ipcRenderer.removeListener('media:batch-progress', handler)
+    }
+  },
   mediaTools: {
     compress: (input) => ipcRenderer.invoke('media:compress', input)
   },
@@ -315,7 +323,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     openFolder: () => ipcRenderer.invoke('dialog:openFolder')
   },
   system: {
-    openPath: (filePath) => ipcRenderer.invoke('system:openPath', filePath)
+    openPath: (filePath) => ipcRenderer.invoke('system:openPath', filePath),
+    showInFolder: (filePath) => ipcRenderer.invoke('system:showInFolder', filePath)
   },
   print: {
     file: (filePath) => ipcRenderer.invoke('print:file', filePath),

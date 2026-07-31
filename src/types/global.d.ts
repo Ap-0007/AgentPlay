@@ -333,6 +333,10 @@ interface AiPlayerAPI {
     stopBundled: () => Promise<BundledModelStatus>
     quickSwitch: (input: { role?: 'chat' | 'computerUse'; target: 'cloud' | 'bundled' }) => Promise<{ switched: boolean; needDownload?: boolean; reason?: string; config?: { providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean } }>
   }
+  mediaBatch?: {
+    run: (input: { tokens: string[]; kind?: 'compress' | 'transcribe'; targetMb?: number; requestId?: string }) => Promise<{ success: boolean; kind?: string; results?: Array<{ token: string; success: boolean; outputPath?: string; error?: string }> }>
+    onProgress: (cb: (event: { requestId?: string; done: number; total: number; name: string }) => void) => () => void
+  }
   mediaTools?: {
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress' }) => Promise<{ success: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
   }
@@ -366,6 +370,7 @@ interface AiPlayerAPI {
   }
   system?: {
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>
+    showInFolder: (filePath: string) => Promise<boolean>
   }
   print?: {
     file: (filePath: string) => Promise<{ success: boolean; action?: string; error?: string }>
