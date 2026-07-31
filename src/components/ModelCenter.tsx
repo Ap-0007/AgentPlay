@@ -47,6 +47,7 @@ export default function ModelCenter({ onClose }: Props) {
   const [oneKeyBusy, setOneKeyBusy] = useState(false)
   const [oneKeyError, setOneKeyError] = useState('')
   const [oneKeyMatches, setOneKeyMatches] = useState<Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>>([])
+  const [oneKeyModelPick, setOneKeyModelPick] = useState<Record<string, string>>({})
   const [whisperStatus, setWhisperStatus] = useState<{ available: boolean; smallAvailable?: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; smallDownload?: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number }; smallPack?: { totalBytes: number } } | null>(null)
   const [whisperError, setWhisperError] = useState('')
   const [translateStatus, setTranslateStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
@@ -234,7 +235,8 @@ export default function ModelCenter({ onClose }: Props) {
   const applyMatch = async (match: { providerId: string; providerName: string; models: string[]; latencyMs: number }) => {
     const provider = roleProviders.find((item) => item.id === match.providerId)
     const preferred = provider?.models?.[0]
-    const modelToUse = preferred && match.models.includes(preferred) ? preferred : match.models[0]
+    const defaultModel = preferred && match.models.includes(preferred) ? preferred : match.models[0]
+    const modelToUse = oneKeyModelPick[match.providerId] || defaultModel
     const saved = await window.aiPlayer?.models?.save({
       role, providerId: match.providerId, model: modelToUse,
       baseUrl: provider?.baseUrl || '', apiKey: oneKey.trim()
@@ -454,11 +456,18 @@ export default function ModelCenter({ onClose }: Props) {
               <div className="mt-3 space-y-2">
                 {oneKeyMatches.map((match) => (
                   <div key={match.providerId} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="truncate text-sm text-gray-200">{match.providerName}</div>
                       <div className="text-[11px] text-gray-500">{match.latencyMs}ms · {match.models.length} 个模型</div>
                     </div>
-                    <button onClick={() => void applyMatch(match)} className="shrink-0 rounded-lg bg-emerald-600/80 px-3 py-1.5 text-xs text-white hover:bg-emerald-600">用它接入</button>
+                    <select
+                      value={oneKeyModelPick[match.providerId] || (roleProviders.find((item) => item.id === match.providerId)?.models?.[0] && match.models.includes(roleProviders.find((item) => item.id === match.providerId)!.models![0]) ? roleProviders.find((item) => item.id === match.providerId)!.models![0] : match.models[0])}
+                      onChange={(event) => setOneKeyModelPick((current) => ({ ...current, [match.providerId]: event.target.value }))}
+                      className="max-w-44 rounded-lg border border-white/10 bg-black/35 px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-player-accent"
+                    >
+                      {match.models.slice(0, 30).map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                    <button onClick={() => void applyMatch(match)} className="shrink-0 rounded-lg bg-emerald-600/80 px-3 py-1.5 text-xs text-white hover:bg-emerald-600">接入</button>
                   </div>
                 ))}
               </div>
