@@ -20,6 +20,8 @@ test('model center has one-key connect zone', () => {
   assert.match(modelCenter, /一键接入（推荐）/)
   assert.match(modelCenter, /自动识别厂商并列出可用模型/)
   assert.match(modelCenter, /autoDetect/)
-  assert.match(modelCenter, /用它接入/)
+  assert.match(modelCenter, /接入/)
+  // 匹配卡片带模型下拉，用户可自选
+  assert.match(modelCenter, /oneKeyModelPick/)
   assert.match(modelCenter, /applyMatch/)
 })
