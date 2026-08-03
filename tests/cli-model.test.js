@@ -57,11 +57,8 @@ test('buildPrompt keeps system prompt and recent turns; extractCodexAnswer ignor
 })
 
 
-test('codex models reflect the real 5.6 lineup, claude reflects opus-5 generation; three-way switch includes cli', () => {
+test('codex models reflect the real 5.6 lineup + spark, claude reflects opus-5 generation', () => {
   assert.match(providers, /gpt-5\.6-sol.*gpt-5\.6-terra.*gpt-5\.6-luna/)
   assert.match(providers, /claude-opus-5.*claude-sonnet-5.*claude-fable-5/)
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
-  assert.match(panel, /'cloud' \| 'cli' \| 'bundled'/)
-  assert.match(panel, /switchModelMode\('cli'\)/)
-  assert.match(panel, /aiplayer_last_cli/)
+  assert.match(providers, /gpt-5\.3-codex-spark/)
 })

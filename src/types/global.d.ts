@@ -330,6 +330,7 @@ interface AiPlayerAPI {
     discoverLocal: (role?: 'chat' | 'computerUse') => Promise<Array<{ id: string; role: 'chat' | 'computerUse'; name: string; providerId: string; baseUrl: string; status: 'ready'; models: string[] }>>
     autoDetect: (input: { apiKey: string }) => Promise<{ success: boolean; matches?: Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>; error?: string }>
     cliStatus: () => Promise<{ codex: { installed: boolean; loggedIn: boolean; note: string }; claude: { installed: boolean; loggedIn: boolean; note: string } }>
+    refreshCatalog: () => Promise<{ updated: number; providers?: string[]; error?: string }>
     bundledStatus: () => Promise<BundledModelStatus>
     startBundled: () => Promise<BundledModelStatus>
     stopBundled: () => Promise<BundledModelStatus>

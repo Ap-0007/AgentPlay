@@ -66,34 +66,13 @@ export default function AgentPanel() {
   const [subtitleKey, setSubtitleKey] = useState(() => localStorage.getItem('aiplayer_subtitle_key') || '')
   const [showServiceEdit, setShowServiceEdit] = useState(false)
   const [modelLabel, setModelLabel] = useState('尚未配置模型')
-  const [modelMode, setModelMode] = useState<'cloud' | 'cli' | 'bundled'>('cloud')
+  const [modelMode, setModelMode] = useState<'cloud' | 'bundled'>('cloud')
   const [modeSwitching, setModeSwitching] = useState(false)
   const applyConfigLabel = (config: { providerId: string; providerName?: string; model: string; hasApiKey: boolean }) => {
-    setModelMode(config.providerId === 'bundled-lite' ? 'bundled' : (config.providerId === 'codex-chatgpt' || config.providerId === 'claude-code') ? 'cli' : 'cloud')
+    setModelMode(config.providerId === 'bundled-lite' ? 'bundled' : 'cloud')
     setModelLabel(`${config.providerName || config.providerId} · ${config.model}`)
   }
-  const switchModelMode = async (target: 'cloud' | 'cli' | 'bundled') => {
-    if (target === 'cli') {
-      // 订阅账号（Codex CLI / Claude Code）：恢复上次接入的 cli 配置，不走 quickSwitch
-      setModeSwitching(true)
-      try {
-        const last = JSON.parse(localStorage.getItem('aiplayer_last_cli') || 'null') as { providerId: string; model: string } | null
-        if (!last) {
-          addMessage('agent', '还没接入订阅账号：到「模型接入中心」的「订阅账号」卡片点「接入」（Codex/Claude CLI 已登录就一键）。')
-          window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'model-center' }))
-          return
-        }
-        const saved = await window.aiPlayer?.models?.save({ role: 'chat', providerId: last.providerId, model: last.model, baseUrl: '' })
-        if (saved) {
-          const config = await window.aiPlayer?.models?.config('chat')
-          if (config) applyConfigLabel(config)
-          addMessage('agent', `已切到订阅账号（${last.model}）：走本机官方 CLI 的订阅登录态，不产生 API 费用。`)
-        }
-      } finally {
-        setModeSwitching(false)
-      }
-      return
-    }
+  const switchModelMode = async (target: 'cloud' | 'bundled') => {
     if (target === modelMode || modeSwitching) return
     setModeSwitching(true)
     try {
@@ -783,7 +762,6 @@ export default function AgentPanel() {
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex shrink-0 overflow-hidden rounded border border-white/15 text-[11px]">
               <button onClick={() => void switchModelMode('cloud')} disabled={modeSwitching} title="使用已配置的云端模型" className={`px-2 py-0.5 ${modelMode === 'cloud' ? 'bg-player-accent text-white' : 'text-gray-400 hover:text-white'}`}>云端</button>
-              <button onClick={() => void switchModelMode('cli')} disabled={modeSwitching} title="使用订阅账号（Codex CLI / Claude Code 登录态）" className={`px-2 py-0.5 ${modelMode === 'cli' ? 'bg-violet-600 text-white' : 'text-gray-400 hover:text-white'}`}>订阅</button>
               <button onClick={() => void switchModelMode('bundled')} disabled={modeSwitching} title="使用本机内置离线模型" className={`px-2 py-0.5 ${modelMode === 'bundled' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'}`}>本地</button>
             </div>
             <span className="text-[11px] text-gray-600 truncate">{modelLabel}</span>

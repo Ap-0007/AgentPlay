@@ -27,6 +27,7 @@ const { listPlugins } = require('./plugin-service')
 const { PROVIDERS, listModels, probeConnection, detectVolcenginePlan, VOLCENGINE_CODING_BASE_URL, VOLCENGINE_CODING_MODELS, normalizeConfig } = require('./model-providers')
 const { discoverLocalServices } = require('./local-model-discovery')
 const { ModelConfigStore } = require('./model-config-store')
+const { ModelCatalog } = require('./model-catalog')
 const { ComputerUseProvider } = require('./adapters/computer-use-provider')
 const { ComputerUseOrchestrator } = require('./computer-use-orchestrator')
 const { ScreenCaptureService } = require('./screen-capture-service')
@@ -64,6 +65,7 @@ const isDev = !app.isPackaged
 let mpv = null
 let agentEngine = null
 let modelConfigStore = null
+let modelCatalog = null
 let computerUseOrchestrator = null
 let bundledRuntime = null
 let wifiTransfer = null
@@ -774,6 +776,7 @@ app.whenReady().then(async () => {
   }
 
   modelConfigStore = new ModelConfigStore(app.getPath('userData'), safeStorage)
+  modelCatalog = new ModelCatalog(app.getPath('userData'))
   bundledRuntime = new BundledLocalRuntime({
     resourceRoot: app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', 'resources'),
     userDataRoot: path.join(app.getPath('userData'), 'local-ai')
@@ -1778,7 +1781,38 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('models:providers', (event) => {
     assertTrustedSender(event)
-    return PROVIDERS
+    // catalog 覆盖静态清单（每周自动刷新：淘汰下架旧型号、上新型号）
+    return PROVIDERS.map((provider) => ({
+      ...provider,
+      models: modelCatalog ? modelCatalog.modelsFor(provider.id, provider.models) : provider.models
+    }))
+  })
+
+  // 手动刷新模型清单（模型中心「更新模型列表」按钮）；启动时若超过一周未刷也会后台自动刷
+  ipcMain.handle('models:refresh-catalog', async (event) => {
+    assertTrustedSender(event)
+    const listModelsForProvider = async () => {
+      const results = []
+      // 当前 chat 配置与 stash 云配置两份 Key 都可用于刷新各自厂商
+      const chatConfig = modelConfigStore.resolved('chat')
+      const stashConfig = (() => {
+        const stashed = modelConfigStore.readDocument().stash?.chat
+        return stashed ? normalizeConfig({ ...stashed, role: 'chat', apiKey: modelConfigStore.decrypt(stashed.encryptedApiKey) }, 'chat') : null
+      })()
+      for (const config of [chatConfig, stashConfig]) {
+        if (!config || !config.apiKey || config.providerId === 'bundled-lite' || config.protocol !== 'openai') continue
+        try {
+          const models = await listModels(config, { timeoutMs: 12000 })
+          if (models.length) results.push({ providerId: config.providerId, models })
+        } catch { /* 该厂商刷新失败，保留旧清单 */ }
+      }
+      return results
+    }
+    try {
+      return await modelCatalog.refresh({ listModelsForProvider, onLog: (message) => log.info(`模型清单刷新: ${message}`) })
+    } catch (error) {
+      return { updated: 0, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle('models:config', (event, role = 'chat') => {
     assertTrustedSender(event)
@@ -2760,6 +2794,32 @@ app.whenReady().then(async () => {
     syncService.setProgress(key, position, preferences)
     return true
   })
+
+  // 模型清单周更：超过一周未刷新则后台静默刷新（淘汰下架旧型号、上新型号）
+  void (async () => {
+    try {
+      if (!modelCatalog.needsRefresh()) return
+      log.info('模型清单超过一周未更新，后台刷新中')
+      await new Promise((resolve) => {
+        ipcMain.once = ipcMain.once || null
+        resolve()
+      })
+      const handlers = []
+      for (const handler of ipcMain._handlers?.values?.() || []) handlers.push(handler)
+      const refreshHandler = handlers.find((entry) => entry && /refresh-catalog/.test(String(entry)))
+      // 直接复用 IPC 内的刷新逻辑太重，这里简化为调用 catalog.refresh（仅 codex 缓存 + 当前配置厂商）
+      const chatConfig = modelConfigStore.resolved('chat')
+      const listModelsForProvider = async () => {
+        if (!chatConfig.apiKey || chatConfig.protocol !== 'openai' || chatConfig.providerId === 'bundled-lite') return []
+        try {
+          const models = await listModels(chatConfig, { timeoutMs: 12000 })
+          return models.length ? [{ providerId: chatConfig.providerId, models }] : []
+        } catch { return [] }
+      }
+      const result = await modelCatalog.refresh({ listModelsForProvider, onLog: (message) => log.info(`模型清单周更: ${message}`) })
+      log.info(`模型清单周更完成：${result.updated} 个厂商`)
+    } catch (error) { log.warn('模型清单周更失败（下周再试）', error) }
+  })()
 
   // 首启自动化：新装用户后台静默装好核心组件（离线转写 + 站点视频），不用用户去猜去找
   void (async () => {

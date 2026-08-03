@@ -434,7 +434,26 @@ export default function ModelCenter({ onClose }: Props) {
             <h2 className="text-lg font-medium">模型接入中心</h2>
             <p className="text-xs text-gray-500 mt-1">按用途选公司、型号和地址；聊天与电脑观察配置互不影响</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg">✕</button>
+          <div className="flex items-center gap-2">
+            <button
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true)
+                setStatus('正在刷新模型列表…')
+                try {
+                  const result = await window.aiPlayer?.models?.refreshCatalog?.()
+                  setStatus(result?.error ? ('刷新失败：' + result.error) : ('模型列表已更新（' + (result?.updated ?? 0) + ' 个厂商，每周自动刷新一次）'))
+                  const fresh = await window.aiPlayer?.models?.providers()
+                  if (fresh) setProviders(fresh)
+                } finally {
+                  setBusy(false)
+                }
+              }}
+              title="立即刷新模型清单（淘汰下架旧型号、上新型号；平时每周自动刷新）"
+              className="rounded-lg bg-white/10 px-3 py-1.5 text-xs text-gray-300 hover:bg-white/15 disabled:opacity-40"
+            >更新模型列表</button>
+            <button onClick={onClose} className="text-gray-400 hover:text-white text-lg">✕</button>
+          </div>
         </div>
 
         <div className="p-6 space-y-5">
