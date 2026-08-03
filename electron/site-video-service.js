@@ -136,7 +136,11 @@ class SiteVideoService {
 
   exec(args, { timeoutMs, signal, onLine } = {}) {
     return new Promise((resolve, reject) => {
-      const child = this.spawnImpl(this.enginePath, args, { windowsHide: true, shell: false })
+      // 清空代理环境变量强制直连：本地代理（Clash/v2ray 等）对小请求放行、对视频下载这类
+      // 大流量长连接直接掐断（X/GitHub 实测必断），且国内站点本就不需要代理
+      const env = { ...process.env }
+      for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) delete env[key]
+      const child = this.spawnImpl(this.enginePath, args, { windowsHide: true, shell: false, env })
       const stdoutChunks = []
       const stderrChunks = []
       let lineBuffer = ''
@@ -183,10 +187,29 @@ class SiteVideoService {
     const hasFile = Boolean(cookiesFile && fs.existsSync(cookiesFile))
     const attempts = hasFile ? [null, cookiesFile] : [null]
     let lastError = null
+    // 网络波动原地重试（X/YouTube 在当前网络下时通时断）：同一尝试最多 3 次，间隔 2.5s；
+    // cookies/登录类错误立刻抛给外层换凭证重试，不在网络重试里空转
+    const runWithNetRetry = async (attempt) => {
+      let lastNetError = null
+      for (let netRetry = 0; netRetry < 3; netRetry += 1) {
+        try {
+          return await run(attempt)
+        } catch (error) {
+          if (signal?.aborted) throw error
+          lastNetError = error
+          const message = String(error?.message || '')
+          const isNetwork = /connection aborted|remotedisconnected|proxyerror|econnreset|etimedout|socket timeout|timed out|connection reset|closed abruptly|network is unreachable|unable to connect/i.test(message)
+          if (!isNetwork || netRetry >= 2) throw error
+          onRetryNote?.(`网络波动，正在重试（${netRetry + 2}/3）…`)
+          await new Promise((resolve) => setTimeout(resolve, 2500))
+        }
+      }
+      throw lastNetError
+    }
     for (const attempt of attempts) {
       if (attempt) onRetryNote?.('匿名访问被站点拒绝，正在用已导入的浏览器 Cookies 重试')
       try {
-        return await run(attempt)
+        return await runWithNetRetry(attempt)
       } catch (error) {
         lastError = error
         if (signal?.aborted) throw error
@@ -203,7 +226,7 @@ class SiteVideoService {
             const freshFile = cookiesFileForUrl(this.cookiesDir, target || '')
             if (freshFile && fs.existsSync(freshFile)) {
               try {
-                return await run(freshFile)
+                return await runWithNetRetry(freshFile)
               } catch (error) {
                 if (signal?.aborted) throw error
                 lastError = error
@@ -214,6 +237,10 @@ class SiteVideoService {
       }
       if (hasFile) throw new Error('已导入的 Cookies 失效或站点仍拒绝：点下方「扫码登录」一次即可自动续期，或重新导出 cookies.txt 导入（VIP/付费/DRM 内容不支持）')
       throw new Error('该站点需要登录态：点下方「扫码登录」一次（推荐，以后自动续期）；或用浏览器扩展导出本站 cookies.txt 后点「导入 Cookies」')
+    }
+    const lastMessage = String(lastError?.message || '')
+    if (/connection aborted|remotedisconnected|proxyerror|econnreset|timed out|closed abruptly|unable to connect/i.test(lastMessage)) {
+      throw new Error('当前网络访问该站点不稳定（X/YouTube 等海外站时通时断）：请稍后重试；若反复失败且内容需登录，点「扫码登录」或导入 cookies.txt')
     }
     throw lastError
   }

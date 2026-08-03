@@ -289,3 +289,21 @@ test('site video wiring: auto component download, chat route and model center ca
   assert.match(center, /站点视频解析组件 · yt-dlp 官方版/)
   assert.match(service, /裸链接视为下载意图/)
 })
+
+
+test('X is a supported video site, yt-dlp spawned with proxy env cleared for direct connection', () => {
+  const hosts = fs.readFileSync(path.join(__dirname, '..', 'electron', 'media-download-service.js'), 'utf8')
+  assert.match(hosts, /'x\.com', 'twitter\.com'/)
+  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'site-video-service.js'), 'utf8')
+  // 本地代理对大流量长连接必断（GitHub/X 实测）：spawn 时清掉代理环境变量
+  assert.match(service, /delete env\[key\]/)
+  assert.match(service, /HTTP_PROXY.*HTTPS_PROXY.*ALL_PROXY/)
+})
+
+test('network flaky errors retry in place, cookies errors still escalate, friendly guide on final network failure', () => {
+  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'site-video-service.js'), 'utf8')
+  assert.match(service, /runWithNetRetry/)
+  assert.match(service, /netRetry < 3/)
+  assert.match(service, /网络波动，正在重试/)
+  assert.match(service, /当前网络访问该站点不稳定/)
+})
