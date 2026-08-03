@@ -503,6 +503,16 @@ class AgentEngine {
   // 无工具调用的通用文本生成入口。文档工作台使用独立 system prompt，
   // 避免把文档任务误路由成暂停、快进等播放器指令。
   async completeText(messages, apiKey = null, options = {}) {
+    // 订阅账号后端（Codex CLI / Claude Code）：不经 resolveProvider 的网络栈，走只读子进程
+    const cliProviderId = typeof apiKey === 'object' && apiKey !== null ? apiKey.providerId : null
+    if (cliProviderId === 'codex-chatgpt' || cliProviderId === 'claude-code') {
+      const { completeViaCodex, completeViaClaude } = require('./cli-model-service')
+      const model = typeof apiKey === 'object' && apiKey !== null ? apiKey.model : null
+      const result = cliProviderId === 'codex-chatgpt'
+        ? await completeViaCodex({ messages, systemPrompt: options.systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs })
+        : await completeViaClaude({ messages, systemPrompt: options.systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs })
+      return { text: result.text, provider: cliProviderId, model: model || 'default' }
+    }
     const resolved = this.resolveProvider(apiKey)
     const { base, key, model, protocol, providerId, requiresKey = true } = resolved
     if (!base || !model || (!key && requiresKey)) {

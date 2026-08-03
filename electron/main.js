@@ -1153,6 +1153,11 @@ app.whenReady().then(async () => {
 
   // 批量任务：按授权 token 批量压缩或批量转写（附件多选后说「全部压缩/全部转写」）
   // 一键接入：粘贴 Key 自动识别厂商——并发探测所有 OpenAI 兼容厂商，返回按延迟排序的匹配与真实模型列表
+  ipcMain.handle('models:cli-status', async (event) => {
+    assertTrustedSender(event)
+    const { cliModelStatus } = require('./cli-model-service')
+    return cliModelStatus()
+  })
   ipcMain.handle('models:auto-detect', async (event, input = {}) => {
     assertTrustedSender(event)
     const apiKey = String(input.apiKey || '').trim()

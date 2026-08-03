@@ -48,6 +48,7 @@ export default function ModelCenter({ onClose }: Props) {
   const [oneKeyError, setOneKeyError] = useState('')
   const [oneKeyMatches, setOneKeyMatches] = useState<Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>>([])
   const [oneKeyModelPick, setOneKeyModelPick] = useState<Record<string, string>>({})
+  const [cliStatus, setCliStatus] = useState<{ codex: { installed: boolean; loggedIn: boolean; note: string }; claude: { installed: boolean; loggedIn: boolean; note: string } } | null>(null)
   const [whisperStatus, setWhisperStatus] = useState<{ available: boolean; smallAvailable?: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; smallDownload?: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number }; smallPack?: { totalBytes: number } } | null>(null)
   const [whisperError, setWhisperError] = useState('')
   const [translateStatus, setTranslateStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
@@ -100,6 +101,7 @@ export default function ModelCenter({ onClose }: Props) {
       }
     })
     void window.aiPlayer?.transcribe?.status().then((status) => { if (active && status) setWhisperStatus(status) })
+    void window.aiPlayer?.models?.cliStatus?.().then((status) => { if (active && status) setCliStatus(status) })
     const offWhisper = window.aiPlayer?.transcribe?.onProgress?.(() => {
       void window.aiPlayer?.transcribe?.status().then((status) => { if (active && status) setWhisperStatus(status) })
     })
@@ -269,6 +271,17 @@ export default function ModelCenter({ onClose }: Props) {
 
   const cancelWhisperDownload = async () => {
     await window.aiPlayer?.transcribe?.cancelDownload()
+  }
+
+  // 订阅账号一键接入：保存 cli provider（无需 Key，官方 CLI 自管 OAuth）
+  const applyCli = async (cliProviderId: 'codex-chatgpt' | 'claude-code') => {
+    const provider = roleProviders.find((item) => item.id === cliProviderId)
+    const saved = await window.aiPlayer?.models?.save({ role, providerId: cliProviderId, model: provider?.models?.[0] || 'default', baseUrl: '' })
+    if (saved) {
+      setStatus(`已接入 ${provider?.name || cliProviderId}，可以开始对话了`)
+      setProviderId(cliProviderId)
+      setModel(provider?.models?.[0] || 'default')
+    }
   }
 
   const startSmallDownload = async () => {
@@ -547,6 +560,25 @@ export default function ModelCenter({ onClose }: Props) {
                 <div className="mt-1 text-xs text-gray-400">{whisperStatus.smallDownload?.currentFile || '下载中'} · {((whisperStatus.smallDownload?.receivedBytes || 0) / 1024 / 1024).toFixed(0)}/{((whisperStatus.smallDownload?.totalBytes || 0) / 1024 / 1024).toFixed(0)}MB</div>
               </div>
             )}
+          </div>}
+
+          {role === 'chat' && cliStatus && (cliStatus.codex.installed || cliStatus.claude.installed) && <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 px-4 py-4">
+            <div className="text-sm text-violet-100">订阅账号（免 API Key）</div>
+            <div className="mt-1 text-xs text-gray-500">复用本机官方 CLI 的订阅登录态，只读子进程调用，不产生 API 费用</div>
+            <div className="mt-3 space-y-2">
+              {[
+                { key: 'codex' as const, providerId: 'codex-chatgpt' as const, label: 'ChatGPT 订阅（经 Codex CLI）', status: cliStatus.codex },
+                { key: 'claude' as const, providerId: 'claude-code' as const, label: 'Claude 订阅（经 Claude Code）', status: cliStatus.claude }
+              ].map((item) => (
+                <div key={item.key} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm text-gray-200">{item.label}</div>
+                    <div className={`text-[11px] ${item.status.loggedIn ? 'text-emerald-300' : 'text-amber-300'}`}>{item.status.loggedIn ? '已就绪' : item.status.note || '未登录'}</div>
+                  </div>
+                  <button disabled={!item.status.loggedIn || busy} onClick={() => void applyCli(item.providerId)} className="shrink-0 rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs text-white hover:bg-violet-600 disabled:opacity-40">接入</button>
+                </div>
+              ))}
+            </div>
           </div>}
 
           {role === 'chat' && translateStatus && <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-4">
