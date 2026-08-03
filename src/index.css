@@ -151,6 +151,12 @@ body {
 [data-theme='light'] .bg-black\/30 { background-color: rgb(15 23 42 / 0.07); }
 [data-theme='light'] .bg-black\/40 { background-color: rgb(15 23 42 / 0.08); }
 [data-theme='light'] .bg-black\/70 { background-color: rgb(15 23 42 / 0.5); }
+[data-theme='light'] .bg-black\/25 { background-color: rgb(15 23 42 / 0.06); }
+[data-theme='light'] .bg-black\/35 { background-color: rgb(15 23 42 / 0.08); }
+[data-theme='light'] .bg-black\/60 { background-color: rgb(15 23 42 / 0.45); }
+[data-theme='light'] .bg-black\/75 { background-color: rgb(15 23 42 / 0.55); }
+/* 浅色主题下文本域/select 可读性 */
+[data-theme='light'] select option { color: #0f172a; background: #fff; }
 [data-theme='light'] .bg-white\/5 { background-color: rgb(15 23 42 / 0.05); }
 [data-theme='light'] .bg-white\/10 { background-color: rgb(15 23 42 / 0.08); }
 [data-theme='light'] .hover\:bg-white\/5:hover { background-color: rgb(15 23 42 / 0.05); }

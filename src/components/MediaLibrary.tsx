@@ -559,7 +559,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
       {menu && (
         <div className="fixed inset-0 z-[70]" onClick={() => setMenu(null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null) }}>
           <div
-            className="absolute min-w-44 rounded-lg border border-white/10 bg-[#151515] py-1 shadow-2xl"
+            className="absolute min-w-44 rounded-lg border border-white/10 theme-panel py-1 shadow-2xl"
             style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 150) }}
             onClick={(event) => event.stopPropagation()}
           >

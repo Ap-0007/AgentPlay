@@ -805,7 +805,7 @@ export default function AgentPanel() {
                 <button onClick={() => setAttachments((current) => current.filter((item) => item.token !== file.token))} className="text-blue-300 hover:text-white">✕</button>
               </span>
             ))}
-            <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)} className="ml-auto rounded border border-white/10 bg-[#111c2d] px-2 py-1 text-xs text-gray-300 outline-none">
+            <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)} className="ml-auto rounded border border-white/10 bg-player-surface px-2 py-1 text-xs text-gray-300 outline-none">
               <option value="auto">输出：自动判断</option>
               <option value="docx">Word (.docx)</option>
               <option value="xlsx">Excel (.xlsx)</option>

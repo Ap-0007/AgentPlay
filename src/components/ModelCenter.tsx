@@ -429,8 +429,8 @@ export default function ModelCenter({ onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-6" onClick={onClose}>
-      <div className="w-full max-w-3xl max-h-[88vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#151515] shadow-2xl" onClick={(event) => event.stopPropagation()}>
-        <div className="sticky top-0 z-10 flex items-start justify-between px-6 py-5 border-b border-white/10 bg-[#151515]">
+      <div className="w-full max-w-3xl max-h-[88vh] overflow-y-auto rounded-2xl border border-white/10 theme-panel shadow-2xl" onClick={(event) => event.stopPropagation()}>
+        <div className="sticky top-0 z-10 flex items-start justify-between px-6 py-5 border-b border-white/10 theme-panel">
           <div>
             <h2 className="text-lg font-medium">模型接入中心</h2>
             <p className="text-xs text-gray-500 mt-1">按用途选公司、型号和地址；聊天与电脑观察配置互不影响</p>

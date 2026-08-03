@@ -62,8 +62,8 @@ export default function ComputerUsePanel({ onClose }: Props) {
 
   return (
     <div data-ai-capture-hide className="fixed inset-0 z-[72] bg-black/75 flex items-center justify-center p-6" onClick={onClose}>
-      <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl border border-amber-500/20 bg-[#151515] shadow-2xl" onClick={(event) => event.stopPropagation()}>
-        <div className="sticky top-0 z-10 flex items-start justify-between px-6 py-5 border-b border-white/10 bg-[#151515]">
+      <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl border border-amber-500/20 theme-panel shadow-2xl" onClick={(event) => event.stopPropagation()}>
+        <div className="sticky top-0 z-10 flex items-start justify-between px-6 py-5 border-b border-white/10 theme-panel">
           <div><h2 className="text-lg">电脑操作建议</h2><p className="text-xs text-amber-300 mt-1">观察模式 · 不接管鼠标键盘 · 不执行系统命令</p></div>
           <button onClick={onClose} className="text-gray-400 hover:text-white">✕</button>
         </div>
