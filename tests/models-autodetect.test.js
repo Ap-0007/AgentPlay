@@ -25,3 +25,12 @@ test('model center has one-key connect zone', () => {
   assert.match(modelCenter, /oneKeyModelPick/)
   assert.match(modelCenter, /applyMatch/)
 })
+
+
+test('model form: key visibility toggle, cli providers hide key/url steps, save allowed without baseUrl', () => {
+  assert.match(modelCenter, /showKey/)
+  assert.match(modelCenter, /显示 Key/)
+  assert.match(modelCenter, /provider\?\.protocol !== 'cli' && <label/)
+  assert.match(modelCenter, /订阅账号无需 Key 和地址/)
+  assert.match(modelCenter, /provider\?\.protocol !== 'cli' && !baseUrl/)
+})

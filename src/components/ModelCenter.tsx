@@ -4,7 +4,7 @@ interface Provider {
   id: string
   name: string
   region: string
-  protocol: 'openai' | 'anthropic' | 'gemini'
+  protocol: 'openai' | 'anthropic' | 'gemini' | 'cli'
   baseUrl: string
   models: string[]
   requiresKey: boolean
@@ -48,6 +48,7 @@ export default function ModelCenter({ onClose }: Props) {
   const [oneKeyError, setOneKeyError] = useState('')
   const [oneKeyMatches, setOneKeyMatches] = useState<Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>>([])
   const [oneKeyModelPick, setOneKeyModelPick] = useState<Record<string, string>>({})
+  const [showKey, setShowKey] = useState(false)
   const [cliStatus, setCliStatus] = useState<{ codex: { installed: boolean; loggedIn: boolean; note: string }; claude: { installed: boolean; loggedIn: boolean; note: string } } | null>(null)
   const [whisperStatus, setWhisperStatus] = useState<{ available: boolean; smallAvailable?: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; smallDownload?: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number }; smallPack?: { totalBytes: number } } | null>(null)
   const [whisperError, setWhisperError] = useState('')
@@ -675,22 +676,29 @@ export default function ModelCenter({ onClose }: Props) {
               {provider?.modelHint && <p className="text-xs text-amber-400/80 mt-2">{provider.modelHint}</p>}
               {provider?.warning && <p className="text-xs text-amber-400/80 mt-2">{provider.warning}</p>}
             </label>
-            <label className="block">
+            {provider?.protocol !== 'cli' && <label className="block">
               <span className="block text-xs text-gray-400 mb-2">3. API Key {provider?.requiresKey ? '' : '（本地服务可不填）'}</span>
-              <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasApiKey ? '已安全保存；留空表示继续使用' : '粘贴 API Key'} className="w-full bg-black/35 border border-white/10 rounded-lg px-3 py-3 text-sm outline-none focus:border-player-accent" />
-            </label>
+              <span className="relative block">
+                <input type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasApiKey ? '已安全保存；留空表示继续使用' : '粘贴 API Key'} className="w-full bg-black/35 border border-white/10 rounded-lg px-3 py-3 pr-10 text-sm outline-none focus:border-player-accent" />
+                <button type="button" onClick={() => setShowKey((value) => !value)} title={showKey ? '隐藏 Key' : '显示 Key'} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-200 text-sm">{showKey ? '🙈' : '👁'}</button>
+              </span>
+            </label>}
           </div>
 
-          <label className="block">
-            <span className="block text-xs text-gray-400 mb-2">4. API / 网页服务地址</span>
-            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://.../v1" className="w-full bg-black/35 border border-white/10 rounded-lg px-3 py-3 text-sm font-mono outline-none focus:border-player-accent" />
-            <p className="text-xs text-gray-600 mt-2">支持官方接口、本地 Ollama / LM Studio、OpenAI 兼容代理和自建服务；不会抓取网页账号或 Cookie。</p>
-          </label>
+          {provider?.protocol === 'cli' ? (
+            <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 px-4 py-3 text-xs text-violet-200">订阅账号无需 Key 和地址：复用本机官方 CLI 登录态，选好型号直接「保存并启用」即可。</div>
+          ) : (
+            <label className="block">
+              <span className="block text-xs text-gray-400 mb-2">4. API / 网页服务地址</span>
+              <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://.../v1" className="w-full bg-black/35 border border-white/10 rounded-lg px-3 py-3 text-sm font-mono outline-none focus:border-player-accent" />
+              <p className="text-xs text-gray-600 mt-2">支持官方接口、本地 Ollama / LM Studio、OpenAI 兼容代理和自建服务；不会抓取网页账号或 Cookie。</p>
+            </label>
+          )}
 
           <div className="flex flex-wrap gap-3">
             <button disabled={busy} onClick={refreshModels} className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-sm disabled:opacity-40">读取可用型号</button>
             <button disabled={busy} onClick={testConnection} className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-sm disabled:opacity-40">测试连接</button>
-            <button disabled={busy || !model || !baseUrl} onClick={save} className="px-5 py-2 rounded-lg bg-player-accent hover:bg-blue-600 text-sm disabled:opacity-40">保存并启用</button>
+            <button disabled={busy || !model || (provider?.protocol !== 'cli' && !baseUrl)} onClick={save} className="px-5 py-2 rounded-lg bg-player-accent hover:bg-blue-600 text-sm disabled:opacity-40">保存并启用</button>
             {hasApiKey && <button disabled={busy} onClick={clearKey} className="px-3 py-2 text-xs text-red-300 hover:text-red-200">清除已存 Key</button>}
           </div>
 
