@@ -291,13 +291,9 @@ test('site video wiring: auto component download, chat route and model center ca
 })
 
 
-test('X is a supported video site, yt-dlp spawned with proxy env cleared for direct connection', () => {
+test('X is a supported video site', () => {
   const hosts = fs.readFileSync(path.join(__dirname, '..', 'electron', 'media-download-service.js'), 'utf8')
   assert.match(hosts, /'x\.com', 'twitter\.com'/)
-  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'site-video-service.js'), 'utf8')
-  // 本地代理对大流量长连接必断（GitHub/X 实测）：spawn 时清掉代理环境变量
-  assert.match(service, /delete env\[key\]/)
-  assert.match(service, /HTTP_PROXY.*HTTPS_PROXY.*ALL_PROXY/)
 })
 
 test('network flaky errors retry in place, cookies errors still escalate, friendly guide on final network failure', () => {
@@ -309,12 +305,12 @@ test('network flaky errors retry in place, cookies errors still escalate, friend
 })
 
 
-test('proxy split: domestic sites go direct, overseas sites keep system proxy (user VPN split rules)', () => {
+test('yt-dlp spawns with inherited process env (proxy handling left to user VPN rules)', () => {
   const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'site-video-service.js'), 'utf8')
-  assert.match(service, /DIRECT_HOSTS/)
-  assert.match(service, /bilibili\.com.*douyin\.com|douyin\.com/)
-  // 海外站不再一刀切清代理（用户 VPN 分流：出海走 VPS、国内直连）
-  assert.match(service, /DIRECT_HOSTS\.some\(\(site\) => host === site \|\| host\.endsWith\('\.' \+ site\)/)
+  // 不碰代理环境变量：系统代理/VPN 分流规则由用户自己管理，应用不增删任何 env
+  assert.doesNotMatch(service, /delete env\[key\]/)
+  assert.doesNotMatch(service, /DIRECT_HOSTS/)
+  assert.match(service, /spawnImpl\(this\.enginePath, args, \{ windowsHide: true, shell: false \}\)/)
 })
 
 test('link choice is a prominent two-option card and does not duplicate the link in history', () => {
