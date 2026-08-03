@@ -276,7 +276,9 @@ export default function ModelCenter({ onClose }: Props) {
   // 订阅账号一键接入：保存 cli provider（无需 Key，官方 CLI 自管 OAuth）
   const applyCli = async (cliProviderId: 'codex-chatgpt' | 'claude-code') => {
     const provider = roleProviders.find((item) => item.id === cliProviderId)
-    const saved = await window.aiPlayer?.models?.save({ role, providerId: cliProviderId, model: provider?.models?.[0] || 'default', baseUrl: '' })
+    const cliModel = provider?.models?.[0] || 'default'
+    const saved = await window.aiPlayer?.models?.save({ role, providerId: cliProviderId, model: cliModel, baseUrl: '' })
+    if (saved) localStorage.setItem('aiplayer_last_cli', JSON.stringify({ providerId: cliProviderId, model: cliModel }))
     if (saved) {
       setStatus(`已接入 ${provider?.name || cliProviderId}，可以开始对话了`)
       setProviderId(cliProviderId)

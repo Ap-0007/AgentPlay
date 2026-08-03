@@ -17,7 +17,7 @@ test('subscription providers declared without key requirement, cli protocol pass
   assert.match(providers, /id: 'claude-code'.*requiresKey: false/)
   assert.match(providers, /protocol === 'cli'\) return \{ origin: 'cli:\/\/local' \}/)
   assert.match(providers, /gpt-5\.5/, 'codex 模型清单')
-  assert.match(providers, /claude-sonnet-4\.5/, 'claude 模型清单')
+  assert.match(providers, /claude-opus-5/, 'claude 模型清单')
 })
 
 test('agent engine routes cli providers to subprocess backend, never to network stack', () => {
@@ -54,4 +54,14 @@ test('buildPrompt keeps system prompt and recent turns; extractCodexAnswer ignor
     '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"这是答案"}}'
   ].join('\n')
   assert.equal(extractCodexAnswer(stdout), '这是答案')
+})
+
+
+test('codex models reflect the real 5.6 lineup, claude reflects opus-5 generation; three-way switch includes cli', () => {
+  assert.match(providers, /gpt-5\.6-sol.*gpt-5\.6-terra.*gpt-5\.6-luna/)
+  assert.match(providers, /claude-opus-5.*claude-sonnet-5.*claude-fable-5/)
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  assert.match(panel, /'cloud' \| 'cli' \| 'bundled'/)
+  assert.match(panel, /switchModelMode\('cli'\)/)
+  assert.match(panel, /aiplayer_last_cli/)
 })
