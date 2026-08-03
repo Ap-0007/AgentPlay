@@ -827,19 +827,27 @@ export default function AgentPanel() {
           </div>
         )}
         {linkChoice && (
-          <div className="px-4 py-2 border-b border-white/10 flex flex-wrap items-center gap-2">
-            <span className="text-[11px] text-gray-500">链接已就绪：</span>
-            <button
-              onClick={() => { const choice = linkChoice; setLinkChoice(null); void runDownloadTaskRef.current(choice.url, choice.text, choice.direct) }}
-              className="rounded-full border border-player-accent/40 bg-player-accent/10 px-3 py-1 text-xs text-player-accent hover:bg-player-accent/20"
-            >⬇ 仅下载</button>
-            {linkChoice.canAnalyze && (
+          <div className="mx-4 my-2 rounded-2xl border border-player-accent/40 bg-player-accent/10 p-4">
+            <p className="mb-3 text-center text-sm font-medium text-gray-100">这个链接想怎么处理？</p>
+            <div className="flex gap-3">
               <button
-                onClick={() => { const choice = linkChoice; setLinkChoice(null); void runLinkAnalysisTaskRef.current(choice.url, choice.text) }}
-                className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20"
-              >🎬 下载并拉片</button>
-            )}
-            <button onClick={() => setLinkChoice(null)} className="px-2 py-1 text-xs text-gray-500 hover:text-white">忽略</button>
+                onClick={() => { const choice = linkChoice; setLinkChoice(null); void runDownloadTaskRef.current(choice.url, '', choice.direct) }}
+                className="flex-1 rounded-xl bg-player-accent px-4 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90"
+              >
+                ⬇ 仅下载
+                <span className="mt-0.5 block text-[11px] font-normal opacity-75">存到本地，不做分析</span>
+              </button>
+              {linkChoice.canAnalyze ? (
+                <button
+                  onClick={() => { const choice = linkChoice; setLinkChoice(null); void runLinkAnalysisTaskRef.current(choice.url, '') }}
+                  className="flex-1 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90"
+                >
+                  🎬 下载并拉片
+                  <span className="mt-0.5 block text-[11px] font-normal opacity-75">下载后自动出深度报告</span>
+                </button>
+              ) : null}
+            </div>
+            <button onClick={() => setLinkChoice(null)} className="mt-2 block w-full text-center text-[11px] text-gray-500 hover:text-gray-300">先不处理</button>
           </div>
         )}
         {suggestedActions.length > 0 && (

@@ -136,10 +136,19 @@ class SiteVideoService {
 
   exec(args, { timeoutMs, signal, onLine } = {}) {
     return new Promise((resolve, reject) => {
-      // 清空代理环境变量强制直连：本地代理（Clash/v2ray 等）对小请求放行、对视频下载这类
-      // 大流量长连接直接掐断（X/GitHub 实测必断），且国内站点本就不需要代理
+      // 代理分流（跟随用户的分流规则，不一刀切）：
+      // 国内站清代理直连——本地代理对大流量长连接必断（X/GitHub 实测），国内站本就不需要代理；
+      // 海外站保留系统代理——用户 VPN 已配好分流（出海走新加坡 VPS、海外 AI 走美国固定 IP），
+      // 强制直连反而会被墙/抖动（生产环境实证）。
+      const DIRECT_HOSTS = ['bilibili.com', 'b23.tv', 'douyin.com', 'ixigua.com', 'kuaishou.com', 'xiaohongshu.com', 'v.qq.com', 'iqiyi.com', 'mgtv.com', 'youku.com', 'sohu.com']
       const env = { ...process.env }
-      for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) delete env[key]
+      const target = [...args].reverse().find((arg) => /^https?:\/\//.test(String(arg))) || ''
+      try {
+        const host = new URL(target).hostname.toLowerCase()
+        if (DIRECT_HOSTS.some((site) => host === site || host.endsWith('.' + site))) {
+          for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) delete env[key]
+        }
+      } catch { /* URL 异常时保留原环境 */ }
       const child = this.spawnImpl(this.enginePath, args, { windowsHide: true, shell: false, env })
       const stdoutChunks = []
       const stderrChunks = []

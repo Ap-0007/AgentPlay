@@ -307,3 +307,22 @@ test('network flaky errors retry in place, cookies errors still escalate, friend
   assert.match(service, /网络波动，正在重试/)
   assert.match(service, /当前网络访问该站点不稳定/)
 })
+
+
+test('proxy split: domestic sites go direct, overseas sites keep system proxy (user VPN split rules)', () => {
+  const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'site-video-service.js'), 'utf8')
+  assert.match(service, /DIRECT_HOSTS/)
+  assert.match(service, /bilibili\.com.*douyin\.com|douyin\.com/)
+  // 海外站不再一刀切清代理（用户 VPN 分流：出海走 VPS、国内直连）
+  assert.match(service, /DIRECT_HOSTS\.some\(\(site\) => host === site \|\| host\.endsWith\('\.' \+ site\)/)
+})
+
+test('link choice is a prominent two-option card and does not duplicate the link in history', () => {
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  assert.match(panel, /这个链接想怎么处理？/)
+  assert.match(panel, /存到本地，不做分析/)
+  assert.match(panel, /下载后自动出深度报告/)
+  // 选择按钮传空 instruction，不再重复记录链接
+  assert.match(panel, /runDownloadTaskRef\.current\(choice\.url, '', choice\.direct\)/)
+  assert.match(panel, /runLinkAnalysisTaskRef\.current\(choice\.url, ''\)/)
+})
