@@ -1848,6 +1848,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('models:test', async (event, config = {}) => {
     assertTrustedSender(event)
     try {
+      // 订阅类厂商（cli）：没有 URL 可探测，直接真实聊一句验证 CLI 登录态与模型可用性
+      if (config.providerId === 'codex-chatgpt' || config.providerId === 'claude-code') {
+        try {
+          const result = await agentEngine.completeText(
+            [{ role: 'user', content: '只回复两个字：OK' }],
+            { providerId: config.providerId, model: config.model, baseUrl: '', apiKey: '', requiresKey: false },
+            { timeoutMs: 180000 }
+          )
+          return { success: true, message: `订阅通道正常（${config.providerId === 'codex-chatgpt' ? 'Codex CLI' : 'Claude Code'} · ${config.model}）：${String(result.text || '').slice(0, 20)}` }
+        } catch (error) {
+          return { success: false, message: error instanceof Error ? error.message : String(error) }
+        }
+      }
       const saved = modelConfigStore.resolved(config.role || 'chat')
       const apiKey = config.apiKey || (config.useSavedKey && config.providerId === saved.providerId ? saved.apiKey : '')
       // 用已存 Key 时必须钉死已存地址，防止渲染器把 Key 带到任意 baseUrl（Key 外泄面）

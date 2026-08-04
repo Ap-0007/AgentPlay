@@ -62,3 +62,11 @@ test('codex models reflect the real 5.6 lineup + spark, claude reflects opus-5 g
   assert.match(providers, /claude-opus-5.*claude-sonnet-5.*claude-fable-5/)
   assert.match(providers, /gpt-5\.3-codex-spark/)
 })
+
+
+test('models:test for cli providers probes with a real short chat instead of network probe', () => {
+  assert.match(main, /config.providerId === 'codex-chatgpt' \|\| config.providerId === 'claude-code'/)
+  assert.match(main, /只回复两个字：OK/)
+  assert.match(main, /订阅通道正常/)
+  assert.match(main, /timeoutMs: 180000/)
+})
