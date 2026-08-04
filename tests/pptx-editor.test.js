@@ -243,3 +243,104 @@ test('pptx keeps master, layouts, theme, animations and notes after edits', asyn
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('parsePptxEditInstruction reads chart and animation operations', () => {
+  assert.deepEqual(parsePptxEditInstruction('把图表标题改成全年汇总'), [{ type: 'chart-title', to: '全年汇总', page: null }])
+  assert.deepEqual(parsePptxEditInstruction('把第2页图表里的一月改成500'), [{ type: 'chart-data', label: '一月', value: 500, page: 2 }])
+  assert.deepEqual(parsePptxEditInstruction('删除第3页的动画'), [{ type: 'anim-clear', page: 3 }])
+  assert.deepEqual(parsePptxEditInstruction('删除全部动画'), [{ type: 'anim-clear', page: null }])
+  // 通用替换不受影响
+  assert.deepEqual(parsePptxEditInstruction('把张三替换成李四'), [{ type: 'replace', from: '张三', to: '李四', page: null }])
+})
+
+test('chart title and data point edits hit cache and embedded workbook, other parts intact', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-chart-'))
+  try {
+    const pptx = new PptxGenJS()
+    const s1 = pptx.addSlide()
+    s1.addText('封面', { x: 1, y: 1, w: 8, h: 1 })
+    const s2 = pptx.addSlide()
+    s2.addChart(pptx.ChartType.bar, [{ name: '销售额', labels: ['一月', '二月', '三月'], values: [100, 200, 150] }], { x: 1, y: 1, w: 8, h: 4, showTitle: true, title: '季度销售' })
+    const fixture = path.join(dir, 'chart.pptx')
+    await pptx.writeFile({ fileName: fixture })
+    const out = path.join(dir, 'chart-out.pptx')
+    await editPptx(fixture, out, [
+      { type: 'chart-title', to: '全年汇总', page: 2 },
+      { type: 'chart-data', label: '二月', value: 500, page: 2 }
+    ])
+    const archive = await JSZip.loadAsync(fs.readFileSync(out))
+    const chartXml = await archive.file('ppt/charts/chart1.xml').async('string')
+    assert.ok(chartXml.includes('全年汇总'), '图表标题缓存必须更新')
+    assert.ok(!chartXml.includes('季度销售'), '旧标题必须消失')
+    assert.match(chartXml, /<c:pt idx="1"><c:v>500<\/c:v><\/c:pt>/, '二月的数据点缓存必须为 500')
+    // 嵌入式工作簿同步：Sheet1!B3（二月行）必须是 500
+    const embedName = Object.keys(archive.files).find((n) => /embeddings\/.*\.xlsx$/.test(n))
+    assert.ok(embedName, '必须有嵌入式工作簿')
+    const ExcelJS = require('exceljs')
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(await archive.file(embedName).async('nodebuffer'))
+    const sheet = workbook.getWorksheet('Sheet1')
+    assert.equal(Number(sheet.getCell('B3').value), 500, '工作簿中二月值必须同步为 500')
+    // 未触及部件原样
+    const before = await JSZip.loadAsync(fs.readFileSync(fixture))
+    for (const name of Object.keys(before.files).filter((n) => /slideMaster\d+\.xml$|theme\d+\.xml$/.test(n))) {
+      assert.equal(await archive.file(name).async('string'), await before.file(name).async('string'), `${name} 必须逐字不变`)
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('chart-data errors honestly when label or chart missing', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-chart-miss-'))
+  try {
+    const pptx = new PptxGenJS()
+    pptx.addSlide().addText('纯文字页', { x: 1, y: 1, w: 8, h: 1 })
+    const fixture = path.join(dir, 'nochart.pptx')
+    await pptx.writeFile({ fileName: fixture })
+    await assert.rejects(() => editPptx(fixture, path.join(dir, 'x.pptx'), [{ type: 'chart-data', label: '一月', value: 1, page: 1 }]), /没有图表/)
+    const pptx2 = new PptxGenJS()
+    pptx2.addSlide().addChart(pptx2.ChartType.bar, [{ name: 's', labels: ['一月'], values: [1] }], { x: 1, y: 1, w: 8, h: 4 })
+    const fixture2 = path.join(dir, 'c.pptx')
+    await pptx2.writeFile({ fileName: fixture2 })
+    await assert.rejects(() => editPptx(fixture2, path.join(dir, 'y.pptx'), [{ type: 'chart-data', label: '十二月', value: 1, page: null }]), /找不到类别：十二月/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('anim-clear removes timing from target page only and errors on page without animation', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-anim-'))
+  try {
+    const pptx = new PptxGenJS()
+    pptx.addSlide().addText('第一页', { x: 1, y: 1, w: 8, h: 1 })
+    pptx.addSlide().addText('第二页', { x: 1, y: 1, w: 8, h: 1 })
+    pptx.addSlide().addText('第三页', { x: 1, y: 1, w: 8, h: 1 })
+    const fixture = path.join(dir, 'anim.pptx')
+    await pptx.writeFile({ fileName: fixture })
+    const TIMING = '<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"/></p:par></p:tnLst></p:timing>'
+    const zip = await JSZip.loadAsync(fs.readFileSync(fixture))
+    for (const name of ['ppt/slides/slide2.xml', 'ppt/slides/slide3.xml']) {
+      const xml = await zip.file(name).async('string')
+      zip.file(name, xml.replace('</p:sld>', TIMING + '</p:sld>'))
+    }
+    fs.writeFileSync(fixture, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }))
+
+    const out = path.join(dir, 'anim-out.pptx')
+    const summary = await editPptx(fixture, out, [{ type: 'anim-clear', page: 2 }])
+    assert.match(summary, /删除第 2 页动画/)
+    const after = await JSZip.loadAsync(fs.readFileSync(out))
+    assert.ok(!(await after.file('ppt/slides/slide2.xml').async('string')).includes('<p:timing>'), '第2页动画必须清除')
+    assert.ok((await after.file('ppt/slides/slide3.xml').async('string')).includes('<p:timing>'), '第3页动画必须保留')
+
+    await assert.rejects(() => editPptx(fixture, path.join(dir, 'z.pptx'), [{ type: 'anim-clear', page: 1 }]), /没有动画/)
+
+    const out2 = path.join(dir, 'anim-all.pptx')
+    await editPptx(fixture, out2, [{ type: 'anim-clear', page: null }])
+    const after2 = await JSZip.loadAsync(fs.readFileSync(out2))
+    assert.ok(!(await after2.file('ppt/slides/slide2.xml').async('string')).includes('<p:timing>'))
+    assert.ok(!(await after2.file('ppt/slides/slide3.xml').async('string')).includes('<p:timing>'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

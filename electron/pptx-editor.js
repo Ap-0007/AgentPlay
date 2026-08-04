@@ -50,6 +50,27 @@ function parsePptxEditInstruction(instruction) {
   const segments = text.split(/[\n]+/).map((segment) => segment.trim()).filter(Boolean)
   for (const rawSegment of segments) {
     const segment = rawSegment.replace(/["'“”‘’«»]/g, '')
+    // 图表与动画指令必须排在通用替换之前，否则会被 replace 模式吞掉
+    const chartTitle = /^(?:把|将)\s*(?:第(\d+)页(?:的|里)?\s*)?图表标题\s*(?:替换成|替换为|换成|改为|改成)(?:为)?\s*([^，。]+?)$/.exec(segment)
+    if (chartTitle) {
+      operations.push({ type: 'chart-title', to: chartTitle[2].trim(), page: chartTitle[1] ? Number(chartTitle[1]) : null })
+      continue
+    }
+    const chartData = /^(?:把|将)\s*(?:第(\d+)页(?:的|里)?\s*)?图表里?的?\s*([^，。]+?)\s*(?:的值)?\s*(?:改为|改成|调整为|调到)(?:为)?\s*(-?\d+(?:\.\d+)?)$/.exec(segment)
+    if (chartData) {
+      operations.push({ type: 'chart-data', label: chartData[2].trim(), value: Number(chartData[3]), page: chartData[1] ? Number(chartData[1]) : null })
+      continue
+    }
+    const animClearPage = /^(?:删除|删掉|去掉)\s*第?(\d+)\s*页(?:的|里)?动画$/.exec(segment)
+    if (animClearPage) {
+      operations.push({ type: 'anim-clear', page: Number(animClearPage[1]) })
+      continue
+    }
+    const animClearAll = /^(?:删除|删掉|去掉)(?:全部|所有)动画$/.exec(segment)
+    if (animClearAll) {
+      operations.push({ type: 'anim-clear', page: null })
+      continue
+    }
     const replace = /^(?:把|将)\s*(?:第(\d+)页(?:的|里)?\s*)?([^，。]+?)\s*(?:替换成|替换为|换成|改为|改成)(?:为)?\s*([^，。]+?)$/.exec(segment)
     if (replace) {
       const from = replace[2].trim()
@@ -251,6 +272,97 @@ function applyMove(presentationXml, { page, beforePage, position }, order) {
   return presentationXml.replace(listMatch[0], `<p:sldIdLst>${tags.join('')}</p:sldIdLst>`)
 }
 
+// ── 图表参数化编辑 ──
+
+async function chartTargetsForPages(archive, order, page) {
+  if (page === null) return Object.keys(archive.files).filter((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))
+  if (page < 1 || page > order.length) throw new Error(`没有第 ${page} 页（共 ${order.length} 页）；未改动原文件`)
+  const slidePath = order[page - 1].target
+  const slideRels = archive.file(slidePath.replace('slides/', 'slides/_rels/').replace('.xml', '.xml.rels'))
+  if (!slideRels) return []
+  const relsXml = await slideRels.async('string')
+  const targets = []
+  for (const match of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
+    if (!match[0].includes('/chart')) continue
+    const target = /Target="([^"]+)"/.exec(match[0])?.[1]
+    if (target) targets.push(target.replace(/^\.\.\//, 'ppt/').replace(/^\//, ''))
+  }
+  return targets
+}
+
+function replaceChartTitle(chartXml, title) {
+  const titleMatch = /<c:title>[\s\S]*?<\/c:title>/.exec(chartXml)
+  if (!titleMatch) return null
+  let used = false
+  const newTitle = titleMatch[0].replace(A_TEXT_RE, (whole, inner) => {
+    if (used) return whole.replace(inner, '')
+    used = true
+    return whole.replace(inner, escapeXml(title))
+  })
+  return chartXml.replace(titleMatch[0], newTitle)
+}
+
+function parseRangeRef(ref) {
+  // "Sheet1!$A$2:$A$4" → 单格列引用才可同步（多列区域不猜）
+  const match = /^'?([^'!]+)'?!\$([A-Z]+)\$(\d+)(?::\$([A-Z]+)\$(\d+))?$/.exec(String(ref || '').trim())
+  if (!match) return null
+  if (match[4] && match[4] !== match[2]) return null
+  return { sheet: match[1], col: match[2], from: Number(match[3]), to: Number(match[5] || match[3]) }
+}
+
+async function editChartData(archive, chartPath, label, value) {
+  const chartXml = await archive.file(chartPath).async('string')
+  const sers = [...chartXml.matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)]
+  for (const ser of sers) {
+    const serXml = ser[0]
+    const catMatch = /<c:cat>[\s\S]*?<\/c:cat>/.exec(serXml)
+    const valMatch = /<c:val>[\s\S]*?<\/c:val>/.exec(serXml)
+    if (!catMatch || !valMatch) continue
+    const pts = [...catMatch[0].matchAll(/<c:pt idx="(\d+)"[^>]*>\s*<c:v>([\s\S]*?)<\/c:v>/g)]
+    const found = pts.find((pt) => unescapeXml(pt[2]).trim() === label)
+    if (!found) continue
+    const idx = found[1]
+    const ptRe = new RegExp(`(<c:pt idx="${idx}"[^>]*>\\s*<c:v>)([^<]*)(</c:v>)`)
+    if (!ptRe.test(valMatch[0])) continue
+    const newVal = valMatch[0].replace(ptRe, `$1${value}$3`)
+    const newSer = serXml.replace(valMatch[0], newVal)
+    archive.file(chartPath, chartXml.replace(serXml, newSer))
+    // 尽力同步嵌入式工作簿：找到类别列同名单元格，把同行数值列改为新值；任何一步不明就跳过（缓存已是新值，不影响显示）
+    try {
+      const catRef = parseRangeRef((/<c:f>([^<]+)<\/c:f>/.exec(catMatch[0]) || [])[1])
+      const valRef = parseRangeRef((/<c:f>([^<]+)<\/c:f>/.exec(valMatch[0]) || [])[1])
+      const relsPath = chartPath.replace('charts/', 'charts/_rels/') + '.rels'
+      const relsFile = archive.file(relsPath)
+      if (catRef && valRef && relsFile) {
+        const relsXml = await relsFile.async('string')
+        const embedTarget = [...relsXml.matchAll(/<Relationship\b[^>]*>/g)]
+          .map((match) => /Target="([^"]+)"/.exec(match[0])?.[1])
+          .find((target) => target && /\.xlsx$/.test(target))
+        const embedPath = embedTarget ? embedTarget.replace(/^\.\.\//, 'ppt/').replace(/^\//, '') : null
+        const embedFile = embedPath ? archive.file(embedPath) : null
+        if (embedFile) {
+          const ExcelJS = require('exceljs')
+          const workbook = new ExcelJS.Workbook()
+          await workbook.xlsx.load(await embedFile.async('nodebuffer'))
+          const sheet = workbook.getWorksheet(catRef.sheet)
+          if (sheet) {
+            for (let row = catRef.from; row <= catRef.to; row += 1) {
+              const cellText = String(sheet.getCell(`${catRef.col}${row}`).value ?? '').trim()
+              if (cellText === label) {
+                sheet.getCell(`${valRef.col}${row}`).value = value
+                archive.file(embedPath, await workbook.xlsx.writeBuffer())
+                break
+              }
+            }
+          }
+        }
+      }
+    } catch { /* 工作簿同步失败不致命：缓存已是新值 */ }
+    return true
+  }
+  return false
+}
+
 async function editPptx(sourcePath, finalPath, operations) {
   const archive = await JSZip.loadAsync(fs.readFileSync(sourcePath))
   const presentationFile = archive.file('ppt/presentation.xml')
@@ -295,6 +407,44 @@ async function editPptx(sourcePath, finalPath, operations) {
     if (unresolved.length > 0) throw new Error(`没有找到要替换的文字：${unresolved.join('、')}；未改动原文件`)
     for (const target of changedSlides) archive.file(target, slideXmlCache.get(target))
     summaries.push(`替换 ${total} 处文字`)
+  }
+
+  for (const operation of operations.filter((item) => item.type === 'chart-title')) {
+    const targets = await chartTargetsForPages(archive, order, operation.page)
+    if (targets.length === 0) throw new Error(`${operation.page ? `第 ${operation.page} 页` : '整稿'}没有图表；未改动原文件`)
+    let done = 0
+    for (const target of targets) {
+      const chartXml = await archive.file(target).async('string')
+      const next = replaceChartTitle(chartXml, operation.to)
+      if (next) { archive.file(target, next); done += 1 }
+    }
+    if (done === 0) throw new Error('图表没有标题元素可改；未改动原文件')
+    summaries.push(`修改 ${done} 个图表标题`)
+  }
+  for (const operation of operations.filter((item) => item.type === 'chart-data')) {
+    const targets = await chartTargetsForPages(archive, order, operation.page)
+    if (targets.length === 0) throw new Error(`${operation.page ? `第 ${operation.page} 页` : '整稿'}没有图表；未改动原文件`)
+    let done = false
+    for (const target of targets) {
+      if (await editChartData(archive, target, operation.label, operation.value)) { done = true; break }
+    }
+    if (!done) throw new Error(`图表里找不到类别：${operation.label}；未改动原文件`)
+    summaries.push(`图表数据 ${operation.label} 改为 ${operation.value}`)
+  }
+  for (const operation of operations.filter((item) => item.type === 'anim-clear')) {
+    const pages = operation.page ? [operation.page] : order.map((_entry, index) => index + 1)
+    let cleared = 0
+    for (const page of pages) {
+      if (page < 1 || page > order.length) throw new Error(`没有第 ${page} 页（共 ${order.length} 页）；未改动原文件`)
+      const target = order[page - 1].target
+      const slideXml = await archive.file(target).async('string')
+      const next = slideXml.replace(/<p:timing>[\s\S]*?<\/p:timing>/, '')
+      if (next !== slideXml) { archive.file(target, next); cleared += 1 }
+    }
+    if (operation.page && cleared === 0) throw new Error(`第 ${operation.page} 页没有动画；未改动原文件`)
+    summaries.push(cleared > 0
+      ? (operation.page ? `删除第 ${operation.page} 页动画` : `删除 ${cleared} 页的动画`)
+      : '整稿没有动画可删')
   }
 
   for (const operation of operations) {
