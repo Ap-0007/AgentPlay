@@ -82,3 +82,20 @@ test('cloud-protocol consumers all go through creativeConfig guard (cli falls ba
   // 对话本身保留 resolved(chat)——cli 分支要走订阅
   assert.match(main, /llmComplete = async[\s\S]{0,200}resolved\('chat'\)/)
 })
+
+test('streaming chat() routes cli providers to subprocess, never to network stack', () => {
+  const llm = fs.readFileSync(path.join(__dirname, '..', 'electron', 'llm-service.js'), 'utf8')
+  // chat() 必须在 resolveProvider 网络栈之前接住 cli 厂商（否则空 baseUrl → [网络错误] Invalid URL，用户真实事故）
+  const chatIdx = llm.indexOf('async chat(messages')
+  const cliIdx = llm.indexOf("cliProviderId === 'codex-chatgpt'", chatIdx)
+  const resolveIdx = llm.indexOf('this.resolveProvider(apiKey)', chatIdx)
+  assert.ok(chatIdx > -1 && cliIdx > chatIdx && resolveIdx > cliIdx, 'chat() 缺少 cli 前置分支')
+  assert.match(llm.slice(cliIdx, resolveIdx), /completeText\(messages, apiKey/)
+})
+
+test('model center save broadcasts models-changed so home label refreshes', () => {
+  const mc = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'ModelCenter.tsx'), 'utf8')
+  const saveIdx = mc.indexOf('Key 使用系统加密存储')
+  assert.ok(saveIdx > -1)
+  assert.match(mc.slice(saveIdx, saveIdx + 300), /ai-player-models-changed/, 'save() 必须广播 models-changed（否则首页标签陈旧，用户真实事故）')
+})

@@ -424,6 +424,7 @@ export default function ModelCenter({ onClose }: Props) {
       setHasApiKey(Boolean(saved?.hasApiKey))
       setApiKey('')
       setStatus(`✓ 已保存：${provider?.name || providerId} / ${model}，Key 使用系统加密存储`)
+      window.dispatchEvent(new CustomEvent('ai-player-models-changed'))
     } catch (error) {
       setStatus(`保存失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -436,6 +437,7 @@ export default function ModelCenter({ onClose }: Props) {
     setApiKey('')
     setHasApiKey(false)
     setStatus('已清除保存的 API Key')
+    window.dispatchEvent(new CustomEvent('ai-player-models-changed'))
   }
 
   return (

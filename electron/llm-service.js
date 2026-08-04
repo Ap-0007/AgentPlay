@@ -704,6 +704,18 @@ class AgentEngine {
       return { text: result.desc, toolResults: [{ tool: local[0], args: local[1], result }] }
     }
 
+    // 订阅账号后端（Codex CLI / Claude Code）：没有 URL 可言，走只读子进程纯对话（无工具协议）
+    const cliProviderId = typeof apiKey === 'object' && apiKey !== null ? apiKey.providerId : null
+    if (cliProviderId === 'codex-chatgpt' || cliProviderId === 'claude-code') {
+      try {
+        const result = await this.completeText(messages, apiKey, { signal: options.signal, timeoutMs: 180000 })
+        options.onDelta?.(result.text)
+        return { text: result.text, toolResults: [] }
+      } catch (error) {
+        return { text: `[订阅后端错误] ${error instanceof Error ? error.message : String(error)}`, toolResults: [] }
+      }
+    }
+
     const resolved = this.resolveProvider(apiKey)
     const { base, key, model, protocol, providerId, capabilities = {}, requiresKey = true } = resolved
     if (!key && requiresKey) {
