@@ -28,7 +28,7 @@
 5. DOCX/PPTX/XLSX与PDF之间的高保真转换：→PDF 方向已落地——指令含"高保真/原样/保真"即调用本机 Office 引擎（Word/Excel/PowerPoint COM，宏强制禁用、超时只清理新进程），未检测到引擎时明确故障关闭并提示普通转换；PDF→DOCX 反向高保真与 LibreOffice/WPS 适配仍需继续。
 6. 多文件联合任务：已落地——指令提及两种以上格式且有"和/+/一套"等成套意图时，一次模型调用产出成套 JSON（Word报告/Excel分析/PPT汇报/PDF交付/MD/TXT 任意组合），各格式确定性渲染并统一命名"源名-AgentPlay处理版-报告/分析/汇报/交付"，历史记录全套；跨文件数据一致性校验仍需继续。
 7. Windows正式安装包中的真实界面、文件重开和大文件压力验收。
-8. 本地AI组件改为应用内下载：只保留标准版一个安装包，模型接入中心提供带进度、断点续传和SHA-256校验的组件下载（代码与自动化测试已完成）。组件包已在 release/local-ai-pack/ 生成，待上传到 GitHub Release 的 local-ai-pack-v1 标签后做真实下载验收；验收通过前保留 build:electron:local-ai 作为回退。
+8. 本地AI组件改为应用内下载：只保留标准版一个安装包，模型接入中心提供带进度、断点续传和SHA-256校验的组件下载（代码与自动化测试已完成）。【已完成：组件包 local-ai-pack-v1 已于 07-19 上传 GitHub Release（模型+运行时+清单三件齐全），08-04 真实下载验收通过——按清单 URL 实拉两件资产，SHA-256 与 electron/local-ai-pack-manifest.js 逐一相符】
 
 ## 播放与系统集成复验
 
@@ -44,9 +44,9 @@
 4. 网页、新闻和社交网站的全局翻译需要独立的浏览器扩展/受控浏览器方案，不能用桌面播放器按钮冒充全局能力。
 5. 文档工作台和视频工作台打通：视频/网页 → 字幕/正文 → 拉片表 → 报告 → PPT/PDF → 新成片。【07-30 末段闭环落地：拉片（含链接拉片）成功且为 AI 报告后给出「生成重构短片」入口——报告浓缩镜头脚本 → Agnes 逐镜头生视频 → ffmpeg 重编码拼接，成片自动播放并落盘 文档/AgentPlay 输出；实测 2 镜头 3 秒片 861KB 画面内容与主题一致。创作类功能（生图/生视频/重构）在 chat 切本地小模型时自动使用 quickSwitch stash 的云端配置（creativeConfig），不再静默拒绝】
 
-## 订阅账号接入（待办）
+## 订阅账号接入【已完成 08-04】
 
-ChatGPT Plus / Claude Pro 这类订阅制账号没有面向第三方的免费 API；可行路径（按优先级）：复用本机已登录的 Codex CLI（ChatGPT 账号 OAuth 凭证）与 Claude Code（Claude Pro/Max 凭证）完成模型调用（opencode 等开源工具同款）；或实现各自的官方 OAuth 登录流程。注意协议均为私有（Codex responses 接口 / Anthropic OAuth token），需各自做适配层与失效重登引导。
+ChatGPT Plus / Claude Pro 这类订阅制账号没有面向第三方的免费 API；已按可行路径落地：复用本机已登录的 Codex CLI（ChatGPT 账号 OAuth 凭证）与 Claude Code（Claude Pro/Max 凭证）经只读子进程完成模型调用，不读/不写用户凭证文件，prompt 一律走 stdin，登录失效给可操作的重登引导。08-04 全链路加固：主对话流式接口补 cli 分支（此前误走网络栈报 Invalid URL）、读取型号走官方 CLI 本地缓存清单、busy 遗留卡死按钮修复、stash 暂存区防订阅配置污染（云端 Key 覆盖事故）、保存后标签即时刷新；CDP 模拟真人全流程实证。Claude Code 登录态过期时需用户在终端自行 `claude auth login`（交互登录，无法代做）。
 
 ## 其他平台
 
@@ -57,4 +57,4 @@ ChatGPT Plus / Claude Pro 这类订阅制账号没有面向第三方的免费 AP
 
 ## 发布
 
-上述变更通过源码检查后，还需要：版本号升级、Windows安装包（本地AI组件应用内下载落地后只出标准版一个包）、已安装EXE烟雾测试、安全扫描、公开Release资产校验，再发布到GitHub。【v0.7.0 已于 07-30 完成全部动作并发布：security:scan 零泄漏、source+binary 校验、329/329、右键动词 ALL PASS、安装位冒烟 0.7.0 全过、旧安装位（Program Files+绿色版）清除、桌面快捷方式归一 Local\Programs；修正认知：向导式安装包（oneClick:false）的 /S 静默在本机不落位，维护者本机更新用 win-unpacked 同步代替，用户双击向导安装不受影响】每次出验证包后的固定动作（用户已明确要求）：由维护者直接静默安装到本机（`/S /CURRENTUSER` 免管理员，落位 `%LocalAppData%\Programs\ai-player`）、清除其它安装位与遗留快捷方式、保证桌面仅一个“AI播放器”快捷方式指向当前安装、复核右键动词注册（14/14）与冒烟启动，用户只从桌面图标启动。免费签名与分发路径已确认：SignPath 开源免费 Authenticode 签名申请已于 2026-07-21 通过 signpath.org/apply 提交（README 与 v0.6.1 发布页已含 Code signing policy 表述），审批约1–4周；批准后依次执行：SignPath 后台建项目与 release-signing 策略、关联 GitHub 仓库与发布工作流、配置 SIGNPATH_API_TOKEN 等 secrets、CI 自动签名，首个签名版本随后向 winget-pkgs 提交清单实现 `winget install` 免费分发；在此之前继续提供SHA-256并保留SmartScreen提示说明。
+上述变更通过源码检查后，还需要：版本号升级、Windows安装包（本地AI组件应用内下载落地后只出标准版一个包）、已安装EXE烟雾测试、安全扫描、公开Release资产校验，再发布到GitHub。【v0.7.3 于 08-04 发布：v0.7.2 公开版不含当日订阅链路修复，按纪律升级版本号而非替换公开资产；363/363、security:scan 零泄漏、右键动词端到端 ALL PASS、local-ai-pack-v1 真实下载验收通过】【v0.7.0 已于 07-30 完成全部动作并发布：security:scan 零泄漏、source+binary 校验、329/329、右键动词 ALL PASS、安装位冒烟 0.7.0 全过、旧安装位（Program Files+绿色版）清除、桌面快捷方式归一 Local\Programs；修正认知：向导式安装包（oneClick:false）的 /S 静默在本机不落位，维护者本机更新用 win-unpacked 同步代替，用户双击向导安装不受影响】每次出验证包后的固定动作（用户已明确要求）：由维护者直接静默安装到本机（`/S /CURRENTUSER` 免管理员，落位 `%LocalAppData%\Programs\ai-player`）、清除其它安装位与遗留快捷方式、保证桌面仅一个“AI播放器”快捷方式指向当前安装、复核右键动词注册（14/14）与冒烟启动，用户只从桌面图标启动。免费签名与分发路径已确认：SignPath 开源免费 Authenticode 签名申请已于 2026-07-21 通过 signpath.org/apply 提交（README 与 v0.6.1 发布页已含 Code signing policy 表述），审批约1–4周；批准后依次执行：SignPath 后台建项目与 release-signing 策略、关联 GitHub 仓库与发布工作流、配置 SIGNPATH_API_TOKEN 等 secrets、CI 自动签名，首个签名版本随后向 winget-pkgs 提交清单实现 `winget install` 免费分发；在此之前继续提供SHA-256并保留SmartScreen提示说明。
