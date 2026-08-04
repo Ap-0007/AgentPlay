@@ -50,9 +50,21 @@ function isProtectedAddress(address) {
   return false
 }
 
+// sing-box 等 VPN 的 fake-ip 模式把域名解析劫持到 198.18.0.0/15（TEST-NET 保留段的占位地址）：
+// 连接仍按域名发出、由 VPN 按域名规则路由。这类占位不是 SSRF 风险，反而是正常 VPN 用户态。
+function isFakeIpPlaceholder(address) {
+  const normalized = String(address || '').replace(/^\[|\]$/g, '').split('%')[0]
+  const parts = normalized.split('.')
+  if (parts.length !== 4) return false
+  const nums = parts.map(Number)
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
+  return nums[0] === 198 && (nums[1] === 18 || nums[1] === 19)
+}
+
 module.exports = {
   isLoopbackHostname,
   isLoopbackAddress,
   isBlockedMetadataHostname,
-  isProtectedAddress
+  isProtectedAddress,
+  isFakeIpPlaceholder
 }

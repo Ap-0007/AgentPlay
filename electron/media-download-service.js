@@ -3,7 +3,7 @@
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
-const { isProtectedAddress } = require('./network-policy')
+const { isProtectedAddress, isFakeIpPlaceholder } = require('./network-policy')
 
 const MAX_REDIRECTS = 3
 const MAX_BYTES = 2 * 1024 * 1024 * 1024
@@ -62,6 +62,8 @@ async function assertUrlAllowed(url, { dnsLookup } = {}) {
   const addresses = await lookup(hostname, { all: true, verbatim: true })
   const list = (Array.isArray(addresses) ? addresses : [addresses]).map((item) => item?.address || item)
   if (!list.length) throw new Error('链接域名没有可用地址')
+  // 全部落在 VPN fake-ip 占位段：由 VPN 按域名路由，跳过保护段拒绝
+  if (list.every((address) => isFakeIpPlaceholder(address))) return parsed
   if (list.some((address) => isProtectedAddress(address))) throw new Error('链接解析到了私网或保留地址，已拒绝')
   return parsed
 }

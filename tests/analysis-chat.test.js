@@ -335,3 +335,26 @@ test('agnes vision fallback: multimodal-unsupported model retries with agnes-2.0
     apiKey: { providerId: 'volcengine', model: 'doubao-x', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: 'k' }
   }), /504/)
 })
+
+test('safeFetch tolerates VPN fake-ip placeholder but still refuses real protected/polluted addresses', async () => {
+  const { safeFetch } = require('../electron/safe-fetch')
+  const config = { providerId: 'agnes', baseUrl: 'https://apihub.agnes-ai.com/v1', apiKey: 'k' }
+  let fetched = false
+  const fakeFetch = async () => { fetched = true; return { ok: true, status: 200, text: async () => '{}' } }
+  // 全部 fake-ip（sing-box 占位）：放行，连接按域名交给 VPN 路由
+  await safeFetch(config, 'https://apihub.agnes-ai.com/v1/chat/completions', {}, {
+    dnsLookup: async () => [{ address: '198.18.2.235' }],
+    fetchImpl: fakeFetch
+  })
+  assert.ok(fetched, 'fake-ip 全占位必须放行')
+  // 真实保护地址：仍拒绝
+  await assert.rejects(() => safeFetch(config, 'https://apihub.agnes-ai.com/v1/chat/completions', {}, {
+    dnsLookup: async () => [{ address: '10.0.0.8' }],
+    fetchImpl: fakeFetch
+  }), /受保护地址/)
+  // 真假混合（污染迹象）：仍拒绝
+  await assert.rejects(() => safeFetch(config, 'https://apihub.agnes-ai.com/v1/chat/completions', {}, {
+    dnsLookup: async () => [{ address: '198.18.2.235' }, { address: '104.18.19.62' }],
+    fetchImpl: fakeFetch
+  }), /受保护地址/)
+})

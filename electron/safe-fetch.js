@@ -1,7 +1,7 @@
 const dns = require('dns').promises
 const net = require('net')
 const { validateProviderUrl, isLoopbackHostname } = require('./model-providers')
-const { isLoopbackAddress, isProtectedAddress } = require('./network-policy')
+const { isLoopbackAddress, isProtectedAddress, isFakeIpPlaceholder } = require('./network-policy')
 
 async function assertResolvedAddressAllowed(config, parsed, dnsLookup = dns.lookup) {
   if (config.localOnly || isLoopbackHostname(parsed.hostname)) return
@@ -12,6 +12,9 @@ async function assertResolvedAddressAllowed(config, parsed, dnsLookup = dns.look
   const result = await dnsLookup(parsed.hostname, { all: true, verbatim: true })
   const addresses = Array.isArray(result) ? result : [result]
   if (!addresses.length) throw new Error('API 域名没有可用地址')
+  // 全部落在 VPN fake-ip 占位段（198.18.0.0/15）：连接按域名发出、由 VPN 按域名路由，跳过保护段拒绝；
+  // 部分占位部分真实 = 解析被污染，仍拒绝
+  if (addresses.every((item) => isFakeIpPlaceholder(item?.address || item))) return
   if (addresses.some((item) => isProtectedAddress(item?.address || item))) {
     throw new Error('API 域名 DNS 解析到了受保护地址，已拒绝连接')
   }
