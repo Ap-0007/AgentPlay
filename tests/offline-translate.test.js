@@ -118,3 +118,10 @@ test('real OPUS-MT model translates English lines offline', { timeout: 180000 },
   assert.equal(outputs.length, 2)
   for (const line of outputs) assert.match(line, /[一-鿿]/, `译文应含中文：${line}`)
 })
+
+test('transformers loads via require (CJS): ESM import pulls sharp.mjs import attributes that Electron 28 cannot parse', () => {
+  const srcText = fs.readFileSync(path.join(__dirname, '..', 'electron', 'offline-translate-service.js'), 'utf8')
+  // Electron 28 = Node 18 ESM 加载器不支持 import attributes；动态 import 会经 sharp.mjs 整链 SyntaxError（实机踩坑）
+  assert.ok(srcText.includes("require('@huggingface/transformers')"), '必须走 require')
+  assert.ok(!srcText.includes("await import('@huggingface/transformers')"), '禁止动态 import（ESM 条件）')
+})

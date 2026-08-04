@@ -64,7 +64,9 @@ class OfflineTranslateService {
       this.pipelinePromise = (async () => {
         if (this.pipelineFactory) return this.pipelineFactory()
         if (!this.availability().available) throw new Error('离线翻译组件未安装，请先在模型接入中心下载')
-        const { pipeline, env } = await import('@huggingface/transformers')
+        // 必须 require（CJS 条件 → transformers.node.cjs）：ESM import 条件会拉到 sharp.mjs 的
+        // import attributes（with {type:'json'}），Electron 28 的 Node 18 ESM 加载器不支持会整链 SyntaxError（实机踩坑）
+        const { pipeline, env } = require('@huggingface/transformers')
         env.allowRemoteModels = false
         env.localModelPath = this.modelRoot + path.sep
         return pipeline('translation', MODEL_ID, { dtype: 'q8' })

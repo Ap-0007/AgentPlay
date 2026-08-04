@@ -48,6 +48,12 @@
 
 ChatGPT Plus / Claude Pro 这类订阅制账号没有面向第三方的免费 API；已按可行路径落地：复用本机已登录的 Codex CLI（ChatGPT 账号 OAuth 凭证）与 Claude Code（Claude Pro/Max 凭证）经只读子进程完成模型调用，不读/不写用户凭证文件，prompt 一律走 stdin，登录失效给可操作的重登引导。08-04 全链路加固：主对话流式接口补 cli 分支（此前误走网络栈报 Invalid URL）、读取型号走官方 CLI 本地缓存清单、busy 遗留卡死按钮修复、stash 暂存区防订阅配置污染（云端 Key 覆盖事故）、保存后标签即时刷新；CDP 模拟真人全流程实证。Claude Code 登录态过期时需用户在终端自行 `claude auth login`（交互登录，无法代做）。
 
+## 在线内容（08-04 新增，合法源限定）
+
+- 在线媒体库：Internet Archive 公共领域与授权共享馆藏（电影限 feature_films/public_domain_film/Prelinger/classic_tv，音乐限 etree/librivoxaudio/publicdomain），mpv 原生流媒体在线看（边下边播），下载经域名白名单+SSRF 防护落盘进媒体库；archive.org 抖动自动重试。
+- 电子书阅读器：Gutenberg 公版书馆藏（collection:gutenberg）检索，epub 按 OPF spine 解析章节（txt 兜底），阅读器内置章节导航/字号/上下节；翻译双轨——离线 OPUS-MT 组件免费本地译、云模型精译走逐次授权同意闸，译文按书+引擎+章节缓存零重复消耗，原文/对照视图可切。
+- 法律边界写在查询语句里，不抓盗版源、不绕付费墙。
+
 ## 其他平台
 
 1. macOS：在真实Mac完成安装、播放、文件关联、系统配音、文档工作台和创意渲染验收。

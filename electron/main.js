@@ -582,6 +582,13 @@ const rapidocrDownload = new LocalAiDownloadService({
 })
 const { RapidOcrService } = require('./rapidocr-service')
 const onlineMedia = require('./online-media-service')
+const ebookService = require('./ebook-service')
+const ebookCacheRoot = () => path.join(app.getPath('userData'), 'ebook-cache')
+async function loadEbookChapters(identifier, fileName) {
+  const bookPath = await ebookService.fetchBook(ebookCacheRoot(), identifier, fileName)
+  if (/\.epub$/i.test(fileName)) return ebookService.parseEpubChapters(bookPath)
+  return ebookService.parseTxtChapters(fs.readFileSync(bookPath, 'utf8'))
+}
 const rapidOcr = new RapidOcrService({
   modelRoot: path.join(app.getPath('userData'), 'rapidocr-pack')
 })
@@ -2062,7 +2069,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('onlineMedia:search', async (event, input = {}) => {
     assertTrustedSender(event)
     try {
-      const kind = input.kind === 'audio' ? 'audio' : 'movie'
+      const kind = ['audio', 'book'].includes(input.kind) ? input.kind : 'movie'
       return { success: true, ...(await onlineMedia.searchMedia(input.query, kind, { page: input.page || 1 })) }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error), items: [], total: 0 }
@@ -2104,6 +2111,79 @@ app.whenReady().then(async () => {
     const controller = activeAiRequests.get(String(requestId || ''))
     controller?.abort()
     return Boolean(controller)
+  })
+  ipcMain.handle('onlineMedia:bookFiles', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      return { success: true, ...(await onlineMedia.listBookFiles(input.identifier)) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), files: [] }
+    }
+  })
+  ipcMain.handle('ebook:open', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const chapters = await loadEbookChapters(input.identifier, input.fileName)
+      return { success: true, chapters: chapters.map((chapter) => chapter.title), count: chapters.length }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('ebook:chapter', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const chapters = await loadEbookChapters(input.identifier, input.fileName)
+      const index = Number(input.index) || 0
+      const chapter = chapters[index]
+      if (!chapter) throw new Error(`没有第 ${index + 1} 节（共 ${chapters.length} 节）`)
+      return { success: true, title: chapter.title, text: chapter.text, index }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('ebook:translate', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const engine = input.engine === 'cloud' ? 'cloud' : 'offline'
+      const cached = ebookService.readTranslationCache(ebookCacheRoot(), input.identifier, engine, Number(input.index) || 0)
+      if (cached) return { success: true, text: cached, cached: true }
+      const chapters = await loadEbookChapters(input.identifier, input.fileName)
+      const index = Number(input.index) || 0
+      const chapter = chapters[index]
+      if (!chapter) throw new Error(`没有第 ${index + 1} 节`)
+      // 分块翻译：按段落打包，每块约 2000 字
+      const blocks = []
+      let current = ''
+      for (const para of chapter.text.split(/\n+/)) {
+        if (current.length + para.length > 2000 && current) { blocks.push(current); current = '' }
+        current += (current ? '\n' : '') + para
+      }
+      if (current) blocks.push(current)
+      const send = (status) => { if (!event.sender.isDestroyed()) event.sender.send('ebook:translate-status', { index, status }) }
+      const translated = []
+      for (let i = 0; i < blocks.length; i += 1) {
+        send(`正在翻译本章（${i + 1}/${blocks.length} 块）…`)
+        if (engine === 'offline') {
+          if (!offlineTranslate.availability().available) throw new Error('离线翻译组件未安装：到模型接入中心下载，或改用云模型翻译')
+          const lines = await offlineTranslate.translateLines(blocks[i].split('\n'))
+          translated.push(lines.join('\n'))
+        } else {
+          const approved = await ensureCloudConsent('电子书章节原文将发送给云端模型用于翻译。')
+          if (!approved) throw new Error('已取消：未授权发送云端')
+          const result = await llmComplete({
+            systemPrompt: '你是文学翻译助手。把英文公版书内容翻成通顺的中文，保留段落结构与文学性，只输出译文。',
+            prompt: blocks[i],
+            timeoutMs: 120000
+          })
+          translated.push(result.text)
+        }
+      }
+      const text = translated.join('\n\n')
+      ebookService.writeTranslationCache(ebookCacheRoot(), input.identifier, engine, index, text)
+      return { success: true, text, cached: false }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle('subtitle:bilingual-generate', async (event, input = {}) => {
     assertTrustedSender(event)

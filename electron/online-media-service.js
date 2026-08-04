@@ -10,9 +10,10 @@ const FETCH_TIMEOUT_MS = 30000
 
 const COLLECTIONS = {
   movie: 'feature_films OR public_domain_film OR Prelinger OR classic_tv',
-  audio: 'etree OR librivoxaudio OR publicdomain'
+  audio: 'etree OR librivoxaudio OR publicdomain',
+  book: 'gutenberg'
 }
-const MEDIATYPE = { movie: 'movies', audio: 'audio' }
+const MEDIATYPE = { movie: 'movies', audio: 'audio', book: 'texts' }
 
 function withTimeout(promise, ms = FETCH_TIMEOUT_MS) {
   return Promise.race([
@@ -125,4 +126,23 @@ function assertArchiveUrl(url) {
   return String(url)
 }
 
-module.exports = { searchMedia, listPlayableFiles, assertArchiveUrl, COLLECTIONS }
+// 书目文件：epub 优先（有章节结构），txt 兜底
+async function listBookFiles(identifier) {
+  const id = String(identifier || '').trim()
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('条目编号无效')
+  const data = await fetchJson(`${METADATA_URL}${encodeURIComponent(id)}`)
+  const files = (data?.files || [])
+    .filter((file) => /\.(epub|txt)$/i.test(file.name || '') && !/_(djvu|bw|text)\.txt$/i.test(file.name))
+    .map((file) => ({
+      name: file.name,
+      size: Number(file.size) || 0,
+      url: `${DOWNLOAD_BASE}${encodeURIComponent(id)}/${file.name.split('/').map(encodeURIComponent).join('/')}`,
+      format: String(file.format || '')
+    }))
+    .sort((a, b) => Number(/\.epub$/i.test(b.name)) - Number(/\.epub$/i.test(a.name)) || a.size - b.size)
+  const title = String(data?.metadata?.title || id)
+  const creator = data?.metadata?.creator
+  return { identifier: id, title, creator: Array.isArray(creator) ? creator.join('、') : String(creator || ''), files }
+}
+
+module.exports = { searchMedia, listPlayableFiles, listBookFiles, assertArchiveUrl, COLLECTIONS }

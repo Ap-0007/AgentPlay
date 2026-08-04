@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import EbookReader from './EbookReader'
 
 interface Item { identifier: string; title: string; year: string; creator: string; downloads: number }
 interface PlayFile { name: string; size: number; url: string; format: string }
 interface Props { onClose: () => void }
 
-type Kind = 'movie' | 'audio'
+type Kind = 'movie' | 'audio' | 'book'
 
 // 在线媒体库：Internet Archive 公共领域与授权共享馆藏（公版电影 / Live Music Archive / LibriVox）
 // 在线播 = mpv 直接流媒体；下载 = 存到「视频/AgentPlay 下载」进本地媒体库。只碰合法免费内容。
@@ -18,6 +19,7 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
   const [expanded, setExpanded] = useState<{ identifier: string; title: string; files: PlayFile[] } | null>(null)
   const [downloading, setDownloading] = useState<{ requestId: string; received: number; total: number; name: string } | null>(null)
   const [notice, setNotice] = useState('')
+  const [reading, setReading] = useState<{ identifier: string; title: string; fileName: string } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -53,7 +55,9 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
     setBusy(true)
     setError('')
     try {
-      const result = await window.aiPlayer?.onlineMedia?.files({ identifier: item.identifier, kind })
+      const result = kind === 'book'
+        ? await window.aiPlayer?.onlineMedia?.bookFiles({ identifier: item.identifier })
+        : await window.aiPlayer?.onlineMedia?.files({ identifier: item.identifier, kind })
       if (!result?.success) throw new Error(result?.error || '读取文件列表失败')
       if (result.files.length === 0) throw new Error('这个条目没有可直接播放的文件')
       setExpanded({ identifier: item.identifier, title: result.title, files: result.files })
@@ -107,7 +111,7 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
         <div className="space-y-3 overflow-y-auto px-6 py-4">
           <div className="flex gap-2">
             <div className="flex rounded-lg bg-black/30 p-0.5 text-xs">
-              {([['movie', '电影'], ['audio', '音乐']] as Array<[Kind, string]>).map(([value, label]) => (
+              {([['movie', '电影'], ['audio', '音乐'], ['book', '电子书']] as Array<[Kind, string]>).map(([value, label]) => (
                 <button key={value} onClick={() => { setKind(value); setItems([]); setExpanded(null) }} className={`rounded-md px-3 py-1.5 ${kind === value ? 'bg-player-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}>{label}</button>
               ))}
             </div>
@@ -116,7 +120,7 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => event.key === 'Enter' && void search()}
-              placeholder={kind === 'movie' ? '搜公版电影（英文片名更准）…' : '搜现场音乐/有声书（英文更准）…'}
+              placeholder={kind === 'movie' ? '搜公版电影（英文片名更准）…' : kind === 'book' ? '搜公版电子书（英文书名/作者更准）…' : '搜现场音乐/有声书（英文更准）…'}
               className="flex-1 rounded-lg border border-white/10 bg-black/35 px-3 py-2 text-sm outline-none focus:border-player-accent"
             />
             <button disabled={busy || !query.trim()} onClick={() => void search()} className="rounded-lg bg-player-accent px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-40">搜索</button>
@@ -156,7 +160,11 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
                       <div key={file.name} className="flex items-center gap-2 text-xs">
                         <span className="min-w-0 flex-1 truncate text-gray-300" title={file.name}>{file.name}</span>
                         <span className="shrink-0 text-gray-500">{(file.size / 1024 / 1024).toFixed(0)}MB</span>
-                        <button onClick={() => play(file, expanded.title)} className="shrink-0 rounded bg-player-accent/80 px-2.5 py-1 text-white hover:bg-player-accent">▶ 在线看</button>
+                        {kind === 'book' ? (
+                          <button onClick={() => setReading({ identifier: expanded.identifier, title: expanded.title, fileName: file.name })} className="shrink-0 rounded bg-player-accent/80 px-2.5 py-1 text-white hover:bg-player-accent">📖 阅读{file.name.endsWith('.epub') ? '（章节版）' : ''}</button>
+                        ) : (
+                          <button onClick={() => play(file, expanded.title)} className="shrink-0 rounded bg-player-accent/80 px-2.5 py-1 text-white hover:bg-player-accent">▶ 在线看</button>
+                        )}
                         <button disabled={!!downloading} onClick={() => void download(file, expanded.title)} className="shrink-0 rounded bg-white/10 px-2.5 py-1 hover:bg-white/15 disabled:opacity-40">⬇ 下载</button>
                       </div>
                     ))}
@@ -168,6 +176,7 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
           </div>
         </div>
       </div>
+      {reading && <EbookReader book={reading} onClose={() => setReading(null)} />}
     </div>
   )
 }

@@ -292,12 +292,23 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   onlineMedia: {
     search: (input) => ipcRenderer.invoke('onlineMedia:search', input),
     files: (input) => ipcRenderer.invoke('onlineMedia:files', input),
+    bookFiles: (input) => ipcRenderer.invoke('onlineMedia:bookFiles', input),
     download: (input) => ipcRenderer.invoke('onlineMedia:download', input),
     cancel: (requestId) => ipcRenderer.invoke('onlineMedia:cancel', requestId),
     onProgress: (callback) => {
       const handler = (_event, data) => callback(data)
       ipcRenderer.on('onlineMedia:progress', handler)
       return () => ipcRenderer.removeListener('onlineMedia:progress', handler)
+    }
+  },
+  ebook: {
+    open: (input) => ipcRenderer.invoke('ebook:open', input),
+    chapter: (input) => ipcRenderer.invoke('ebook:chapter', input),
+    translate: (input) => ipcRenderer.invoke('ebook:translate', input),
+    onTranslateStatus: (callback) => {
+      const handler = (_event, data) => callback(data)
+      ipcRenderer.on('ebook:translate-status', handler)
+      return () => ipcRenderer.removeListener('ebook:translate-status', handler)
     }
   },
   rapidocrPack: {

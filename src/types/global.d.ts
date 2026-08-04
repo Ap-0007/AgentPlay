@@ -151,6 +151,12 @@ interface AiPlayerAPI {
     cancelDownload: () => Promise<boolean>
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
+  ebook?: {
+    open: (input: { identifier: string; fileName: string }) => Promise<{ success: boolean; error?: string; chapters: string[]; count: number }>
+    chapter: (input: { identifier: string; fileName: string; index: number }) => Promise<{ success: boolean; error?: string; title: string; text: string; index: number }>
+    translate: (input: { identifier: string; fileName: string; index: number; engine: 'offline' | 'cloud' }) => Promise<{ success: boolean; error?: string; text: string; cached?: boolean }>
+    onTranslateStatus: (cb: (event: { index: number; status: string }) => void) => () => void
+  }
   rapidocrPack?: {
     status: () => Promise<{ available: boolean; missing: string[]; reason: string; modelDir: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
     download: () => Promise<{ success: boolean; error?: string; availability?: unknown }>
@@ -158,8 +164,9 @@ interface AiPlayerAPI {
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
   onlineMedia?: {
-    search: (input: { query: string; kind?: 'movie' | 'audio'; page?: number }) => Promise<{ success: boolean; error?: string; items: Array<{ identifier: string; title: string; year: string; creator: string; downloads: number }>; total: number }>
+    search: (input: { query: string; kind?: 'movie' | 'audio' | 'book'; page?: number }) => Promise<{ success: boolean; error?: string; items: Array<{ identifier: string; title: string; year: string; creator: string; downloads: number }>; total: number }>
     files: (input: { identifier: string; kind?: 'movie' | 'audio' }) => Promise<{ success: boolean; error?: string; identifier: string; title: string; files: Array<{ name: string; size: number; url: string; format: string }> }>
+    bookFiles: (input: { identifier: string }) => Promise<{ success: boolean; error?: string; identifier: string; title: string; creator: string; files: Array<{ name: string; size: number; url: string; format: string }> }>
     download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; outputPath?: string; bytes?: number }>
     cancel: (requestId: string) => Promise<boolean>
     onProgress: (cb: (progress: { requestId: string; received: number; total: number }) => void) => () => void
