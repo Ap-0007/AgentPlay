@@ -471,13 +471,15 @@ export default function ModelCenter({ onClose }: Props) {
         <div className="p-6 space-y-5">
           <div>
             <span className="block text-xs text-gray-400 mb-2">用途</span>
-            <div className="grid grid-cols-2 gap-2 rounded-xl bg-black/25 p-1">
-              <button disabled={busy} onClick={() => void changeRole('chat')} className={`rounded-lg py-2 text-sm ${role === 'chat' ? 'bg-player-accent text-white' : 'text-gray-400 hover:bg-white/5'}`}>AI 对话</button>
-              <button disabled={busy} onClick={() => void changeRole('computerUse')} className={`rounded-lg py-2 text-sm ${role === 'computerUse' ? 'bg-amber-600 text-white' : 'text-gray-400 hover:bg-white/5'}`}>电脑操作建议</button>
+            <div className="flex items-center justify-between">
+              <div className="rounded-lg bg-player-accent px-4 py-1.5 text-sm text-white">AI 对话</div>
+              <button disabled={busy} onClick={() => void changeRole('computerUse')} title="电脑观察是实验功能：让 AI 看屏幕给操作建议，需要单独配一个视觉小模型" className={`text-xs ${role === 'computerUse' ? 'text-amber-400' : 'text-gray-500 hover:text-gray-300'}`}>配置电脑观察模型 ▸</button>
             </div>
           </div>
 
-          {role === 'computerUse' && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">安全预览阶段：模型只观察当前应用画面并给出建议，不会点击鼠标、输入键盘或执行命令。</div>}
+          {role === 'computerUse' && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200 flex items-center justify-between">安全预览阶段：模型只观察当前应用画面并给出建议，不会点击鼠标、输入键盘或执行命令。
+            <button onClick={() => void changeRole('chat')} className="shrink-0 ml-3 text-xs text-amber-100 underline hover:text-white">返回 AI 对话</button>
+          </div>}
 
           {role === 'chat' && <div className="rounded-xl border border-player-accent/30 bg-player-accent/5 px-4 py-4">
             <div className="text-sm text-gray-200">⚡ 一键接入（推荐）</div>
@@ -695,8 +697,9 @@ export default function ModelCenter({ onClose }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="block">
               <span className="block text-xs text-gray-400 mb-2">2. 大模型型号</span>
-              <input list="model-options" value={model} onChange={(event) => setModel(event.target.value)} placeholder="可选择，也可直接输入型号" className="w-full bg-black/35 border border-white/10 rounded-lg px-3 py-3 text-sm outline-none focus:border-player-accent" />
-              <datalist id="model-options">{modelOptions.map((item) => <option key={item} value={item} />)}</datalist>
+              <select value={model} onChange={(event) => setModel(event.target.value)} className="w-full bg-black/35 border border-white/10 rounded-lg px-3 py-3 text-sm outline-none focus:border-player-accent">
+                {modelOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
               {provider?.modelHint && <p className="text-xs text-amber-400/80 mt-2">{provider.modelHint}</p>}
               {provider?.warning && <p className="text-xs text-amber-400/80 mt-2">{provider.warning}</p>}
             </label>

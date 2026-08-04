@@ -50,3 +50,10 @@ test('model label syncs across components on models-changed event', () => {
   assert.match(panel, /ai-player-models-changed/)
   assert.match(modelCenter, /ai-player-models-changed/)
 })
+
+
+test('model select is a real select (no datalist filter/jump), computerUse entry folded to a link', () => {
+  assert.doesNotMatch(modelCenter, /datalist id="model-options"/)
+  assert.match(modelCenter, /配置电脑观察模型 ▸/)
+  assert.match(modelCenter, /返回 AI 对话/)
+})
