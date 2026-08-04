@@ -43,7 +43,7 @@ test('model center layout: core config always visible, local packs folded by def
   assert.match(modelCenter, /保存并启用/)
   // 核心操作区不得再被折叠藏住
   assert.ok(!/showManual/.test(modelCenter), 'showManual 折叠已移除')
-  assert.match(modelCenter, /本地组件与下载（离线模型 · 精修 · 翻译 · 站点视频）/)
+  assert.match(modelCenter, /本地组件与下载（离线模型 · 精修 · 翻译 · OCR · 站点视频）/)
   assert.match(modelCenter, /showLocalPacks/)
   // cli 厂商读取型号不再走空 URL
   assert.match(modelCenter, /来自官方 CLI 缓存，随周更自动最新/)

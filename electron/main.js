@@ -574,6 +574,16 @@ const { OfflineTranslateService, shouldUseOffline } = require('./offline-transla
 const offlineTranslate = new OfflineTranslateService({
   modelRoot: path.join(app.getPath('userData'), 'translate-pack', 'models')
 })
+const RAPIDOCR_PACK = require('./rapidocr-pack-manifest')
+const rapidocrDownload = new LocalAiDownloadService({
+  installRoot: path.join(app.getPath('userData'), 'rapidocr-pack'),
+  manifest: RAPIDOCR_PACK,
+  logger: log
+})
+const { RapidOcrService } = require('./rapidocr-service')
+const rapidOcr = new RapidOcrService({
+  modelRoot: path.join(app.getPath('userData'), 'rapidocr-pack')
+})
 
 // 字幕翻译路由：离线翻译组件可用且任务为"英→中"时纯本地翻译；否则回退到已配置云端模型
 function pickTranslateEngine(entries, targetLang = '中文') {
@@ -597,8 +607,10 @@ async function transcribeToFile(sourcePath, finalPath, { timestamps = false } = 
 }
 
 async function recognizePdfWithOcr(filePath) {
+  // 高精度组件在位时优先（PP-OCRv4 中文精度显著优于系统 OCR）；否则回退 WinRT 系统 OCR
+  const useRapid = rapidOcr.availability().available
   const status = await ocrService.detect()
-  if (!status.available) return null
+  if (!useRapid && !status.available) return null
   const pageCount = await pdfPageCount(filePath)
   const images = await rasterizePdfPages({ pdfPath: filePath, pageCount, createWindow: createHiddenWindow })
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-ocr-'))
@@ -608,7 +620,7 @@ async function recognizePdfWithOcr(filePath) {
       fs.writeFileSync(imagePath, buffer)
       return imagePath
     })
-    const results = await ocrService.recognize(imagePaths)
+    const results = useRapid ? await rapidOcr.recognize(imagePaths) : await ocrService.recognize(imagePaths)
     const chunks = []
     for (let index = 0; index < imagePaths.length; index += 1) {
       const entry = results.get(imagePaths[index])
@@ -2020,6 +2032,31 @@ app.whenReady().then(async () => {
   ipcMain.handle('translatePack:cancel-download', (event) => {
     assertTrustedSender(event)
     return translateDownload.cancel()
+  })
+  ipcMain.handle('rapidocrPack:status', (event) => {
+    assertTrustedSender(event)
+    return {
+      ...rapidOcr.availability(),
+      download: rapidocrDownload.status(),
+      pack: rapidocrDownload.packInfo()
+    }
+  })
+  ipcMain.handle('rapidocrPack:download', async (event) => {
+    assertTrustedSender(event)
+    try {
+      await rapidocrDownload.start({
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('rapidocrPack:progress', progress)
+        }
+      })
+      return { success: true, availability: rapidOcr.availability() }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('rapidocrPack:cancel-download', (event) => {
+    assertTrustedSender(event)
+    return rapidocrDownload.cancel()
   })
   ipcMain.handle('subtitle:bilingual-generate', async (event, input = {}) => {
     assertTrustedSender(event)

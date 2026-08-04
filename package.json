@@ -22,6 +22,7 @@
     "check": "pnpm exec tsc --noEmit && pnpm exec eslint src --max-warnings=0 && pnpm security:scan && pnpm release:public:verify && pnpm test && pnpm build:web"
   },
   "dependencies": {
+    "@gutenye/ocr-node": "^1.4.8",
     "@huggingface/transformers": "^4.2.0",
     "docx": "9.5.1",
     "electron-log": "^5.4.4",

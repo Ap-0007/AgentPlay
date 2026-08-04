@@ -55,6 +55,8 @@ export default function ModelCenter({ onClose }: Props) {
   const [whisperError, setWhisperError] = useState('')
   const [translateStatus, setTranslateStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
   const [translateError, setTranslateError] = useState('')
+  const [rapidocrStatus, setRapidocrStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
+  const [rapidocrError, setRapidocrError] = useState('')
   const [siteStatus, setSiteStatus] = useState<{ available: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number } } | null>(null)
   const [siteError, setSiteError] = useState('')
   const [downloadProgress, setDownloadProgress] = useState<LocalAiDownloadProgress | null>(null)
@@ -111,11 +113,15 @@ export default function ModelCenter({ onClose }: Props) {
     const offTranslate = window.aiPlayer?.translatePack?.onProgress?.(() => {
       void window.aiPlayer?.translatePack?.status().then((status) => { if (active && status) setTranslateStatus(status) })
     })
+    void window.aiPlayer?.rapidocrPack?.status().then((status) => { if (active && status) setRapidocrStatus(status) })
+    const offRapidocr = window.aiPlayer?.rapidocrPack?.onProgress?.(() => {
+      void window.aiPlayer?.rapidocrPack?.status().then((status) => { if (active && status) setRapidocrStatus(status) })
+    })
     void window.aiPlayer?.siteVideo?.status().then((status) => { if (active && status) setSiteStatus(status) })
     const offSite = window.aiPlayer?.siteVideo?.onComponentProgress?.(() => {
       void window.aiPlayer?.siteVideo?.status().then((status) => { if (active && status) setSiteStatus(status) })
     })
-    return () => { active = false; offProgress?.(); offWhisper?.(); offTranslate?.(); offSite?.() }
+    return () => { active = false; offProgress?.(); offWhisper?.(); offTranslate?.(); offRapidocr?.(); offSite?.() }
   }, [])
 
   const changeRole = async (nextRole: ModelRole) => {
@@ -346,6 +352,22 @@ export default function ModelCenter({ onClose }: Props) {
     await window.aiPlayer?.translatePack?.cancelDownload()
   }
 
+  const startRapidocrDownload = async () => {
+    setRapidocrError('')
+    try {
+      const result = await window.aiPlayer?.rapidocrPack?.download()
+      if (!result?.success) throw new Error(result?.error || '下载失败')
+      const status = await window.aiPlayer?.rapidocrPack?.status()
+      if (status) setRapidocrStatus(status)
+    } catch (error) {
+      setRapidocrError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const cancelRapidocrDownload = async () => {
+    await window.aiPlayer?.rapidocrPack?.cancelDownload()
+  }
+
   const startBundled = async () => {
     setBusy(true)
     setStatus('正在校验并加载内置模型；已采用低占用配置，首次启动通常需要数秒…')
@@ -525,7 +547,7 @@ export default function ModelCenter({ onClose }: Props) {
           </div>}
 
           <button onClick={() => setShowLocalPacks((value) => !value)} className="flex w-full items-center justify-between rounded-xl border border-white/10 px-4 py-3 text-left text-sm text-gray-400 hover:bg-white/5 hover:text-gray-200">
-            <span>本地组件与下载（离线模型 · 精修 · 翻译 · 站点视频）</span>
+            <span>本地组件与下载（离线模型 · 精修 · 翻译 · OCR · 站点视频）</span>
             <span className="text-xs">{showLocalPacks ? '▾ 收起' : '▸ 展开'}</span>
           </button>
 
@@ -601,6 +623,27 @@ export default function ModelCenter({ onClose }: Props) {
               <div className="mt-3">
                 <div className="h-2 overflow-hidden rounded-full bg-black/40"><div className="h-full bg-cyan-500 transition-all" style={{ width: `${Math.min(100, Math.round(((whisperStatus.smallDownload?.receivedBytes || 0) / (whisperStatus.smallDownload?.totalBytes || 1)) * 100))}%` }} /></div>
                 <div className="mt-1 text-xs text-gray-400">{whisperStatus.smallDownload?.currentFile || '下载中'} · {((whisperStatus.smallDownload?.receivedBytes || 0) / 1024 / 1024).toFixed(0)}/{((whisperStatus.smallDownload?.totalBytes || 0) / 1024 / 1024).toFixed(0)}MB</div>
+              </div>
+            )}
+          </div>}
+
+          {role === 'chat' && rapidocrStatus && <div className="rounded-xl border border-teal-500/25 bg-teal-500/5 px-4 py-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm text-teal-100">高精度 OCR 组件 · PP-OCRv4 中文识别</div>
+                <div className="mt-1 text-xs text-gray-500">约 {Math.round((rapidocrStatus.pack?.totalBytes || 0) / 1024 / 1024)}MB · 扫描件 PDF/图片的中文高精度识别，纯本地运行、内容不出机</div>
+                {!rapidocrStatus.available && !rapidocrStatus.download?.active && <div className="mt-2 text-xs text-amber-300">{rapidocrStatus.reason}；下载一次即可离线使用。</div>}
+                {rapidocrStatus.available && <div className="mt-2 text-xs text-emerald-300">已就绪：扫描件 PDF 提取文字、图片识字自动优先走高精度引擎，系统 OCR 兜底。</div>}
+                {rapidocrError && <div className="mt-2 text-xs text-red-300">{rapidocrError}</div>}
+              </div>
+              {!rapidocrStatus.available && (rapidocrStatus.download?.active
+                ? <button onClick={() => void cancelRapidocrDownload()} className="rounded-lg bg-white/10 px-4 py-2 text-sm hover:bg-white/15">取消下载</button>
+                : <button disabled={busy} onClick={() => void startRapidocrDownload()} className="rounded-lg bg-teal-600/80 px-4 py-2 text-sm hover:bg-teal-600 disabled:opacity-40">下载高精度 OCR 组件</button>)}
+            </div>
+            {rapidocrStatus.download?.active && (
+              <div className="mt-3">
+                <div className="h-2 overflow-hidden rounded-full bg-black/40"><div className="h-full bg-teal-500 transition-all" style={{ width: `${Math.min(100, Math.round(((rapidocrStatus.download.receivedBytes || 0) / (rapidocrStatus.download.totalBytes || 1)) * 100))}%` }} /></div>
+                <div className="mt-1 text-xs text-gray-400">{rapidocrStatus.download.currentFile || '下载中'} · {((rapidocrStatus.download.receivedBytes || 0) / 1024 / 1024).toFixed(0)}/{((rapidocrStatus.download.totalBytes || 0) / 1024 / 1024).toFixed(0)}MB</div>
               </div>
             )}
           </div>}

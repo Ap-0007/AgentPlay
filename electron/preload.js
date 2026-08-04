@@ -285,6 +285,16 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('media:download-status', handler)
     }
   },
+  rapidocrPack: {
+    status: () => ipcRenderer.invoke('rapidocrPack:status'),
+    download: () => ipcRenderer.invoke('rapidocrPack:download'),
+    cancelDownload: () => ipcRenderer.invoke('rapidocrPack:cancel-download'),
+    onProgress: (callback) => {
+      const handler = (_event, data) => callback(data)
+      ipcRenderer.on('rapidocrPack:progress', handler)
+      return () => ipcRenderer.removeListener('rapidocrPack:progress', handler)
+    }
+  },
   translatePack: {
     status: () => ipcRenderer.invoke('translatePack:status'),
     download: () => ipcRenderer.invoke('translatePack:download'),
