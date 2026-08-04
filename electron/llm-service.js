@@ -708,6 +708,7 @@ class AgentEngine {
     const cliProviderId = typeof apiKey === 'object' && apiKey !== null ? apiKey.providerId : null
     if (cliProviderId === 'codex-chatgpt' || cliProviderId === 'claude-code') {
       try {
+        options.onStatus?.('cli-generating')
         const result = await this.completeText(messages, apiKey, { signal: options.signal, timeoutMs: 180000 })
         options.onDelta?.(result.text)
         return { text: result.text, toolResults: [] }

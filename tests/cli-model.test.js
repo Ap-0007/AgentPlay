@@ -99,3 +99,25 @@ test('model center save broadcasts models-changed so home label refreshes', () =
   assert.ok(saveIdx > -1)
   assert.match(mc.slice(saveIdx, saveIdx + 300), /ai-player-models-changed/, 'save() 必须广播 models-changed（否则首页标签陈旧，用户真实事故）')
 })
+
+test('chat auto-scrolls to newest message and cli status is honest about latency', () => {
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  // 消息列表必须挂 ref 并在 messages 变化时滚到底（用户真实事故：第三条回复发出后视野停在第二条）
+  assert.match(panel, /listRef = useRef<HTMLDivElement>/)
+  assert.match(panel, /el\.scrollTop = el\.scrollHeight/)
+  assert.match(panel, /<div ref=\{listRef\} className="flex-1 overflow-y-auto/)
+  const store = fs.readFileSync(path.join(__dirname, '..', 'src', 'stores', 'agentStore.ts'), 'utf8')
+  // 订阅后端首答约 1-2 分钟，状态文案必须如实告知，而不是永远"请求已排队…"
+  assert.match(store, /cli-generating/)
+  assert.match(store, /订阅模型生成中/)
+})
+
+test('pending chat shows animated wave instead of looking frozen', () => {
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.css'), 'utf8')
+  // 等待中的最后一条 agent 消息必须渲染波浪动画（用户要求：会动的波浪纹，不要静态文字干等）
+  assert.match(panel, /ai-wave/)
+  assert.match(panel, /thinking && i === messages\.length - 1 && m\.role === 'agent'/)
+  assert.match(css, /@keyframes ai-wave-bounce/)
+  assert.match(css, /rgb\(var\(--player-accent\)\)/, '波浪必须走主题 accent 变量，四主题自适应')
+})

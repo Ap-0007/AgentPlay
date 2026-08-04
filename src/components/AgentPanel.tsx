@@ -33,6 +33,7 @@ export default function AgentPanel() {
     useAgentStore()
   const focusNonce = useAgentStore((s) => s.focusNonce)
   const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   useEffect(() => { inputRef.current?.focus() }, [focusNonce])
   const [showHistory, setShowHistory] = useState(false)
   const [linkChoice, setLinkChoice] = useState<{ url: string; text: string; direct: boolean; canAnalyze: boolean } | null>(null)
@@ -98,6 +99,12 @@ export default function AgentPanel() {
     localStorage.setItem('aiplayer_subtitle_key', subtitleKey)
     setShowServiceEdit(false)
   }
+
+  // 新消息与流式更新自动滚到最底（否则第三四条回复发出后视野还停在第二条）
+  useEffect(() => {
+    const el = listRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
 
   useEffect(() => {
     const load = () => void window.aiPlayer?.models?.config('chat').then((config) => {
@@ -877,7 +884,7 @@ export default function AgentPanel() {
 
 
         {/* 消息列表 */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+        <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           {messages.length === 0 && attachments.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center px-8 text-center">
               <p className="text-lg font-medium text-gray-200">我能帮你做什么？</p>
@@ -965,7 +972,12 @@ export default function AgentPanel() {
                   ? 'max-w-[85%] rounded-2xl rounded-br-md bg-player-accent/20 border border-player-accent/25 px-3.5 py-2 text-sm text-white whitespace-pre-wrap break-words'
                   : 'max-w-[85%] rounded-2xl rounded-bl-md bg-white/[0.04] border border-white/5 px-3.5 py-2 text-sm text-gray-300 whitespace-pre-wrap break-words'}
               >
-                {m.text}
+                {thinking && i === messages.length - 1 && m.role === 'agent' ? (
+                  <span className="flex items-center gap-2.5">
+                    <span className="ai-wave" aria-hidden="true"><i /><i /><i /><i /><i /></span>
+                    <span>{m.text}</span>
+                  </span>
+                ) : m.text}
               </div>
             </div>
           ))}

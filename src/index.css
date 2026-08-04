@@ -179,3 +179,26 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* AI 生成中的波浪等待动画（替代静态"思考中…"，订阅通道 1-2 分钟等待不显得卡死） */
+.ai-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 14px;
+}
+.ai-wave i {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: rgb(var(--player-accent));
+  animation: ai-wave-bounce 1s ease-in-out infinite;
+}
+.ai-wave i:nth-child(2) { animation-delay: 0.12s; }
+.ai-wave i:nth-child(3) { animation-delay: 0.24s; }
+.ai-wave i:nth-child(4) { animation-delay: 0.36s; }
+.ai-wave i:nth-child(5) { animation-delay: 0.48s; }
+@keyframes ai-wave-bounce {
+  0%, 100% { transform: scaleY(0.3); opacity: 0.55; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
