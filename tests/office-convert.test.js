@@ -148,3 +148,50 @@ test('本机 Excel 引擎真实生成图表页与透视表页（仅 Windows 且�
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test('classifyTask routes high-fidelity PDF to Word conversion', () => {
+  const file = [{ path: '报告.pdf' }]
+  assert.deepEqual(classifyTask(file, '高保真转换成word', 'auto'), {
+    kind: 'pdf-hifi-docx',
+    outputFormat: 'docx',
+    requiresAi: false,
+    summary: '本地版式重建为 Word'
+  })
+})
+
+test('PDF→DOCX 本地版式重建：行/段落/标题还原，扫描件如实报错', async () => {
+  const { pdfToDocxLayout } = require('../electron/pdf-to-docx-service')
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf2docx-layout-'))
+  try {
+    const { PDFDocument, StandardFonts } = require('pdf-lib')
+    const pdf = await PDFDocument.create()
+    const page = pdf.addPage([595, 842])
+    const regular = await pdf.embedFont(StandardFonts.Helvetica)
+    page.drawText('Big Heading Probe', { x: 60, y: 780, size: 24, font: regular })
+    page.drawText('Body line one stays in order.', { x: 60, y: 740, size: 12, font: regular })
+    page.drawText('Body line two after a paragraph gap.', { x: 60, y: 690, size: 12, font: regular })
+    const fixture = path.join(tempDir, 'probe.pdf')
+    fs.writeFileSync(fixture, await pdf.save())
+
+    const target = path.join(tempDir, 'probe.docx')
+    const rebuilt = await pdfToDocxLayout(fixture, target)
+    assert.equal(rebuilt.pages, 1)
+    const mammoth = require('mammoth')
+    const text = await mammoth.extractRawText({ path: target })
+    assert.ok(text.value.includes('Big Heading Probe'))
+    assert.ok(text.value.indexOf('Body line one') < text.value.indexOf('Body line two'))
+    // 大字号行必须映射成标题样式
+    const JSZip = require('jszip')
+    const xml = await (await JSZip.loadAsync(fs.readFileSync(target))).file('word/document.xml').async('string')
+    assert.match(xml, /Heading2[\s\S]{0,200}Big Heading Probe|Big Heading Probe[\s\S]{0,200}Heading2/)
+
+    // 扫描件（无文字层）如实报错，不产出空文件
+    const blank = await PDFDocument.create()
+    blank.addPage([595, 842])
+    const blankPath = path.join(tempDir, 'blank.pdf')
+    fs.writeFileSync(blankPath, await blank.save())
+    await assert.rejects(() => pdfToDocxLayout(blankPath, path.join(tempDir, 'blank.docx')), /没有文字层（扫描件）/)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})

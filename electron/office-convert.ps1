@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Source,
   [string]$Target,
   [ValidateSet('Word', 'Excel', 'PowerPoint')][string]$App = 'Word',

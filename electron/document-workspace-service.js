@@ -9,6 +9,7 @@ const { Document, HeadingLevel, Packer, Paragraph, TextRun } = require('docx')
 const { PDFDocument } = require('pdf-lib')
 const { editDocx, parseEditInstruction } = require('./docx-editor')
 const { editPptx, parsePptxEditInstruction } = require('./pptx-editor')
+const { pdfToDocxLayout } = require('./pdf-to-docx-service')
 const { convertImage, parseImageEditInstruction } = require('./image-convert-service')
 const { insertImageIntoDocx } = require('./docx-image')
 const { redactDocument } = require('./redact-service')
@@ -110,6 +111,9 @@ function classifyTask(files, instruction, preferredOutput = 'auto') {
   const officeExts = ['.doc', '.docx', '.rtf', '.odt', '.xls', '.xlsx', '.csv', '.ods', '.ppt', '.pptx', '.odp']
   if (files.length === 1 && officeExts.includes(exts[0]) && /高保真|原样|保真/.test(text) && /pdf/i.test(text)) {
     return { kind: 'office-convert', outputFormat: 'pdf', requiresAi: false, summary: '调用本机 Office 引擎高保真转换' }
+  }
+  if (files.length === 1 && exts[0] === '.pdf' && /高保真|原样|保真/.test(text) && /word|docx/i.test(text)) {
+    return { kind: 'pdf-hifi-docx', outputFormat: 'docx', requiresAi: false, summary: '本地版式重建为 Word' }
   }
   const languageRetarget = /改成|变成/.test(text) && /英文|英语|中文|汉语|日语|日文|韩语|法语|德语|西班牙语|俄语/.test(text)
   const bundleSet = new Set()
@@ -1154,6 +1158,10 @@ class DocumentWorkspaceService {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'pdf')
       const converted = await this.officeConvert.convertToPdf(plan.files[0].path, finalPath)
       result = { outputs: [finalPath], summary: `已用本机 ${converted.engine} 引擎高保真转换为 PDF（保留原版式）` }
+    } else if (plan.kind === 'pdf-hifi-docx') {
+      const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'docx')
+      const rebuilt = await pdfToDocxLayout(plan.files[0].path, finalPath)
+      result = { outputs: [finalPath], summary: `已按版式重建为 Word（${rebuilt.pages} 页还原行/段落与标题层级；图片与复杂分栏暂不还原）` }
     } else if (plan.kind === 'convert' && ['.xlsx', '.csv'].includes(plan.files[0]?.ext) && plan.outputFormat === 'xlsx') {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'xlsx')
       await editSpreadsheet(plan.files[0].path, finalPath, '')
