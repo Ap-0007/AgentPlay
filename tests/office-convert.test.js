@@ -101,3 +101,50 @@ test('本机 Office 引擎真实转换复杂 DOCX 为高保真 PDF（仅 Windows
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test('classifyTask routes chart and pivot instructions to spreadsheet-edit', () => {
+  const file = [{ path: '销售.xlsx' }]
+  assert.equal(classifyTask(file, '把数据做成柱状图', 'auto').kind, 'spreadsheet-edit')
+  assert.equal(classifyTask(file, '生成透视表按地区汇总销售额', 'auto').kind, 'spreadsheet-edit')
+  assert.equal(classifyTask(file, '生成透视表按地区汇总销售额', 'auto').requiresAi, false)
+  const { parseExcelEnrichIntent } = require('../electron/document-workspace-service')
+  assert.deepEqual(parseExcelEnrichIntent('把数据做成柱状图'), { chartType: 51, chartTitle: '数据图表', pivot: false, rowField: '', valueField: '' })
+  assert.deepEqual(parseExcelEnrichIntent('画个饼图并生成透视表按地区汇总销售额'), { chartType: 5, chartTitle: '数据图表', pivot: true, rowField: '地区', valueField: '销售额' })
+  assert.equal(parseExcelEnrichIntent('清理空格'), null)
+})
+
+test('本机 Excel 引擎真实生成图表页与透视表页（仅 Windows 且引擎可用）', async (t) => {
+  if (process.platform !== 'win32') return t.skip('仅 Windows 可用本机 Office 引擎')
+  const service = new OfficeConvertService()
+  const status = await service.detect()
+  if (!status.available || !status.engines.some((engine) => engine.app === 'Excel')) return t.skip('本机无 Excel 引擎')
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'excel-enrich-'))
+  try {
+    const ExcelJS = require('exceljs')
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Sheet1')
+    sheet.addRow(['地区', '销售额'])
+    sheet.addRow(['华东', 100])
+    sheet.addRow(['华北', 200])
+    sheet.addRow(['华南', 150])
+    const fixture = path.join(tempDir, '销售.xlsx')
+    await workbook.xlsx.writeFile(fixture)
+
+    await service.excelEnrich(fixture, { chartType: 51, chartTitle: '销售额分布', pivot: true, rowField: '地区', valueField: '销售额' })
+
+    const JSZip = require('jszip')
+    const archive = await JSZip.loadAsync(fs.readFileSync(fixture))
+    const names = Object.keys(archive.files)
+    assert.ok(names.some((n) => /xl\/charts\/chart\d+\.xml$/.test(n)), '必须生成图表部件')
+    assert.ok(names.some((n) => /xl\/pivotTables\/pivotTable\d+\.xml$/.test(n)), '必须生成透视表部件')
+    const chartXml = await archive.file(names.find((n) => /xl\/charts\/chart\d+\.xml$/.test(n))).async('string')
+    assert.ok(chartXml.includes('销售额分布'), '图表标题必须写入')
+    // 字段名存在 pivotCacheDefinition 的 cacheFields 里（pivotTable 本体只存索引）
+    const cacheDefName = names.find((n) => /xl\/pivotCache\/pivotCacheDefinition\d+\.xml$/.test(n))
+    assert.ok(cacheDefName, '必须生成透视缓存定义')
+    const cacheDefXml = await archive.file(cacheDefName).async('string')
+    assert.ok(cacheDefXml.includes('地区') && cacheDefXml.includes('销售额'), '透视表字段必须写入')
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})

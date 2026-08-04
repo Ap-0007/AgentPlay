@@ -92,9 +92,27 @@ class OfficeConvertService {
     return { engine: app }
   }
 
-  runPs(args) {
+  // 在已另存的 xlsx 上追加图表页/透视表页（Excel COM 确定性生成；只动输出文件）
+  async excelEnrich(filePath, { chartType = 0, chartTitle = '数据图表', pivot = false, rowField = '', valueField = '' } = {}) {
+    const status = await this.detect()
+    if (!status.available || !status.engines.some((engine) => engine.app === 'Excel')) {
+      throw new Error('生成图表/透视表需要本机安装 Microsoft Excel（或 WPS 表格）；当前未检测到')
+    }
+    const args = ['-File', filePath]
+    if (chartType) args.push('-Chart', String(chartType), '-ChartTitle', chartTitle)
+    if (pivot) {
+      args.push('-Pivot')
+      if (rowField) args.push('-RowField', rowField)
+      if (valueField) args.push('-ValueField', valueField)
+    }
+    await this.runPsGuarded(args, OFFICE_PROCESS.Excel, path.join(__dirname, 'excel-enrich.ps1'))
+    return { engine: 'Excel' }
+  }
+
+  runPs(args, scriptPath = null) {
+    const script = scriptPath || this.scriptPath
     return new Promise((resolve, reject) => {
-      const child = this.spawnImpl(this.powershellPath, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', this.scriptPath, ...args], { windowsHide: true })
+      const child = this.spawnImpl(this.powershellPath, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...args], { windowsHide: true })
       let stdout = ''
       let stderr = ''
       let settled = false
@@ -122,10 +140,10 @@ class OfficeConvertService {
     })
   }
 
-  async runPsGuarded(args, officeImage) {
+  async runPsGuarded(args, officeImage, scriptPath = null) {
     const before = officeImage ? await officePids(officeImage) : new Set()
     try {
-      return await this.runPs(args)
+      return await this.runPs(args, scriptPath)
     } catch (error) {
       if (error.timeout && officeImage) {
         // 超时被强杀后 Office 进程可能残留：只清理本次新产生的实例，用户已打开的不动

@@ -94,7 +94,7 @@ function classifyTask(files, instruction, preferredOutput = 'auto') {
   if (files.length === 1 && exts[0] === '.pdf' && /拆分|分页|每页|split/i.test(text)) {
     return { kind: 'pdf-split', outputFormat: 'pdf', requiresAi: false, summary: '按页拆分 PDF' }
   }
-  if (files.length === 1 && ['.xlsx', '.csv'].includes(exts[0]) && (/去重|清理|空格|公式|trim/i.test(text) || parseCellSet(text))) {
+  if (files.length === 1 && ['.xlsx', '.csv'].includes(exts[0]) && (/去重|清理|空格|公式|trim|柱状图|柱形图|条形图|折线图|饼图|透视表/i.test(text) || parseCellSet(text))) {
     const hasExplicitFormula = /=\s*[A-Z]+\d+|公式\s*[：:]\s*=/.test(text)
     const requiresAi = /公式/.test(text) && !hasExplicitFormula && !parseCellSet(text)
     return { kind: 'spreadsheet-edit', outputFormat: 'xlsx', requiresAi, summary: requiresAi ? '理解并写入表格公式' : '清理或修改表格' }
@@ -751,6 +751,18 @@ async function editSpreadsheet(sourcePath, finalPath, instruction, formulaPlan =
   return operations
 }
 
+const CHART_TYPE_RULES = [[/柱状图|柱形图/, 51], [/条形图/, 57], [/折线图/, 4], [/饼图/, 5]]
+function parseExcelEnrichIntent(text) {
+  const chartRule = CHART_TYPE_RULES.find(([rule]) => rule.test(text))
+  const pivot = /透视表/.test(text)
+  if (!chartRule && !pivot) return null
+  let rowField = ''
+  let valueField = ''
+  const pivotMatch = /按\s*([^，。；、]+?)\s*(?:列)?\s*(?:汇总|统计|求和)\s*([^，。；、]+?)\s*(?:列)?\s*$/.exec(String(text).trim())
+  if (pivotMatch) { rowField = pivotMatch[1].trim(); valueField = pivotMatch[2].trim() }
+  return { chartType: chartRule ? chartRule[1] : 0, chartTitle: '数据图表', pivot, rowField, valueField }
+}
+
 async function mergePdfs(files, finalPath) {
   const output = await PDFDocument.create()
   let pageCount = 0
@@ -1085,7 +1097,15 @@ class DocumentWorkspaceService {
       const formulaPlan = plan.requiresAi ? await this.buildFormulaPlan(plan, options) : null
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'xlsx')
       const operations = await editSpreadsheet(plan.files[0].path, finalPath, plan.instruction, formulaPlan)
-      result = { outputs: [finalPath], summary: operations.join('；') || '表格已另存为新文件' }
+      // 图表/透视表：Excel COM 确定性生成（只动已另存的输出文件；无引擎时如实报错）
+      const enrich = parseExcelEnrichIntent(plan.instruction)
+      if (enrich) {
+        if (!this.officeConvert) throw new Error('生成图表/透视表需要本机安装 Excel（或 WPS 表格）；当前环境没有转换引擎')
+        await this.officeConvert.excelEnrich(finalPath, enrich)
+        if (enrich.chartType) operations.push('已生成图表页')
+        if (enrich.pivot) operations.push('已生成透视表页')
+      }
+      result = { outputs: [finalPath], summary: operations.filter(Boolean).join('；') || '表格已另存为新文件' }
     } else if (plan.kind === 'docx-edit') {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'docx')
       const summary = await editDocx(plan.files[0].path, finalPath, plan.editOperations)
@@ -1157,6 +1177,7 @@ module.exports = {
   htmlForPdf,
   normalizeAiPlan,
   normalizeBundlePlan,
+  parseExcelEnrichIntent,
   parseExplicitFormula,
   pdfPageCount,
   validateFormula
