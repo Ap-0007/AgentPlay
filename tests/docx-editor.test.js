@@ -165,7 +165,9 @@ test('track-mode replace emits w:ins/w:del and hides deleted text from the plain
     const xml = await archive.file('word/document.xml').async('string')
     assert.ok(xml.includes('<w:del '), '必须有 w:del')
     assert.ok(xml.includes('<w:ins '), '必须有 w:ins')
-    assert.ok(xml.includes('<w:delText xml:space="preserve">张三</w:delText>'))
+    // 跨 run 命中的修订按 run 分段留痕（拒绝修订可逐段还原）
+    assert.ok(xml.includes('<w:delText xml:space="preserve">张</w:delText>'))
+    assert.ok(xml.includes('<w:delText xml:space="preserve">三</w:delText>'))
     assert.ok(xml.includes('<w:t xml:space="preserve">李四</w:t>'))
     const plainVisible = [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((m) => m[1]).join('')
     assert.ok(!plainVisible.includes('张三'), '修订模式下纯文本层不得再含被删文字')
@@ -335,5 +337,117 @@ test('complex docx keeps headers, footers, styles, media and tables byte-identic
     assert.ok(xml.includes('壹仟贰佰万元整') && xml.includes('<w:tbl>') && xml.includes('插入段'))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('inline style full fidelity: cross-run replace keeps untouched runs byte-identical and inherits match-start rPr', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-fidelity-'))
+  try {
+    const { Document, Packer, Paragraph, TextRun } = require('docx')
+    const doc = new Document({
+      sections: [{
+        children: [
+          new Paragraph({
+            children: [
+              new TextRun({ text: '价格：' }),
+              new TextRun({ text: '100', bold: true }),
+              new TextRun({ text: '元整，' }),
+              new TextRun({ text: '一次性付清。', italics: true })
+            ]
+          })
+        ]
+      }]
+    })
+    const fixture = path.join(tempDir, 'f.docx')
+    fs.writeFileSync(fixture, await Packer.toBuffer(doc))
+    const output = path.join(tempDir, 'f-out.docx')
+    // '100元' 跨 run：bold('100') + 普通('元整，')；替换文字应继承命中起点 run 的 bold
+    await editDocx(fixture, output, [{ type: 'replace', from: '100元', to: '200元' }])
+    const archive = await JSZip.loadAsync(fs.readFileSync(output))
+    const xml = await archive.file('word/document.xml').async('string')
+    const visible = [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((m) => m[1]).join('')
+    assert.equal(visible, '价格：200元整，一次性付清。')
+    // '200' 所在 run 必须是 bold（继承命中起点 run 的 rPr）
+    const run200 = [...xml.matchAll(/<w:r\b[\s\S]*?<\/w:r>/g)].find((r) => r[0].includes('200元'))
+    assert.ok(run200 && run200[0].includes('<w:b/>'), '200元 run 必须继承 bold')
+    // 未触及的斜体 run 必须原样保留
+    assert.ok(xml.includes('一次性付清。'))
+    const runs = [...xml.matchAll(/<w:r\b[\s\S]*?<\/w:r>/g)]
+    const italicRun = runs.find((r) => r[0].includes('一次性付清。'))
+    assert.ok(italicRun && italicRun[0].includes('<w:i/>'), '斜体 run 必须保留斜体')
+    // 前缀普通 run '价格：' 不带 bold
+    const headRun = runs.find((r) => r[0].includes('价格：'))
+    assert.ok(headRun && !headRun[0].includes('<w:b/>'))
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('track mode preserves surrounding run formatting', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-track-fmt-'))
+  try {
+    const { Document, Packer, Paragraph, TextRun } = require('docx')
+    const doc = new Document({
+      sections: [{
+        children: [
+          new Paragraph({
+            children: [
+              new TextRun({ text: '甲方：', bold: true }),
+              new TextRun({ text: '张三', italics: true }),
+              new TextRun({ text: '签约。' })
+            ]
+          })
+        ]
+      }]
+    })
+    const fixture = path.join(tempDir, 't.docx')
+    fs.writeFileSync(fixture, await Packer.toBuffer(doc))
+    const output = path.join(tempDir, 't-out.docx')
+    await editDocx(fixture, output, [{ type: 'replace', from: '张三', to: '李四', mode: 'track' }])
+    const archive = await JSZip.loadAsync(fs.readFileSync(output))
+    const xml = await archive.file('word/document.xml').async('string')
+    // 未触及的 bold run '甲方：' 逐字保留（含 rPr）
+    const headBold = [...xml.matchAll(/<w:r\b[\s\S]*?<\/w:r>/g)].find((r) => r[0].includes('甲方：'))
+    assert.ok(headBold && headBold[0].includes('<w:b/>'), '甲方： run 必须保留 bold')
+    // ins 里的替换文字继承命中 run 的斜体
+    const insBlock = /<w:ins\b[\s\S]*?<\/w:ins>/.exec(xml)
+    assert.ok(insBlock && insBlock[0].includes('李四') && insBlock[0].includes('<w:i/>'), 'ins 必须继承斜体')
+    // del 留痕保留原斜体
+    const delBlock = /<w:del\b[\s\S]*?<\/w:del>/.exec(xml)
+    assert.ok(delBlock && delBlock[0].includes('张三') && delBlock[0].includes('<w:i/>'), 'del 必须保留斜体')
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('insert and append inherit anchor paragraph style (paragraph-level style inheritance)', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-inherit-'))
+  try {
+    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx')
+    const doc = new Document({
+      sections: [{
+        children: [
+          new Paragraph({ text: '普通段落' }),
+          new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('第二节')] }),
+          new Paragraph({ children: [new TextRun({ text: '结尾段。', bold: true })] })
+        ]
+      }]
+    })
+    const fixture = path.join(tempDir, 's.docx')
+    fs.writeFileSync(fixture, await Packer.toBuffer(doc))
+    const output = path.join(tempDir, 's-out.docx')
+    await editDocx(fixture, output, [
+      { type: 'insert', anchor: '第二节', position: 'after', lines: ['继承样式的插入段'] },
+      { type: 'append', lines: ['继承样式的追加段'] }
+    ])
+    const archive = await JSZip.loadAsync(fs.readFileSync(output))
+    const xml = await archive.file('word/document.xml').async('string')
+    // 插入段继承锚点（Heading2）的 pStyle
+    assert.match(xml, /<w:p><w:pPr><w:pStyle w:val="Heading2"\/><\/w:pPr><w:r>[\s\S]*?继承样式的插入段/)
+    // 追加段继承文末段（bold run）的 rPr
+    const appended = [...xml.matchAll(/<w:r\b[\s\S]*?<\/w:r>/g)].find((r) => r[0].includes('继承样式的追加段'))
+    assert.ok(appended && appended[0].includes('<w:b/>'), '追加段必须继承 bold')
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })

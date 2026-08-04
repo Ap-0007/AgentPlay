@@ -115,13 +115,44 @@ function parseEditInstruction(instruction) {
   return operations.length > 0 ? operations : null
 }
 
-function buildParagraphXml(line) {
+const RUN_RE = /<w:r\b[\s\S]*?<\/w:r>/g
+
+function buildParagraphXml(line, template) {
   const heading = /^#{1,3}\s+/.exec(line)
   if (heading) {
     const level = Math.min(heading[0].trim().length, 3)
     return `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/></w:pPr><w:r><w:t xml:space="preserve">${escapeXml(line.slice(heading[0].length))}</w:t></w:r></w:p>`
   }
-  return `<w:p><w:r><w:t xml:space="preserve">${escapeXml(line)}</w:t></w:r></w:p>`
+  // 段落级样式继承：沿用锚点段落的段落属性与首个 run 的字符样式（模板已剥分节符）
+  const pPr = template?.pPr || ''
+  const rPr = template?.rPr || ''
+  return `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(line)}</w:t></w:r></w:p>`
+}
+
+function runRpr(runXml) {
+  const match = /^<w:r\b[^>]*>(<w:rPr>[\s\S]*?<\/w:rPr>)/.exec(runXml)
+  return match ? match[1] : ''
+}
+
+function isPureTextRun(runXml) {
+  // 只含可选 rPr 与 w:t 的 run 才可拆分重建；含图片/断行/制表/域等的 run 视为原子，不做手术
+  const inner = runXml.replace(/^<w:r\b[^>]*>/, '').replace(/<\/w:r>$/, '')
+  const stripped = inner
+    .replace(/<w:rPr>[\s\S]*?<\/w:rPr>/, '')
+    .replace(/<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g, '')
+  return stripped.trim() === ''
+}
+
+function buildTextRun(rPr, text) {
+  return `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>`
+}
+
+function paragraphTemplate(paragraphXml) {
+  const pPr = (/<w:pPr>[\s\S]*?<\/w:pPr>/.exec(paragraphXml) || [''])[0]
+    .replace(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/g, '')
+  const firstRun = RUN_RE.exec(paragraphXml)
+  RUN_RE.lastIndex = 0
+  return { pPr, rPr: firstRun ? runRpr(firstRun[0]) : '' }
 }
 
 function paragraphHead(paragraphXml) {
@@ -131,9 +162,8 @@ function paragraphHead(paragraphXml) {
   return { head: paragraphXml.slice(0, openEnd) + (pPrMatch ? pPrMatch[0] : ''), openEnd: openEnd + (pPrMatch ? pPrMatch[0].length : 0) }
 }
 
-function replaceInParagraph(paragraphXml, from, to, mode, state) {
+function legacyReplaceInParagraph(paragraphXml, from, to, mode, state) {
   const combined = visibleText(paragraphXml)
-  if (!combined.includes(from)) return { xml: paragraphXml, count: 0 }
   const count = combined.split(from).length - 1
   if (mode === 'track') {
     const parts = combined.split(from)
@@ -156,6 +186,53 @@ function replaceInParagraph(paragraphXml, from, to, mode, state) {
     const spaceAttr = /^\s|\s$/.test(replaced) && !/xml:space="preserve"/.test(whole) ? ' xml:space="preserve"' : ''
     return whole.replace('<w:t', `<w:t${spaceAttr}`).replace(inner, escapeXml(replaced))
   })
+  return { xml, count }
+}
+
+function replaceInParagraph(paragraphXml, from, to, mode, state) {
+  const combined = visibleText(paragraphXml)
+  if (!combined.includes(from)) return { xml: paragraphXml, count: 0 }
+  const count = combined.split(from).length - 1
+  const runs = [...paragraphXml.matchAll(RUN_RE)].map((match) => ({ xml: match[0], start: match.index, end: match.index + match[0].length, text: visibleText(match[0]) }))
+  let offset = 0
+  for (const run of runs) { run.textStart = offset; offset += run.text.length; run.textEnd = offset }
+  const spans = []
+  let fromIndex = combined.indexOf(from)
+  while (fromIndex !== -1) { spans.push([fromIndex, fromIndex + from.length]); fromIndex = combined.indexOf(from, fromIndex + from.length) }
+  // 命中区间碰到含非文本子节点（图片/断行/域等）的原子 run：退回整体折叠老路，宁可损失行内格式也不能弄丢内容
+  const touchesAtomic = runs.some((run) => run.text.length > 0 && !isPureTextRun(run.xml)
+    && spans.some(([spanStart, spanEnd]) => spanStart < run.textEnd && spanEnd > run.textStart))
+  if (touchesAtomic) return legacyReplaceInParagraph(paragraphXml, from, to, mode, state)
+  // 行内样式全保真：未触及的 run 与 run 间内容（超链接壳、书签等）逐字保留；
+  // 触及的纯文本 run 按命中区间拆分重建，替换文字继承命中起点 run 的字符样式
+  const edits = []
+  for (const run of runs) {
+    if (!run.text) continue
+    const overlapping = spans.filter(([spanStart, spanEnd]) => spanStart < run.textEnd && spanEnd > run.textStart)
+    if (overlapping.length === 0) continue
+    const rPr = runRpr(run.xml)
+    let rebuilt = ''
+    let local = 0
+    for (const [spanStart, spanEnd] of overlapping) {
+      const localStart = Math.max(spanStart, run.textStart) - run.textStart
+      const localEnd = Math.min(spanEnd, run.textEnd) - run.textStart
+      if (localStart > local) rebuilt += buildTextRun(rPr, run.text.slice(local, localStart))
+      const covered = run.text.slice(localStart, localEnd)
+      const isMatchHead = spanStart >= run.textStart && spanStart < run.textEnd
+      if (mode === 'track') {
+        // 修订按 run 分段留痕：拒绝修订时每个片段都能各自还原
+        if (covered) rebuilt += `<w:del w:id="${state.nextChangeId++}" w:author="AgentPlay" w:date="${state.date}"><w:r>${rPr}<w:delText xml:space="preserve">${escapeXml(covered)}</w:delText></w:r></w:del>`
+        if (isMatchHead) rebuilt += `<w:ins w:id="${state.nextChangeId++}" w:author="AgentPlay" w:date="${state.date}">${buildTextRun(rPr, to)}</w:ins>`
+      } else if (isMatchHead) {
+        rebuilt += buildTextRun(rPr, to)
+      }
+      local = localEnd
+    }
+    if (local < run.text.length) rebuilt += buildTextRun(rPr, run.text.slice(local))
+    edits.push({ start: run.start, end: run.end, xml: rebuilt })
+  }
+  let xml = paragraphXml
+  for (const edit of edits.reverse()) xml = xml.slice(0, edit.start) + edit.xml + xml.slice(edit.end)
   return { xml, count }
 }
 
@@ -189,15 +266,18 @@ function applyReplacements(documentXml, replacements) {
 }
 
 function appendParagraphs(documentXml, lines) {
-  const paragraphs = lines.map(buildParagraphXml).join('')
   const sectionIndex = documentXml.lastIndexOf('<w:sectPr')
   const insertAt = sectionIndex === -1 ? documentXml.lastIndexOf('</w:body>') : sectionIndex
   if (insertAt === -1) throw new Error('DOCX 结构无效（缺少 w:body）')
+  // 段落级样式继承：文末追加沿用正文最后一个段落的样式
+  const before = documentXml.slice(0, insertAt)
+  const allParagraphs = [...before.matchAll(PARAGRAPH_RE)]
+  const template = allParagraphs.length > 0 ? paragraphTemplate(allParagraphs[allParagraphs.length - 1][0]) : null
+  const paragraphs = lines.map((line) => buildParagraphXml(line, template)).join('')
   return documentXml.slice(0, insertAt) + paragraphs + documentXml.slice(insertAt)
 }
 
 function insertAtParagraph(documentXml, { anchor, position, lines }) {
-  const paragraphs = lines.map(buildParagraphXml).join('')
   const anchorCandidates = typeof anchor === 'number' ? null : candidateForms(anchor)
   let counter = 0
   let done = false
@@ -209,6 +289,9 @@ function insertAtParagraph(documentXml, { anchor, position, lines }) {
       : anchorCandidates.some((candidate) => visibleText(paragraphXml).includes(candidate))
     if (!hit) return paragraphXml
     done = true
+    // 段落级样式继承：新段落沿用锚点段落的样式（任意插入位置都贴合上下文）
+    const template = paragraphTemplate(paragraphXml)
+    const paragraphs = lines.map((line) => buildParagraphXml(line, template)).join('')
     return position === 'before' ? paragraphs + paragraphXml : paragraphXml + paragraphs
   })
   if (!done) {
