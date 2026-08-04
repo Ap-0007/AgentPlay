@@ -35,7 +35,6 @@ export default function EbookReader({ book, onClose }: Props) {
       if (event.index === current) setLoading(event.status)
     })
     return off
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const loadChapter = async (index: number) => {
@@ -57,7 +56,6 @@ export default function EbookReader({ book, onClose }: Props) {
 
   useEffect(() => {
     if (chapters.length > 0 && !text) void loadChapter(0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapters])
 
   const translate = async (engine: 'offline' | 'cloud') => {
