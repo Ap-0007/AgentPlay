@@ -157,6 +157,13 @@ interface AiPlayerAPI {
     cancelDownload: () => Promise<boolean>
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
+  onlineMedia?: {
+    search: (input: { query: string; kind?: 'movie' | 'audio'; page?: number }) => Promise<{ success: boolean; error?: string; items: Array<{ identifier: string; title: string; year: string; creator: string; downloads: number }>; total: number }>
+    files: (input: { identifier: string; kind?: 'movie' | 'audio' }) => Promise<{ success: boolean; error?: string; identifier: string; title: string; files: Array<{ name: string; size: number; url: string; format: string }> }>
+    download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; outputPath?: string; bytes?: number }>
+    cancel: (requestId: string) => Promise<boolean>
+    onProgress: (cb: (progress: { requestId: string; received: number; total: number }) => void) => () => void
+  }
   subtitleBilingual?: {
     generate: (input: { path: string; requestId: string }) => Promise<{ success: boolean; error?: string; needDownload?: boolean; srtPath?: string; count?: number; failed?: number }>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
@@ -204,9 +211,13 @@ interface AiPlayerAPI {
     setProgress: (key: string, position: number, preferences: { volume: number; subtitleVisible: boolean }) => Promise<boolean>
   }
   cast?: {
-    scan: () => Promise<Array<{ id: string; name: string; location: string; controlUrl: string }>>
+    scan: () => Promise<Array<{ id: string; name: string; location: string; controlUrl: string; lastSuccess?: boolean }>>
     cast: (deviceId: string, filePath: string) => Promise<{ success: boolean; action?: string; error?: string }>
     stop: (deviceId: string) => Promise<{ success: boolean; action?: string; error?: string }>
+    pause: (deviceId: string) => Promise<{ success: boolean; action?: string; error?: string }>
+    resume: (deviceId: string) => Promise<{ success: boolean; action?: string; error?: string }>
+    seek: (deviceId: string, seconds: number) => Promise<{ success: boolean; action?: string; error?: string }>
+    status: (deviceId: string) => Promise<{ success: boolean; state?: string; label?: string; error?: string }>
   }
   tmdb?: {
     search: (name: string, apiKey?: string) => Promise<{ success: boolean; data?: { title: string; poster: string | null; overview: string; year: string | null }; error?: string }>

@@ -14,11 +14,32 @@ function xmlEscapeLite(value) {
 }
 
 class CastService {
-  constructor() {
+  constructor({ stateFile = null } = {}) {
     this.devices = []
     this.fileServer = null
     this.fileServerPort = 18901
     this.servedFiles = new Map()
+    this.stateFile = stateFile
+    this.lastSuccess = this.loadLastSuccess()
+  }
+
+  loadLastSuccess() {
+    if (!this.stateFile) return null
+    try {
+      const data = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'))
+      return data && data.location ? data : null
+    } catch {
+      return null
+    }
+  }
+
+  saveLastSuccess(device) {
+    this.lastSuccess = { name: device.name, location: device.location, controlUrl: device.controlUrl, at: new Date().toISOString() }
+    if (!this.stateFile) return
+    try {
+      fs.mkdirSync(path.dirname(this.stateFile), { recursive: true })
+      fs.writeFileSync(this.stateFile, JSON.stringify(this.lastSuccess), 'utf8')
+    } catch { /* 缓存失败不影响投屏 */ }
   }
 
   getLanIp() {
@@ -28,32 +49,43 @@ class CastService {
   scan() {
     return new Promise((resolve) => {
       this.devices = []
+      const seen = new Set()
       const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
-      const msg =
+      // 双 ST：很多电视只回 ssdp:all；双轮：慢设备第二轮才回得来
+      const targets = ['ssdp:all', 'urn:schemas-upnp-org:device:MediaRenderer:1']
+      const send = (st) => socket.send(
         'M-SEARCH * HTTP/1.1\r\n' +
         'HOST: 239.255.255.250:1900\r\n' +
         'MAN: "ssdp:discover"\r\n' +
-        'MX: 3\r\n' +
-        'ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n'
+        'MX: 2\r\n' +
+        `ST: ${st}\r\n\r\n`,
+        1900, '239.255.255.250'
+      )
       socket.on('error', () => {})
       socket.bind(() => {
         socket.setBroadcast(true)
-        socket.send(msg, 1900, '239.255.255.250')
+        targets.forEach(send)
+        setTimeout(() => targets.forEach(send), 1500)
       })
       socket.on('message', async (data) => {
         const text = data.toString()
         const locMatch = text.match(/LOCATION: (.+)\r?\n/i)
         if (!locMatch) return
+        const usn = (text.match(/USN: (.+)\r?\n/i)?.[1] || locMatch[1]).trim()
+        if (seen.has(usn)) return
+        seen.add(usn)
         const location = locMatch[1].trim()
         const device = await this.parseDevice(location)
         if (device && !this.devices.find((d) => d.id === location)) {
+          if (this.lastSuccess && this.lastSuccess.location === location) device.lastSuccess = true
           this.devices.push(device)
         }
       })
       setTimeout(() => {
         socket.close()
+        this.devices.sort((a, b) => Number(Boolean(b.lastSuccess)) - Number(Boolean(a.lastSuccess)))
         resolve(this.devices)
-      }, 3000)
+      }, 4500)
     })
   }
 
@@ -150,7 +182,7 @@ class CastService {
     )
   }
 
-  async cast(deviceId, filePath) {
+  async cast(deviceId, filePath, { positionSeconds = 0 } = {}) {
     const device = this.devices.find((d) => d.id === deviceId)
     if (!device) {
       return { success: false, error: '设备未找到，请先扫描' }
@@ -190,6 +222,11 @@ class CastService {
         const playResp = await fetch(device.controlUrl, { method: 'POST', headers: { 'Content-Type': 'text/xml; charset="utf-8"', SOAPAction: '"urn:schemas-upnp-org:service:AVTransport:1#Play"' }, body: playBody, signal: AbortSignal.timeout(15000) })
         if (!playResp.ok) return { success: false, error: `设备已接收文件但播放失败（HTTP ${playResp.status}）` }
       }
+      if (resp.ok) this.saveLastSuccess(device)
+      // 定位续播（尽力而为）：电视普遍支持 REL_TIME seek，不支持就从头播
+      if (resp.ok && Number(positionSeconds) > 5) {
+        try { await this.seekCast(deviceId, positionSeconds) } catch { /* 不支持就从头播 */ }
+      }
       return {
         success: resp.ok,
         action: resp.ok ? `已投屏到 ${device.name}` : `投屏失败 ${resp.status}`
@@ -197,6 +234,58 @@ class CastService {
     } catch (e) {
       return { success: false, error: String(e) }
     }
+  }
+
+  async pauseCast(deviceId) {
+    const device = this.devices.find((d) => d.id === deviceId) || this.deviceFromCache(deviceId)
+    if (!device) return { success: false, error: '设备未找到，请先扫描' }
+    try {
+      const resp = await this.soap(device, 'Pause', '')
+      return { success: resp.ok, action: resp.ok ? `已暂停 ${device.name}` : `暂停失败 ${resp.status}` }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async resumeCast(deviceId) {
+    const device = this.devices.find((d) => d.id === deviceId) || this.deviceFromCache(deviceId)
+    if (!device) return { success: false, error: '设备未找到，请先扫描' }
+    try {
+      const resp = await this.soap(device, 'Play', '<Speed>1</Speed>')
+      return { success: resp.ok, action: resp.ok ? `继续播放 ${device.name}` : `继续失败 ${resp.status}` }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async seekCast(deviceId, seconds) {
+    const device = this.devices.find((d) => d.id === deviceId) || this.deviceFromCache(deviceId)
+    if (!device) return { success: false, error: '设备未找到，请先扫描' }
+    const total = Math.max(0, Math.round(Number(seconds) || 0))
+    const hms = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60].map((n) => String(n).padStart(2, '0')).join(':')
+    const resp = await this.soap(device, 'Seek', `<Unit>REL_TIME</Unit><Target>${hms}</Target>`)
+    return { success: resp.ok, action: resp.ok ? `已定位到 ${hms}` : `定位失败 ${resp.status}` }
+  }
+
+  async getStatus(deviceId) {
+    const device = this.devices.find((d) => d.id === deviceId) || this.deviceFromCache(deviceId)
+    if (!device) return { success: false, error: '设备未找到' }
+    try {
+      const resp = await this.soap(device, 'GetTransportInfo', '')
+      const text = await resp.text()
+      const state = /<CurrentTransportState>([^<]+)<\/CurrentTransportState>/.exec(text)?.[1] || 'UNKNOWN'
+      const label = { PLAYING: '播放中', PAUSED_PLAYBACK: '已暂停', STOPPED: '已停止', TRANSITIONING: '切换中', NO_MEDIA_PRESENT: '无媒体' }[state] || state
+      return { success: true, state, label }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  deviceFromCache(deviceId) {
+    if (this.lastSuccess && (deviceId === this.lastSuccess.location || deviceId === 'last')) {
+      return { id: this.lastSuccess.location, name: this.lastSuccess.name, location: this.lastSuccess.location, controlUrl: this.lastSuccess.controlUrl }
+    }
+    return null
   }
 
   async soap(device, action, innerBody) {
@@ -220,7 +309,7 @@ class CastService {
   }
 
   async stopCast(deviceId) {
-    const device = this.devices.find((d) => d.id === deviceId)
+    const device = this.devices.find((d) => d.id === deviceId) || this.deviceFromCache(deviceId)
     if (!device) return { success: false, error: '设备未找到，请先扫描' }
     try {
       const resp = await this.soap(device, 'Stop', '')

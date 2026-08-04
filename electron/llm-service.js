@@ -596,7 +596,22 @@ class AgentEngine {
   }
 
   // 多图视觉调用：拉片关键帧等场景一次携带多张图片，labels 与图片一一对应（如 t=MM:SS）
-  async completeVisionMulti({ prompt, imageDataUrls = [], labels = [], apiKey = null, systemPrompt, signal, timeoutMs, maxTokens = 4096 } = {}) {
+  async completeVisionMulti(options = {}) {
+    try {
+      return await this.completeVisionMultiOnce(options)
+    } catch (error) {
+      // agnes-2.5-flash 实测不收图（504/400）：agnes 厂商自动回退已验证视觉型号 agnes-2.0-flash 重试一次
+      const config = typeof options.apiKey === 'object' && options.apiKey !== null ? options.apiKey : null
+      const message = String(error?.message || '')
+      const unsupported = /504|400|multimodal|does not support|unsupported.*(image|vision|media|modality)|invalid.*(image|image_url|content)|(不支持|不接受).{0,4}(图|图片|图像|多模态)/i.test(message)
+      if (config?.providerId === 'agnes' && config.model !== 'agnes-2.0-flash' && unsupported) {
+        return this.completeVisionMultiOnce({ ...options, apiKey: { ...config, model: 'agnes-2.0-flash' } })
+      }
+      throw error
+    }
+  }
+
+  async completeVisionMultiOnce({ prompt, imageDataUrls = [], labels = [], apiKey = null, systemPrompt, signal, timeoutMs, maxTokens = 4096 } = {}) {
     const resolved = this.resolveProvider(apiKey)
     const { base, key, model, protocol, requiresKey = true } = resolved
     if (!base || !model || (!key && requiresKey)) {

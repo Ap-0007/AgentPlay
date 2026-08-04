@@ -146,7 +146,11 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   cast: {
     scan: () => ipcRenderer.invoke('cast:scan'),
     cast: (deviceId, filePath) => ipcRenderer.invoke('cast:cast', deviceId, filePath),
-    stop: (deviceId) => ipcRenderer.invoke('cast:stop', deviceId)
+    stop: (deviceId) => ipcRenderer.invoke('cast:stop', deviceId),
+    pause: (deviceId) => ipcRenderer.invoke('cast:pause', deviceId),
+    resume: (deviceId) => ipcRenderer.invoke('cast:resume', deviceId),
+    seek: (deviceId, seconds) => ipcRenderer.invoke('cast:seek', deviceId, seconds),
+    status: (deviceId) => ipcRenderer.invoke('cast:status', deviceId)
   },
   tmdb: {
     search: (name, apiKey) => ipcRenderer.invoke('tmdb:search', name, apiKey)
@@ -283,6 +287,17 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       const handler = (_event, payload) => cb(payload)
       ipcRenderer.on('media:download-status', handler)
       return () => ipcRenderer.removeListener('media:download-status', handler)
+    }
+  },
+  onlineMedia: {
+    search: (input) => ipcRenderer.invoke('onlineMedia:search', input),
+    files: (input) => ipcRenderer.invoke('onlineMedia:files', input),
+    download: (input) => ipcRenderer.invoke('onlineMedia:download', input),
+    cancel: (requestId) => ipcRenderer.invoke('onlineMedia:cancel', requestId),
+    onProgress: (callback) => {
+      const handler = (_event, data) => callback(data)
+      ipcRenderer.on('onlineMedia:progress', handler)
+      return () => ipcRenderer.removeListener('onlineMedia:progress', handler)
     }
   },
   rapidocrPack: {

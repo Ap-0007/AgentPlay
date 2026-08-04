@@ -581,6 +581,7 @@ const rapidocrDownload = new LocalAiDownloadService({
   logger: log
 })
 const { RapidOcrService } = require('./rapidocr-service')
+const onlineMedia = require('./online-media-service')
 const rapidOcr = new RapidOcrService({
   modelRoot: path.join(app.getPath('userData'), 'rapidocr-pack')
 })
@@ -878,7 +879,7 @@ app.whenReady().then(async () => {
   // explicitly enables them from “设备、投屏与同步”.
   wifiTransfer = new WifiTransfer()
 
-  castService = new CastService()
+  castService = new CastService({ stateFile: path.join(app.getPath('userData'), 'cast-last-device.json') })
 
   syncService = new SyncService(path.join(app.getPath('userData'), 'sync-progress.json'))
 
@@ -2058,6 +2059,52 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     return rapidocrDownload.cancel()
   })
+  ipcMain.handle('onlineMedia:search', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const kind = input.kind === 'audio' ? 'audio' : 'movie'
+      return { success: true, ...(await onlineMedia.searchMedia(input.query, kind, { page: input.page || 1 })) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), items: [], total: 0 }
+    }
+  })
+  ipcMain.handle('onlineMedia:files', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const kind = input.kind === 'audio' ? 'audio' : 'movie'
+      return { success: true, ...(await onlineMedia.listPlayableFiles(input.identifier, kind)) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), files: [] }
+    }
+  })
+  ipcMain.handle('onlineMedia:download', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'omdl')
+    const controller = new AbortController()
+    activeAiRequests.get(requestId)?.abort()
+    activeAiRequests.set(requestId, controller)
+    try {
+      const url = onlineMedia.assertArchiveUrl(input.url)
+      const result = await downloadRemoteMedia(url, {
+        destDir: path.join(app.getPath('videos'), 'AgentPlay 下载'),
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('onlineMedia:progress', { requestId, ...progress })
+        }
+      })
+      return { success: true, ...result }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      activeAiRequests.delete(requestId)
+    }
+  })
+  ipcMain.handle('onlineMedia:cancel', (event, requestId) => {
+    assertTrustedSender(event)
+    const controller = activeAiRequests.get(String(requestId || ''))
+    controller?.abort()
+    return Boolean(controller)
+  })
   ipcMain.handle('subtitle:bilingual-generate', async (event, input = {}) => {
     assertTrustedSender(event)
     const mediaPath = String(input.path || '').trim()
@@ -2783,6 +2830,10 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('cast:stop', (_e, deviceId) => { assertTrustedSender(_e); return castService.stopCast(deviceId) })
+  ipcMain.handle('cast:pause', (_e, deviceId) => { assertTrustedSender(_e); return castService.pauseCast(deviceId) })
+  ipcMain.handle('cast:resume', (_e, deviceId) => { assertTrustedSender(_e); return castService.resumeCast(deviceId) })
+  ipcMain.handle('cast:seek', (_e, deviceId, seconds) => { assertTrustedSender(_e); return castService.seekCast(deviceId, seconds) })
+  ipcMain.handle('cast:status', (_e, deviceId) => { assertTrustedSender(_e); return castService.getStatus(deviceId) })
   ipcMain.handle('dialog:openFile', (event) => { assertTrustedSender(event); return chooseFile() })
   ipcMain.handle('dialog:openFolder', async (event) => {
     assertTrustedSender(event);

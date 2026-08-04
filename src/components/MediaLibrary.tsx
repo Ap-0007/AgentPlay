@@ -75,9 +75,9 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   const [mirrorScanning, setMirrorScanning] = useState(false)
   const [mirrorPin, setMirrorPin] = useState('')
   const [mirrorError, setMirrorError] = useState('')
-  const [castDevices, setCastDevices] = useState<Array<{ id: string; name: string }>>([])
+  const [castDevices, setCastDevices] = useState<Array<{ id: string; name: string; lastSuccess?: boolean }>>([])
   const [castFile, setCastFile] = useState<string | null>(null)
-  const [castStatus, setCastStatus] = useState<{ deviceId: string; message: string; isError?: boolean } | null>(null)
+  const [castStatus, setCastStatus] = useState<{ deviceId: string; message: string; isError?: boolean; stateLabel?: string } | null>(null)
   const [scanning, setScanning] = useState(false)
   const [syncUrl, setSyncUrl] = useState<string | null>(null)
   const [dlnaServerUrl, setDlnaServerUrl] = useState<string | null>(null)
@@ -184,8 +184,34 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
     const result = await window.aiPlayer?.cast?.cast(deviceId, castFile)
     setCastFile(null)
     setCastDevices([])
-    if (result?.success) setCastStatus({ deviceId, message: result.action || '已投屏' })
-    else setCastStatus({ deviceId: '', message: result?.error || result?.action || '投屏失败', isError: true })
+    if (result?.success) {
+      setCastStatus({ deviceId, message: result.action || '已投屏' })
+      // 投屏后拉一次设备真实状态（播放中/已停止），别猜
+      window.setTimeout(() => void refreshCastState(deviceId), 3000)
+    } else {
+      setCastStatus({ deviceId: '', message: result?.error || result?.action || '投屏失败', isError: true })
+    }
+  }
+
+  const refreshCastState = async (deviceId: string) => {
+    const status = await window.aiPlayer?.cast?.status(deviceId)
+    if (status?.success) {
+      setCastStatus((current) => (current && current.deviceId === deviceId ? { ...current, stateLabel: status.label } : current))
+    }
+  }
+
+  const pauseCastNow = async () => {
+    if (!castStatus?.deviceId) return
+    const result = await window.aiPlayer?.cast?.pause(castStatus.deviceId)
+    if (result) setCastStatus({ ...castStatus, message: result.action || castStatus.message })
+    void refreshCastState(castStatus.deviceId)
+  }
+
+  const resumeCastNow = async () => {
+    if (!castStatus?.deviceId) return
+    const result = await window.aiPlayer?.cast?.resume(castStatus.deviceId)
+    if (result) setCastStatus({ ...castStatus, message: result.action || castStatus.message })
+    void refreshCastState(castStatus.deviceId)
   }
 
   const stopCastNow = async () => {
@@ -369,7 +395,9 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
         )}
         {castStatus && (
                       <div className="mb-6 bg-player-surface rounded-lg p-4 flex items-center gap-2">
-                        <p className={castStatus.isError ? 'flex-1 text-xs text-red-300' : 'flex-1 text-xs text-emerald-300'}>{castStatus.message}</p>
+                        <p className={castStatus.isError ? 'flex-1 text-xs text-red-300' : 'flex-1 text-xs text-emerald-300'}>{castStatus.message}{castStatus.stateLabel ? `（${castStatus.stateLabel}）` : ''}</p>
+                        {castStatus.deviceId && <button onClick={() => void pauseCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">暂停</button>}
+                        {castStatus.deviceId && <button onClick={() => void resumeCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">继续</button>}
                         {castStatus.deviceId && <button onClick={() => void stopCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>}
                         <button onClick={() => setCastStatus(null)} className="px-2 py-1 text-gray-500 text-xs">✕</button>
                       </div>
@@ -598,7 +626,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
           >
             <p className="text-sm mb-3">{scanning ? '扫描设备中…' : '选择投屏设备'}</p>
             {castDevices.length === 0 && !scanning && (
-              <p className="text-gray-500 text-sm">未发现 DLNA 设备</p>
+              <p className="text-gray-500 text-sm">未发现 DLNA 设备：确认电视/盒子与本机在同一 WiFi，且电视投屏功能已打开（部分电视需在设置里启用 DLNA/多屏互动）</p>
             )}
             {castDevices.map((d) => (
               <button
@@ -606,7 +634,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
                 onClick={() => doCast(d.id)}
                 className="block w-full text-left px-3 py-2 rounded hover:bg-white/10 text-sm"
               >
-                📺 {d.name}
+                📺 {d.name}{d.lastSuccess ? <span className="ml-2 text-xs text-emerald-300">上次成功</span> : null}
               </button>
             ))}
           </div>

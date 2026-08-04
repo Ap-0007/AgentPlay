@@ -32,6 +32,11 @@ function startMockRenderer() {
       req.on('data', (c) => { body += c })
       req.on('end', () => {
         calls.push({ action: String(req.headers.soapaction || ''), body })
+        if (body.includes('GetTransportInfo')) {
+          res.writeHead(200, { 'Content-Type': 'text/xml' })
+          res.end('<s:Envelope><s:Body><u:GetTransportInfoResponse><CurrentTransportState>PLAYING</CurrentTransportState></u:GetTransportInfoResponse></s:Body></s:Envelope>')
+          return
+        }
         if (body.includes('SetAVTransportURI')) {
           const url = (/<CurrentURI>([^<]+)<\/CurrentURI>/.exec(body) || [])[1]
           if (url) {
@@ -123,4 +128,63 @@ test('cast stop wiring: main IPC, preload bridge and library stop button exist',
   assert.ok(preload.includes("invoke('cast:stop'"))
   assert.match(library, /停止投屏/)
   assert.match(library, /stopCastNow/)
+})
+
+test('smart discovery: last-success device is remembered, badged and cached for controls', async (t) => {
+  const mock = await startMockRenderer()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cast-cache-'))
+  const stateFile = path.join(dir, 'cast-last.json')
+  const service = new CastService({ stateFile })
+  t.after(() => {
+    mock.httpServer.close()
+    mock.udp.close()
+    service.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  const mediaPath = path.join(dir, '片.mp4')
+  fs.writeFileSync(mediaPath, Buffer.from('0123456789abcdef'))
+  const devices = await service.scan()
+  const tv = devices.find((d) => d.name === '测试电视')
+  const result = await service.cast(tv.id, mediaPath)
+  assert.equal(result.success, true)
+
+  // 成功设备已落盘记忆
+  const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+  assert.equal(saved.name, '测试电视')
+  assert.ok(saved.location && saved.controlUrl)
+
+  // 新实例读到记忆：扫描置顶打标
+  const service2 = new CastService({ stateFile })
+  t.after(() => service2.stop())
+  assert.equal(service2.lastSuccess.name, '测试电视')
+  const devices2 = await service2.scan()
+  const tv2 = devices2.find((d) => d.name === '测试电视')
+  assert.equal(tv2.lastSuccess, true, '上次成功设备必须打标')
+  assert.equal(devices2[0].lastSuccess, true, '上次成功设备必须置顶')
+
+  // 缓存兜底：不扫描也能控制
+  const paused = await service2.pauseCast('last')
+  assert.equal(paused.success, true)
+  assert.ok(mock.calls.some((c) => c.body.includes('<u:Pause')), '暂停必须发 Pause')
+  const resumed = await service2.resumeCast('last')
+  assert.equal(resumed.success, true)
+  const sought = await service2.seekCast('last', 95)
+  assert.equal(sought.success, true)
+  assert.ok(mock.calls.some((c) => c.body.includes('<Target>00:01:35</Target>')), 'seek 必须换算成 hh:mm:ss')
+  const status = await service2.getStatus('last')
+  assert.equal(status.success, true)
+  assert.equal(status.label, '播放中')
+})
+
+test('cast wiring: control IPC and preload bridge exist', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
+  for (const verb of ['cast:pause', 'cast:resume', 'cast:seek', 'cast:status']) {
+    assert.ok(main.includes(`ipcMain.handle('${verb}'`), verb)
+    assert.ok(preload.includes(`invoke('${verb}'`), verb)
+  }
+  const library = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MediaLibrary.tsx'), 'utf8')
+  assert.match(library, /上次成功/)
+  assert.match(library, /pauseCastNow|resumeCastNow/)
 })

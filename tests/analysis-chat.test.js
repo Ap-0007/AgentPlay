@@ -311,3 +311,27 @@ test('missing duration is probed via ffprobe so reports never show 00:00:00', as
   assert.match(content, /00:02:36/)
   assert.doesNotMatch(content, /00:00:00/)
 })
+
+test('agnes vision fallback: multimodal-unsupported model retries with agnes-2.0-flash', async () => {
+  const { AgentEngine } = require('../electron/llm-service')
+  const engine = new AgentEngine(null)
+  const calls = []
+  engine.completeVisionMultiOnce = async (options) => {
+    calls.push(options.apiKey.model)
+    if (calls.length === 1) throw new Error('[API 错误 504] multimodal unsupported')
+    return { text: '视觉回答' }
+  }
+  const result = await engine.completeVisionMulti({
+    prompt: '看图', imageDataUrls: ['data:image/png;base64,AAAA'], labels: ['t=00:01'],
+    apiKey: { providerId: 'agnes', model: 'agnes-2.5-flash', baseUrl: 'https://apihub.agnes-ai.com/v1', apiKey: 'k' }
+  })
+  assert.equal(result.text, '视觉回答')
+  assert.deepEqual(calls, ['agnes-2.5-flash', 'agnes-2.0-flash'], '必须先试原型号，504 后回退 2.0-flash')
+
+  // 非 agnes 厂商不做回退
+  engine.completeVisionMultiOnce = async () => { throw new Error('[API 错误 504] multimodal unsupported') }
+  await assert.rejects(() => engine.completeVisionMulti({
+    prompt: '看图', imageDataUrls: ['data:image/png;base64,AAAA'],
+    apiKey: { providerId: 'volcengine', model: 'doubao-x', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: 'k' }
+  }), /504/)
+})
