@@ -36,13 +36,19 @@ test('model form: key visibility toggle, cli providers hide key/url steps, save 
 })
 
 
-test('model center layout: manual config and local packs folded by default; cli refresh uses local catalog', () => {
-  assert.match(modelCenter, /手动配置（高级：选公司 \//)
+test('model center layout: core config always visible, local packs folded by default; cli refresh uses local catalog', () => {
+  assert.match(modelCenter, /1\. 模型公司 \/ 服务/)
+  assert.match(modelCenter, /读取可用型号/)
+  assert.match(modelCenter, /测试连接/)
+  assert.match(modelCenter, /保存并启用/)
+  // 核心操作区不得再被折叠藏住
+  assert.ok(!/showManual/.test(modelCenter), 'showManual 折叠已移除')
   assert.match(modelCenter, /本地组件与下载（离线模型 · 精修 · 翻译 · 站点视频）/)
-  assert.match(modelCenter, /showManual/)
   assert.match(modelCenter, /showLocalPacks/)
   // cli 厂商读取型号不再走空 URL
   assert.match(modelCenter, /来自官方 CLI 缓存，随周更自动最新/)
+  // cli 分支提前 return 前必须复位 busy，否则后续按钮全部失效（真实事故）
+  assert.match(modelCenter, /来自官方 CLI 缓存，随周更自动最新[^]*?setBusy\(false\)\s*\r?\n\s*return/)
 })
 
 test('model label syncs across components on models-changed event', () => {

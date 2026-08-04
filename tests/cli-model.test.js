@@ -70,3 +70,15 @@ test('models:test for cli providers probes with a real short chat instead of net
   assert.match(main, /订阅通道正常/)
   assert.match(main, /timeoutMs: 180000/)
 })
+
+
+test('cloud-protocol consumers all go through creativeConfig guard (cli falls back to stash cloud)', () => {
+  // 视觉/指路/问这帧/云语音统一走 creativeConfig（cli 时自动回退 stash 云端），不再裸用 resolved(chat)
+  assert.match(main, /llmCompleteVisionMulti = async[\s\S]{0,200}creativeConfig\(\)/)
+  assert.match(main, /requestScreenGuide\(creativeConfig\(\)/)
+  assert.match(main, /askAboutImage\(creativeConfig\(\)/)
+  assert.match(main, /synthesizeCloudVoice\(creativeConfig\(\)/)
+  assert.match(main, /describeImage = async[\s\S]{0,120}creativeConfig\(\)/)
+  // 对话本身保留 resolved(chat)——cli 分支要走订阅
+  assert.match(main, /llmComplete = async[\s\S]{0,200}resolved\('chat'\)/)
+})

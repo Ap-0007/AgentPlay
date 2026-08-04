@@ -49,7 +49,6 @@ export default function ModelCenter({ onClose }: Props) {
   const [oneKeyMatches, setOneKeyMatches] = useState<Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>>([])
   const [oneKeyModelPick, setOneKeyModelPick] = useState<Record<string, string>>({})
   const [showKey, setShowKey] = useState(false)
-  const [showManual, setShowManual] = useState(false)
   const [showLocalPacks, setShowLocalPacks] = useState(false)
   const [cliStatus, setCliStatus] = useState<{ codex: { installed: boolean; loggedIn: boolean; note: string }; claude: { installed: boolean; loggedIn: boolean; note: string } } | null>(null)
   const [whisperStatus, setWhisperStatus] = useState<{ available: boolean; smallAvailable?: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean }; smallDownload?: Partial<LocalAiDownloadProgress> & { active: boolean }; pack: { totalBytes: number }; smallPack?: { totalBytes: number } } | null>(null)
@@ -168,6 +167,7 @@ export default function ModelCenter({ onClose }: Props) {
       setRemoteModels(modelOptions)
       if (modelOptions.length && !modelOptions.includes(model)) setModel(modelOptions[0])
       setStatus(`已就绪 ${modelOptions.length} 个模型（来自官方 CLI 缓存，随周更自动最新）`)
+      setBusy(false)
       return
     }
     setStatus('正在读取账户可用模型…')
@@ -681,12 +681,7 @@ export default function ModelCenter({ onClose }: Props) {
           </div>
           </>}
 
-          <button onClick={() => setShowManual((value) => !value)} className="flex w-full items-center justify-between rounded-xl border border-white/10 px-4 py-3 text-left text-sm text-gray-400 hover:bg-white/5 hover:text-gray-200">
-            <span>手动配置（高级：选公司 / 型号 / Key / 地址）</span>
-            <span className="text-xs">{showManual ? '▾ 收起' : '▸ 展开'}</span>
-          </button>
 
-          {showManual && <>
           <label className="block">
             <span className="block text-xs text-gray-400 mb-2">1. 模型公司 / 服务</span>
             <select value={providerId} onChange={(event) => changeProvider(event.target.value)} className="w-full bg-black/35 border border-white/10 rounded-lg px-3 py-3 text-sm outline-none focus:border-player-accent">
@@ -738,7 +733,6 @@ export default function ModelCenter({ onClose }: Props) {
             </div>
           )}
 
-          </>}
           {status && <div className={`rounded-lg px-4 py-3 text-sm ${status.startsWith('✓') ? 'bg-emerald-500/10 text-emerald-300' : 'bg-white/5 text-gray-300'}`}>{status}</div>}
 
           <div className="rounded-xl bg-black/25 px-4 py-3 text-xs text-gray-500 leading-6">

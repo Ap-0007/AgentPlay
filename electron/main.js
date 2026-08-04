@@ -209,9 +209,12 @@ queueExternalMediaArgs(process.argv)
 // 自动使用一键切换时 stash 的云端配置（含加密 Key），用户无感；无 stash 才回落当前配置。
 function creativeConfig() {
   const config = modelConfigStore.resolved('chat')
-  if (config.providerId !== 'bundled-lite') return config
+  // bundled-lite 与订阅类 CLI（codex/claude）都没有云端协议端点：回退 stash 云端配置
+  const needsCloud = config.providerId === 'bundled-lite' || config.providerId === 'codex-chatgpt' || config.providerId === 'claude-code'
+  if (!needsCloud) return config
   const stashed = modelConfigStore.readDocument().stash?.chat
-  if (!stashed) return config
+  // stash 也可能是早期版本误存的非云端配置：视同无 stash，给出明确引导而非拿 cli 配置去撞云端协议
+  if (!stashed || stashed.providerId === 'bundled-lite' || stashed.providerId === 'codex-chatgpt' || stashed.providerId === 'claude-code') return config
   return normalizeConfig({ ...stashed, role: 'chat', apiKey: modelConfigStore.decrypt(stashed.encryptedApiKey) }, 'chat')
 }
 
@@ -804,7 +807,7 @@ app.whenReady().then(async () => {
   }
   // 多图视觉调用（拉片关键帧）：images = [{ dataUrl, label }]，必须带当前配置，否则会落到引擎默认端点
   llmCompleteVisionMulti = async ({ systemPrompt, prompt, images, signal, timeoutMs }) => {
-    const config = modelConfigStore.resolved('chat')
+    const config = creativeConfig()
     return agentEngine.completeVisionMulti({
       prompt,
       systemPrompt,
@@ -817,7 +820,7 @@ app.whenReady().then(async () => {
   }
   // 图片理解：优先已配置云端视觉模型；不行就本机 WinRT OCR 兜底（本地模型与零配置场景也能答）
   const describeImage = async (imagePath, instruction, { signal } = {}) => {
-    const config = modelConfigStore.resolved('chat')
+    const config = creativeConfig()
     const requiresKey = config.requiresKey !== false
     const visionReady = config.providerId !== 'bundled-lite' && Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey))
     if (visionReady) {
@@ -1118,7 +1121,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('guide:annotate', async (event, question) => {
     assertTrustedSender(event)
     try {
-      const ask = () => requestScreenGuide(modelConfigStore.resolved('chat'), String(question || ''))
+      const ask = () => requestScreenGuide(creativeConfig(), String(question || ''))
       // 网络抖动自动重试一次（实测云端视觉偶发 fetch failed）
       const result = await ask().catch((firstError) => {
         if (!/fetch failed|network|timed ?out|abort|econn|socket/i.test(firstError.message)) throw firstError
@@ -1272,7 +1275,7 @@ app.whenReady().then(async () => {
         if (!ok || !fs.existsSync(tmpShot)) throw new Error('视频帧抓取失败')
         dataUrl = 'data:image/jpeg;base64,' + (await fsPromises.readFile(tmpShot)).toString('base64')
       }
-      const result = await askAboutImage(modelConfigStore.resolved('chat'), {
+      const result = await askAboutImage(creativeConfig(), {
         dataUrl,
         question: String(input?.question || '')
       })
@@ -2490,7 +2493,7 @@ app.whenReady().then(async () => {
         : path.join(__dirname, '..', 'resources', 'bin', 'win', 'ai-player-voice.exe')
     }
     return input.engine === 'cloud'
-      ? synthesizeCloudVoice(modelConfigStore.resolved('chat'), request)
+      ? synthesizeCloudVoice(creativeConfig(), request)
       : synthesizeSystemVoice(request)
   })
   ipcMain.handle('studio:select-asset', async (event, kind) => {

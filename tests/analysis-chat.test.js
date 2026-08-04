@@ -291,7 +291,8 @@ test('chat analysis rejects network sources and non-video files', async () => {
 test('main process vision wrappers always forward the resolved model config', () => {
   // 漏传 config 会落到引擎默认端点（无图能力 400），被误判为"模型不收图"——07-29 实踩
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
-  assert.match(main, /llmCompleteVisionMulti = async[\s\S]{0,400}?modelConfigStore\.resolved\('chat'\)[\s\S]{0,400}?apiKey: config/)
+  // creativeConfig：非 cli 时即 resolved('chat')（等价），cli 时回退 stash 云端视觉（护栏）
+  assert.match(main, /llmCompleteVisionMulti = async[\s\S]{0,400}?creativeConfig\(\)[\s\S]{0,400}?apiKey: config/)
   assert.match(main, /completeVision\(\{[\s\S]{0,200}?apiKey: config/)
 })
 

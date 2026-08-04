@@ -68,3 +68,24 @@ test('quick switch wiring: IPC, preload and agent panel segmented control', () =
   assert.match(panel, /switchModelMode\('bundled'\)/)
   assert.match(panel, /已切到本地模型：离线运行、内容不出机/)
 })
+
+test('cli subscription config must never overwrite cloud stash (pollution regression)', () => {
+  const store = makeStore()
+  store.save({ role: 'chat', providerId: 'volcengine', model: 'doubao-pro', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: 'cloud-key' })
+  store.quickSwitchRole('chat', 'bundled') // stash = volcengine
+  // 本地模式下接入订阅 CLI（普通保存，无 Key）
+  store.save({ role: 'chat', providerId: 'codex-chatgpt', model: 'gpt-5.6-sol', baseUrl: '', apiKey: '' })
+  store.quickSwitchRole('chat', 'bundled') // 不得把 codex 写进 stash
+  const back = store.quickSwitchRole('chat', 'cloud')
+  assert.equal(back.switched, true, '云端 stash 必须仍可恢复')
+  assert.equal(back.config.providerId, 'volcengine')
+  assert.equal(store.resolved('chat').apiKey, 'cloud-key')
+})
+
+test('cloud restore rejects polluted non-cloud stash honestly', () => {
+  const store = makeStore()
+  store.save({ role: 'chat', providerId: 'codex-chatgpt', model: 'gpt-5.6-sol', baseUrl: '', apiKey: '' })
+  const result = store.quickSwitchRole('chat', 'cloud')
+  assert.equal(result.switched, false)
+  assert.match(result.reason, /没有可恢复的云端配置/)
+})

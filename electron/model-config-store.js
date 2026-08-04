@@ -5,6 +5,9 @@ const { getProvider, normalizeConfig } = require('./model-providers')
 const CONFIG_SCHEMA_VERSION = 2
 const SUPPORTED_ROLES = Object.freeze(['chat', 'computerUse'])
 
+// 非云端厂商：本地内置与订阅类 CLI 都没有云端协议端点
+const NON_CLOUD_PROVIDER_IDS = ['bundled-lite', 'codex-chatgpt', 'claude-code']
+
 function normalizeRole(role) {
   return SUPPORTED_ROLES.includes(role) ? role : 'chat'
 }
@@ -132,11 +135,16 @@ class ModelConfigStore {
     const now = new Date().toISOString()
 
     if (target === 'bundled') {
-      if (current && current.providerId !== 'bundled-lite') stash[selectedRole] = current
+      // 只暂存云端配置：bundled-lite 与订阅类 CLI（codex/claude）不是云端，
+      // 若把它们写进 stash 会覆盖并弄丢用户真正的云端 Key（真实事故）
+      const isCloud = current && !NON_CLOUD_PROVIDER_IDS.includes(current.providerId)
+      if (isCloud) stash[selectedRole] = current
       document.roles[selectedRole] = { providerId: 'bundled-lite', updatedAt: now }
     } else if (target === 'cloud') {
       const stashed = stash[selectedRole]
-      if (!stashed) return { switched: false, reason: '没有可恢复的云端配置', config: this.publicConfig(selectedRole) }
+      if (!stashed || NON_CLOUD_PROVIDER_IDS.includes(stashed.providerId)) {
+        return { switched: false, reason: '没有可恢复的云端配置', config: this.publicConfig(selectedRole) }
+      }
       document.roles[selectedRole] = { ...stashed, updatedAt: now }
     } else {
       throw new Error(`未知切换目标：${target}`)
