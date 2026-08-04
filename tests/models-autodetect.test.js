@@ -34,3 +34,19 @@ test('model form: key visibility toggle, cli providers hide key/url steps, save 
   assert.match(modelCenter, /订阅账号无需 Key 和地址/)
   assert.match(modelCenter, /provider\?\.protocol !== 'cli' && !baseUrl/)
 })
+
+
+test('model center layout: manual config and local packs folded by default; cli refresh uses local catalog', () => {
+  assert.match(modelCenter, /手动配置（高级：选公司 \//)
+  assert.match(modelCenter, /本地组件与下载（离线模型 · 精修 · 翻译 · 站点视频）/)
+  assert.match(modelCenter, /showManual/)
+  assert.match(modelCenter, /showLocalPacks/)
+  // cli 厂商读取型号不再走空 URL
+  assert.match(modelCenter, /来自官方 CLI 缓存，随周更自动最新/)
+})
+
+test('model label syncs across components on models-changed event', () => {
+  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  assert.match(panel, /ai-player-models-changed/)
+  assert.match(modelCenter, /ai-player-models-changed/)
+})

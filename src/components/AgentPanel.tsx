@@ -100,9 +100,14 @@ export default function AgentPanel() {
   }
 
   useEffect(() => {
-    window.aiPlayer?.models?.config('chat').then((config) => {
+    const load = () => void window.aiPlayer?.models?.config('chat').then((config) => {
       if (config) applyConfigLabel(config)
     })
+    load()
+    // 模型中心保存/接入后同步标签（否则首页显示陈旧型号）
+    const handler = () => load()
+    window.addEventListener('ai-player-models-changed', handler)
+    return () => window.removeEventListener('ai-player-models-changed', handler)
   }, [])
 
   useEffect(() => {
