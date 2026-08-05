@@ -150,7 +150,9 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     pause: (deviceId) => ipcRenderer.invoke('cast:pause', deviceId),
     resume: (deviceId) => ipcRenderer.invoke('cast:resume', deviceId),
     seek: (deviceId, seconds) => ipcRenderer.invoke('cast:seek', deviceId, seconds),
-    status: (deviceId) => ipcRenderer.invoke('cast:status', deviceId)
+    status: (deviceId) => ipcRenderer.invoke('cast:status', deviceId),
+    ensureFirewall: () => ipcRenderer.invoke('cast:ensure-firewall'),
+    allowFirewall: () => ipcRenderer.invoke('cast:allow-firewall')
   },
   tmdb: {
     search: (name, apiKey) => ipcRenderer.invoke('tmdb:search', name, apiKey)

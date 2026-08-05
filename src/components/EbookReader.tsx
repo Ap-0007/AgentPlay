@@ -16,7 +16,25 @@ export default function EbookReader({ book, onClose }: Props) {
   const [loading, setLoading] = useState('')
   const [error, setError] = useState('')
   const [fontSize, setFontSize] = useState(15)
+  const [fullscreen, setFullscreen] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      void rootRef.current?.requestFullscreen?.()
+      setFullscreen(true)
+    } else {
+      void document.exitFullscreen()
+      setFullscreen(false)
+    }
+  }
+
+  useEffect(() => {
+    const sync = () => setFullscreen(Boolean(document.fullscreenElement))
+    document.addEventListener('fullscreenchange', sync)
+    return () => document.removeEventListener('fullscreenchange', sync)
+  }, [])
 
   useEffect(() => {
     void (async () => {
@@ -76,7 +94,7 @@ export default function EbookReader({ book, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 p-4" onClick={onClose}>
-      <div className="flex h-[86vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-white/10 theme-panel shadow-2xl" onClick={(event) => event.stopPropagation()}>
+      <div ref={rootRef} className="flex h-[86vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-white/10 theme-panel shadow-2xl" onClick={(event) => event.stopPropagation()}>
         {/* 章节栏 */}
         <div className="flex w-52 shrink-0 flex-col border-r border-white/10">
           <div className="border-b border-white/10 px-4 py-3">
@@ -113,6 +131,7 @@ export default function EbookReader({ book, onClose }: Props) {
               </button>
             )}
             <div className="ml-auto flex items-center gap-1 text-xs text-gray-400">
+              <button onClick={toggleFullscreen} title={fullscreen ? '退出全屏' : '全屏阅读'} className="rounded px-2 py-1 hover:bg-white/10">{fullscreen ? '🗗' : '🗖'}</button>
               <button onClick={() => setFontSize((size) => Math.max(12, size - 1))} className="rounded px-2 py-1 hover:bg-white/10">A-</button>
               <button onClick={() => setFontSize((size) => Math.min(22, size + 1))} className="rounded px-2 py-1 hover:bg-white/10">A+</button>
               <button onClick={onClose} className="ml-2 px-2 py-1 text-base text-gray-500 hover:text-white">×</button>
@@ -120,13 +139,28 @@ export default function EbookReader({ book, onClose }: Props) {
           </div>
           {error && <div className="mx-4 mt-3 rounded-lg bg-red-500/10 px-4 py-2.5 text-xs text-red-300">{error}</div>}
           {loading && <p className="px-4 pt-3 text-xs text-sky-300">{loading}</p>}
-          <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          <div className="relative min-h-0 flex-1">
+          {/* 左右点击翻页热区：左 22% 上一节、右 22% 下一节（按钮/链接不吞） */}
+          <button
+            aria-label="上一节"
+            onClick={() => { if (current > 0) void loadChapter(current - 1) }}
+            className="absolute left-0 top-0 z-10 h-full w-[22%] cursor-pointer bg-transparent opacity-0 transition-opacity hover:opacity-100 disabled:opacity-0"
+            disabled={current === 0}
+          ><span className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/30 px-2 py-1 text-xs text-white">‹</span></button>
+          <button
+            aria-label="下一节"
+            onClick={() => { if (current < chapters.length - 1) void loadChapter(current + 1) }}
+            className="absolute right-0 top-0 z-10 h-full w-[22%] cursor-pointer bg-transparent opacity-0 transition-opacity hover:opacity-100 disabled:opacity-0"
+            disabled={current >= chapters.length - 1}
+          ><span className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/30 px-2 py-1 text-xs text-white">›</span></button>
+          <div ref={bodyRef} className="h-full overflow-y-auto px-6 py-4">
             <div className={showTranslation && translated ? 'grid gap-5 md:grid-cols-2' : ''}>
               <div className="whitespace-pre-wrap leading-7 text-gray-200" style={{ fontSize }}>{text || ' '}</div>
               {showTranslation && translated && (
                 <div className="whitespace-pre-wrap border-l border-white/10 pl-5 leading-7 text-emerald-100/90" style={{ fontSize }}>{translated}</div>
               )}
             </div>
+          </div>
           </div>
           <div className="flex items-center justify-between border-t border-white/10 px-4 py-2">
             <button disabled={current === 0} onClick={() => void loadChapter(current - 1)} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15 disabled:opacity-30">← 上一节</button>

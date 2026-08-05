@@ -17,26 +17,36 @@ async function apiGet(params) {
   if (wait) await new Promise((resolve) => setTimeout(resolve, wait))
   lastRequestAt = Date.now()
   const url = `${API}?${new URLSearchParams({ format: 'json', utf8: '1', ...params }).toString()}`
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-  try {
-    const response = await fetch(url, { headers: { 'User-Agent': UA }, signal: controller.signal })
-    if (!response.ok) throw new Error(`维基文库返回 ${response.status}`)
-    return response.json()
-  } catch (error) {
-    if (error.name === 'AbortError') throw new Error('维基文库请求超时，请检查网络后重试')
-    throw error
-  } finally {
-    clearTimeout(timer)
+  let lastError = null
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+    try {
+      const response = await fetch(url, { headers: { 'User-Agent': UA }, signal: controller.signal })
+      if (!response.ok) throw new Error(`维基文库返回 ${response.status}`)
+      return response.json()
+    } catch (error) {
+      lastError = error.name === 'AbortError' ? new Error('维基文库请求超时，请检查网络后重试') : error
+    } finally {
+      clearTimeout(timer)
+    }
   }
+  throw lastError
 }
 
-// 检索书名：标题命中优先，全文命中随后
+// 检索书名：先按标题搜（intitle:），避免"西游记搜出判决书"这类全文噪音；标题结果少再放宽到全文
 async function searchBooks(query) {
   const q = String(query || '').trim()
   if (!q) return []
-  const data = await apiGet({ action: 'query', list: 'search', srsearch: q, srlimit: '20', srnamespace: '0' })
-  const hits = data?.query?.search || []
+  // 标题命中先行；全文命中只作补足且剔除司法文书/公报类页面（它们不是书）
+  const NON_BOOK = /判决书|裁定书|决定书|通知书|公报|案例|批复|复函|裁定|公告|诉|纠纷/
+  let data = await apiGet({ action: 'query', list: 'search', srsearch: `intitle:"${q}"`, srlimit: '20', srnamespace: '0' })
+  let hits = (data?.query?.search || []).filter((h) => !NON_BOOK.test(String(h.title || '')))
+  if (hits.length < 3) {
+    data = await apiGet({ action: 'query', list: 'search', srsearch: q, srlimit: '20', srnamespace: '0' })
+    const extra = (data?.query?.search || []).filter((h) => !NON_BOOK.test(String(h.title || '')))
+    hits = [...hits, ...extra]
+  }
   const seen = new Set()
   const items = []
   for (const hit of hits) {
@@ -55,22 +65,43 @@ async function searchBooks(query) {
   return items
 }
 
-// 章节目录：按书页内链接顺序（维基文库书籍主页面按顺序列回目），剥到"第N回"类子页
+// 章节目录：按书页内链接顺序取子页。两个坑都要处理：
+// ① 简体书名常是繁体正页的重定向（西游记→西遊記），必须 redirects=1 并用解析后的规范名做前缀
+// ② 部分书主页不直接列回目，而是列版本页（如"某某本"），此时探测版本页取子页最多者
 async function listChapters(bookTitle) {
   const title = String(bookTitle || '').trim()
   if (!title) throw new Error('书名无效')
-  const data = await apiGet({ action: 'parse', page: title, prop: 'links' })
+  const collect = (pageTitle, links) => {
+    const chapters = []
+    const seen = new Set()
+    for (const link of links) {
+      if (!link.startsWith(`${pageTitle}/`) || seen.has(link)) continue
+      seen.add(link)
+      chapters.push({ page: link, title: link.slice(pageTitle.length + 1) })
+    }
+    return chapters
+  }
+  const data = await apiGet({ action: 'parse', page: title, prop: 'links', redirects: '1' })
+  const resolvedTitle = String(data?.parse?.title || title)
   const links = (data?.parse?.links || []).map((link) => String(link['*'] || ''))
-  const chapters = []
-  const seen = new Set()
-  for (const link of links) {
-    if (!link.startsWith(`${title}/`) || seen.has(link)) continue
-    seen.add(link)
-    chapters.push({ page: link, title: link.slice(title.length + 1) })
+  let chapters = collect(resolvedTitle, links)
+  if (chapters.length < 3) {
+    // 版本页回退：主页链接里找候选版本页（含括号版本标注或同名异写），探测子页最多者
+    const candidates = links.filter((link) => !link.includes('/') && (link.includes('（') || link.includes('(') || link !== resolvedTitle && link.slice(0, 2) === resolvedTitle.slice(0, 2))).slice(0, 5)
+    for (const candidate of candidates) {
+      try {
+        const sub = await apiGet({ action: 'parse', page: candidate, prop: 'links', redirects: '1' })
+        const subTitle = String(sub?.parse?.title || candidate)
+        const subLinks = (sub?.parse?.links || []).map((link) => String(link['*'] || ''))
+        const found = collect(subTitle, subLinks)
+        if (found.length > chapters.length) chapters = found
+        if (chapters.length >= 10) break
+      } catch { /* 单个版本页失败换下一个 */ }
+    }
   }
   if (chapters.length === 0) {
     // 单页书（短篇/文章）：整页即一章
-    return [{ page: title, title }]
+    return [{ page: resolvedTitle, title: resolvedTitle }]
   }
   return chapters
 }
@@ -97,7 +128,7 @@ async function fetchChapterText(cacheRoot, bookTitle, pageTitle) {
     const text = fs.readFileSync(cached, 'utf8')
     if (text.trim()) return text
   } catch { /* 未缓存 */ }
-  const data = await apiGet({ action: 'query', prop: 'extracts', explaintext: '1', titles: pageTitle })
+  const data = await apiGet({ action: 'query', prop: 'extracts', explaintext: '1', titles: pageTitle, redirects: '1' })
   const pages = data?.query?.pages || {}
   const first = Object.values(pages)[0]
   const text = stripExtract(first?.extract || '')

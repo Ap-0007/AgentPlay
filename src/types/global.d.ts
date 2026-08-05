@@ -225,6 +225,8 @@ interface AiPlayerAPI {
     resume: (deviceId: string) => Promise<{ success: boolean; action?: string; error?: string }>
     seek: (deviceId: string, seconds: number) => Promise<{ success: boolean; action?: string; error?: string }>
     status: (deviceId: string) => Promise<{ success: boolean; state?: string; label?: string; error?: string }>
+    ensureFirewall: () => Promise<{ needed: boolean }>
+    allowFirewall: () => Promise<{ success: boolean; error?: string }>
   }
   tmdb?: {
     search: (name: string, apiKey?: string) => Promise<{ success: boolean; data?: { title: string; poster: string | null; overview: string; year: string | null }; error?: string }>

@@ -77,7 +77,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   const [mirrorError, setMirrorError] = useState('')
   const [castDevices, setCastDevices] = useState<Array<{ id: string; name: string; lastSuccess?: boolean }>>([])
   const [castFile, setCastFile] = useState<string | null>(null)
-  const [castStatus, setCastStatus] = useState<{ deviceId: string; message: string; isError?: boolean; stateLabel?: string } | null>(null)
+  const [castStatus, setCastStatus] = useState<{ deviceId: string; message: string; isError?: boolean; stateLabel?: string; needFirewall?: boolean } | null>(null)
   const [scanning, setScanning] = useState(false)
   const [syncUrl, setSyncUrl] = useState<string | null>(null)
   const [dlnaServerUrl, setDlnaServerUrl] = useState<string | null>(null)
@@ -170,6 +170,13 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   const handleCast = async (filePath: string) => {
     setCastFile(filePath)
     setScanning(true)
+    // 首次投屏先查防火墙：DLNA 是"推 URL、电视拉回内容"，防火墙拦 18901 入站则电视永远拉不到
+    try {
+      const fw = await window.aiPlayer?.cast?.ensureFirewall?.()
+      if (fw?.needed) {
+        setCastStatus({ deviceId: '', message: '首次投屏需要放行局域网端口 18901（Windows 防火墙一次性授权，弹窗点"是"即可）', needFirewall: true })
+      }
+    } catch { /* 探测失败不影响扫描 */ }
     try {
       const devices = await window.aiPlayer?.cast?.scan()
       setCastDevices(devices || [])
@@ -177,6 +184,15 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
       setCastDevices([])
     }
     setScanning(false)
+  }
+
+  const allowFirewallNow = async () => {
+    const result = await window.aiPlayer?.cast?.allowFirewall?.()
+    if (result?.success) {
+      setCastStatus({ deviceId: '', message: '已放行局域网投屏端口（仅此一次授权，长期有效）' })
+    } else {
+      setCastStatus({ deviceId: '', message: `放行未完成：${result?.error || '已取消'}（投屏可能因防火墙失败）`, isError: true })
+    }
   }
 
   const doCast = async (deviceId: string) => {
@@ -396,6 +412,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
         {castStatus && (
                       <div className="mb-6 bg-player-surface rounded-lg p-4 flex items-center gap-2">
                         <p className={castStatus.isError ? 'flex-1 text-xs text-red-300' : 'flex-1 text-xs text-emerald-300'}>{castStatus.message}{castStatus.stateLabel ? `（${castStatus.stateLabel}）` : ''}</p>
+                        {castStatus.needFirewall && <button onClick={() => void allowFirewallNow()} className="px-3 py-1 bg-player-accent rounded text-xs text-white">现在放行</button>}
                         {castStatus.deviceId && <button onClick={() => void pauseCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">暂停</button>}
                         {castStatus.deviceId && <button onClick={() => void resumeCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">继续</button>}
                         {castStatus.deviceId && <button onClick={() => void stopCastNow()} className="px-3 py-1 bg-white/10 rounded text-xs">停止投屏</button>}

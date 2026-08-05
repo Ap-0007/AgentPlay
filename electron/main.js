@@ -6,7 +6,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const crypto = require('crypto')
-const { spawn } = require('child_process')
+const { execFileSync, spawn } = require('child_process')
 const { MpvService } = require('./mpv-service')
 const { requestScreenGuide, askAboutImage } = require('./screen-guide-service')
 const { shouldEmbedMpv } = require('./playback-policy')
@@ -2928,6 +2928,36 @@ app.whenReady().then(async () => {
     return error ? { success: false, error } : { success: true }
   })
   ipcMain.handle('cast:scan', (event) => { assertTrustedSender(event); return castService.scan() })
+  // 防火墙放行（一次性）：DLNA 是"推 URL、电视拉回内容"，电视必须能连本机 18901；
+  // Windows 防火墙默认拦新应用入站 → 电视拉取永远超时。规则只加一次（一次 UAC 弹窗，用户可见可控）。
+  ipcMain.handle('cast:ensure-firewall', async (event) => {
+    assertTrustedSender(event)
+    if (process.platform !== 'win32') return { needed: false }
+    try {
+      const out = execFileSync('netsh', ['advfirewall', 'firewall', 'show', 'rule', 'name=AgentPlay投屏'], { encoding: 'utf8', windowsHide: true, timeout: 8000 })
+      if (out.includes('AgentPlay')) return { needed: false }
+    } catch { /* 规则不存在 */ }
+    return { needed: true }
+  })
+  ipcMain.handle('cast:allow-firewall', async (event) => {
+    assertTrustedSender(event)
+    if (process.platform !== 'win32') return { success: true }
+    // 写临时 ps1 + Start-Process runas 提权执行（一次 UAC）；只放行 AgentPlay 自己的投屏端口
+    const rulePs = path.join(os.tmpdir(), `agentplay-fw-${process.pid}.ps1`)
+    fs.writeFileSync(rulePs, [
+      'New-NetFirewallRule -DisplayName "AgentPlay投屏" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 18901 -ErrorAction Stop | Out-Null',
+      'New-NetFirewallRule -DisplayName "AgentPlay投屏" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 1900 -ErrorAction SilentlyContinue | Out-Null',
+      'Write-Output OK'
+    ].join('\r\n'), 'utf8')
+    try {
+      execFileSync('powershell', ['-NoProfile', '-Command', `Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${rulePs.replace(/'/g, "''")}'`], { windowsHide: true, timeout: 60000 })
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      try { fs.rmSync(rulePs, { force: true }) } catch { /* 忽略 */ }
+    }
+  })
   ipcMain.handle('cast:cast', (event, deviceId, filePath) => {
     assertTrustedSender(event)
     try {

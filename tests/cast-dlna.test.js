@@ -188,3 +188,17 @@ test('cast wiring: control IPC and preload bridge exist', () => {
   assert.match(library, /上次成功/)
   assert.match(library, /pauseCastNow|resumeCastNow/)
 })
+
+test('firewall one-time allow: check + elevated rule add wired, only our cast port', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
+  const library = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MediaLibrary.tsx'), 'utf8')
+  assert.match(main, /cast:ensure-firewall/)
+  assert.match(main, /cast:allow-firewall/)
+  assert.match(main, /LocalPort 18901/, '只放行投屏端口')
+  assert.match(main, /Start-Process powershell -Verb RunAs/, '提权加规则（一次 UAC，用户可见可控）')
+  assert.match(preload, /ensureFirewall/)
+  assert.match(preload, /allowFirewall/)
+  assert.match(library, /现在放行/)
+  assert.match(library, /needFirewall/)
+})
