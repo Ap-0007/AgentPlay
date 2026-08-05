@@ -77,6 +77,18 @@ export default function EbookReader({ book, onClose }: Props) {
     if (chapters.length > 0 && !text) void loadChapter(0)
   }, [chapters])
 
+  // 书页式排版：中文段落首行缩进 2em，英文段落不缩进走段距
+  const renderBookText = (content: string, colorClass: string) => {
+    const cjk = (content.match(/[\u4e00-\u9fff]/g) || []).length
+    const isCjk = cjk > content.length * 0.15
+    const paras = content.split(/\n+/).map((para) => para.trim()).filter(Boolean)
+    return (
+      <div className={`ebook-flow ${isCjk ? '' : 'ebook-flow-en'} ${colorClass}`} style={{ fontSize }}>
+        {paras.map((para, index) => <p key={index}>{para}</p>)}
+      </div>
+    )
+  }
+
   const translate = async (engine: 'offline' | 'cloud') => {
     setError('')
     setLoading(engine === 'offline' ? '正在离线翻译本章（免费本地组件）…' : '正在云端翻译本章…')
@@ -153,11 +165,16 @@ export default function EbookReader({ book, onClose }: Props) {
             className="absolute right-0 top-0 z-10 h-full w-[22%] cursor-pointer bg-transparent opacity-0 transition-opacity hover:opacity-100 disabled:opacity-0"
             disabled={current >= chapters.length - 1}
           ><span className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/30 px-2 py-1 text-xs text-white">›</span></button>
-          <div ref={bodyRef} className="h-full overflow-y-auto px-6 py-4">
-            <div className={showTranslation && translated ? 'grid gap-5 md:grid-cols-2' : ''}>
-              <div className="whitespace-pre-wrap leading-7 text-gray-200" style={{ fontSize }}>{text || ' '}</div>
+          <div ref={bodyRef} className="ebook-surface h-full overflow-y-auto px-6 py-6">
+            <div className={showTranslation && translated ? 'grid gap-8 md:grid-cols-2' : ''}>
+              <div>
+                {text && <p className="ebook-chapter-title text-gray-500" style={{ fontSize: fontSize - 1 }}>{chapters[current]}</p>}
+                {renderBookText(text || ' ', 'text-gray-200')}
+              </div>
               {showTranslation && translated && (
-                <div className="whitespace-pre-wrap border-l border-white/10 pl-5 leading-7 text-emerald-100/90" style={{ fontSize }}>{translated}</div>
+                <div className="border-l border-white/10 pl-8">
+                  {renderBookText(translated, 'text-emerald-100/90')}
+                </div>
               )}
             </div>
           </div>

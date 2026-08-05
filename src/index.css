@@ -203,3 +203,36 @@ body {
   0%, 100% { transform: scaleY(0.3); opacity: 0.55; }
   50% { transform: scaleY(1); opacity: 1; }
 }
+
+/* ============ 电子书阅读器：书页式排版 ============ */
+.ebook-surface {
+  background: rgb(var(--player-surface));
+}
+[data-theme='light'] .ebook-surface {
+  background: #f8f5ee; /* 暖纸色 */
+}
+.ebook-flow {
+  max-width: 42em;
+  margin: 0 auto;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Source Han Serif CN', 'SimSun', '宋体', Georgia, serif;
+  line-height: 1.95;
+  text-align: justify;
+  letter-spacing: 0.01em;
+}
+.ebook-flow p {
+  margin: 0 0 0.55em;
+  text-indent: 2em;
+}
+.ebook-flow-en p {
+  text-indent: 0;
+  margin-bottom: 0.85em;
+  text-align: left;
+  hyphens: auto;
+}
+.ebook-chapter-title {
+  text-align: center;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  margin: 0.4em 0 1.4em;
+  text-indent: 0;
+}
