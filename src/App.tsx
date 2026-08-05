@@ -10,6 +10,7 @@ import { useThemeStore, applyThemeToDocument } from './stores/themeStore'
 import ErrorBoundary from './components/ErrorBoundary'
 import ModelCenter from './components/ModelCenter'
 import OnlineMediaLibrary from './components/OnlineMediaLibrary'
+import SmartCastPanel from './components/SmartCastPanel'
 import ComputerUsePanel from './components/ComputerUsePanel'
 
 
@@ -18,6 +19,7 @@ function AppInner() {
   const [libraryRoot, setLibraryRoot] = useState<string | undefined>()
   const [modelCenterOpen, setModelCenterOpen] = useState(false)
   const [onlineMediaOpen, setOnlineMediaOpen] = useState(false)
+  const [smartCastOpen, setSmartCastOpen] = useState(false)
   const [computerUseOpen, setComputerUseOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   // 右栏：有播放内容即自动展开
@@ -257,6 +259,7 @@ function AppInner() {
             onOpenLibrary={() => setLibraryOpen(true)}
             onOpenModelCenter={() => { setComputerUseOpen(false); setModelCenterOpen(true) }}
             onOpenOnlineMedia={() => setOnlineMediaOpen(true)}
+            onOpenSmartCast={() => setSmartCastOpen(true)}
           />
         )}
         center={<AgentPanel />}
@@ -293,6 +296,7 @@ function AppInner() {
       {computerUseOpen && <ComputerUsePanel onClose={() => setComputerUseOpen(false)} />}
       {modelCenterOpen && <ModelCenter onClose={() => setModelCenterOpen(false)} />}
       {onlineMediaOpen && <OnlineMediaLibrary onClose={() => setOnlineMediaOpen(false)} />}
+      {smartCastOpen && <SmartCastPanel onClose={() => setSmartCastOpen(false)} />}
       {shortcutsOpen && (
         <div className="fixed inset-0 z-[75] bg-black/70 flex items-center justify-center p-6" onClick={() => setShortcutsOpen(false)}>
           <div className="w-full max-w-md rounded-2xl bg-player-surface border border-white/10 p-6" onClick={(event) => event.stopPropagation()}>

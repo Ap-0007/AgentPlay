@@ -227,6 +227,7 @@ interface AiPlayerAPI {
     status: (deviceId: string) => Promise<{ success: boolean; state?: string; label?: string; error?: string }>
     ensureFirewall: () => Promise<{ needed: boolean }>
     allowFirewall: () => Promise<{ success: boolean; error?: string }>
+    smartScan: () => Promise<Array<{ id: string; name: string; kind: 'tv' | 'agentplay'; host?: string; port?: number; lastSuccess?: boolean }>>
   }
   tmdb?: {
     search: (name: string, apiKey?: string) => Promise<{ success: boolean; data?: { title: string; poster: string | null; overview: string; year: string | null }; error?: string }>

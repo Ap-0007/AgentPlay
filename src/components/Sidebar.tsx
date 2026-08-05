@@ -9,10 +9,11 @@ interface Props {
   onOpenLibrary: () => void
   onOpenModelCenter: () => void
   onOpenOnlineMedia: () => void
+  onOpenSmartCast: () => void
 }
 
 // 左栏：功能按钮组（上）+ 播放记录（下）+ 主题切换与钉住（底）
-export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenModelCenter, onOpenOnlineMedia }: Props) {
+export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenModelCenter, onOpenOnlineMedia, onOpenSmartCast }: Props) {
   const recentMedia = usePlayerStore((state) => state.recentMedia)
   const theme = useThemeStore((state) => state.theme)
   const setTheme = useThemeStore((state) => state.setTheme)
@@ -53,10 +54,7 @@ export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenMode
         <div className="space-y-1">
           {actionButton('📂', '打开', () => void handleOpen(), true)}
           {actionButton('🎬', '拉片', openAnalysisChat)}
-          {actionButton('📺', '投屏', () => {
-            onOpenLibrary()
-            window.setTimeout(() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'devices' })), 50)
-          })}
+          {actionButton('📺', '投屏', onOpenSmartCast)}
           {actionButton('🌐', '在线媒体库', onOpenOnlineMedia)}
           {actionButton('🧩', '模型接入中心', onOpenModelCenter)}
         </div>

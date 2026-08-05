@@ -2930,6 +2930,26 @@ app.whenReady().then(async () => {
   ipcMain.handle('cast:scan', (event) => { assertTrustedSender(event); return castService.scan() })
   // 防火墙放行（一次性）：DLNA 是"推 URL、电视拉回内容"，电视必须能连本机 18901；
   // Windows 防火墙默认拦新应用入站 → 电视拉取永远超时。规则只加一次（一次 UAC 弹窗，用户可见可控）。
+  // 智能投屏：一次扫全类型（DLNA 电视/盒子 + AgentPlay 镜像设备），统一列表，用户只点一下
+  ipcMain.handle('cast:smart-scan', async (event) => {
+    assertTrustedSender(event)
+    const [dlna, mirrors] = await Promise.all([
+      castService.scan().catch(() => []),
+      (async () => {
+        try {
+          mirrorDiscovery?.stop()
+          mirrorDiscovery = new MirrorDiscovery()
+          return await mirrorDiscovery.listen(2500)
+        } catch { return [] }
+      })()
+    ])
+    const devices = [
+      ...dlna.map((d) => ({ id: d.id, name: d.name, kind: 'tv', lastSuccess: !!d.lastSuccess })),
+      ...mirrors.map((m) => ({ id: `mirror:${m.host}:${m.port}`, name: m.name || 'AgentPlay 设备', kind: 'agentplay', host: m.host, port: m.port }))
+    ]
+    devices.sort((a, b) => Number(Boolean(b.lastSuccess)) - Number(Boolean(a.lastSuccess)))
+    return devices
+  })
   ipcMain.handle('cast:ensure-firewall', async (event) => {
     assertTrustedSender(event)
     if (process.platform !== 'win32') return { needed: false }

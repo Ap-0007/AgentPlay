@@ -151,6 +151,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     resume: (deviceId) => ipcRenderer.invoke('cast:resume', deviceId),
     seek: (deviceId, seconds) => ipcRenderer.invoke('cast:seek', deviceId, seconds),
     status: (deviceId) => ipcRenderer.invoke('cast:status', deviceId),
+    smartScan: () => ipcRenderer.invoke('cast:smart-scan'),
     ensureFirewall: () => ipcRenderer.invoke('cast:ensure-firewall'),
     allowFirewall: () => ipcRenderer.invoke('cast:allow-firewall')
   },
