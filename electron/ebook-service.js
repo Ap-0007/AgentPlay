@@ -126,8 +126,18 @@ function parseTxtChapters(text) {
 }
 
 // 译文缓存：userData/ebook-cache/<id>/zh-<engine>-<chapter>.txt
+function cacheDirFor(cacheRoot, identifier) {
+  try {
+    return path.join(cacheRoot, assertSafeIdentifier(identifier))
+  } catch {
+    // 中文书名等非 ASCII 标识（维基文库 ws: 前缀）：哈希落盘，语义不变
+    const crypto = require('crypto')
+    return path.join(cacheRoot, 'ext', crypto.createHash('sha1').update(String(identifier)).digest('hex').slice(0, 16))
+  }
+}
+
 function readTranslationCache(cacheRoot, identifier, engine, chapterIndex) {
-  const file = path.join(cacheRoot, assertSafeIdentifier(identifier), `zh-${engine}-${chapterIndex}.txt`)
+  const file = path.join(cacheDirFor(cacheRoot, identifier), `zh-${engine}-${chapterIndex}.txt`)
   try {
     return fs.readFileSync(file, 'utf8')
   } catch {
@@ -136,7 +146,7 @@ function readTranslationCache(cacheRoot, identifier, engine, chapterIndex) {
 }
 
 function writeTranslationCache(cacheRoot, identifier, engine, chapterIndex, text) {
-  const dir = path.join(cacheRoot, assertSafeIdentifier(identifier))
+  const dir = cacheDirFor(cacheRoot, identifier)
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, `zh-${engine}-${chapterIndex}.txt`)
   const tempPath = `${file}.${process.pid}.tmp`

@@ -583,8 +583,15 @@ const rapidocrDownload = new LocalAiDownloadService({
 const { RapidOcrService } = require('./rapidocr-service')
 const onlineMedia = require('./online-media-service')
 const ebookService = require('./ebook-service')
+const wikisource = require('./wikisource-service')
 const ebookCacheRoot = () => path.join(app.getPath('userData'), 'ebook-cache')
+// 统一取章：ws: 前缀走维基文库（按页序目录+按页正文），其余走 IA 的 epub/txt
 async function loadEbookChapters(identifier, fileName) {
+  if (String(identifier || '').startsWith('ws:')) {
+    const bookTitle = String(identifier).slice(3)
+    const chapters = await wikisource.listChapters(bookTitle)
+    return chapters.map((chapter) => ({ page: chapter.page, title: chapter.title, wsBook: bookTitle }))
+  }
   const bookPath = await ebookService.fetchBook(ebookCacheRoot(), identifier, fileName)
   if (/\.epub$/i.test(fileName)) return ebookService.parseEpubChapters(bookPath)
   return ebookService.parseTxtChapters(fs.readFileSync(bookPath, 'utf8'))
@@ -2070,7 +2077,16 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       const kind = ['audio', 'book'].includes(input.kind) ? input.kind : 'movie'
-      return { success: true, ...(await onlineMedia.searchMedia(input.query, kind, { page: input.page || 1 })) }
+      const result = await onlineMedia.searchMedia(input.query, kind, { page: input.page || 1 })
+      // 书籍：合并维基文库中文公版书（IA 公版书以英文为主，中文书走维基文库）
+      if (kind === 'book') {
+        try {
+          const wsItems = await wikisource.searchBooks(input.query)
+          result.items = [...result.items, ...wsItems]
+          result.total += wsItems.length
+        } catch { /* 维基文库不可用时只用 IA 结果 */ }
+      }
+      return { success: true, ...result }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error), items: [], total: 0 }
     }
@@ -2136,7 +2152,9 @@ app.whenReady().then(async () => {
       const index = Number(input.index) || 0
       const chapter = chapters[index]
       if (!chapter) throw new Error(`没有第 ${index + 1} 节（共 ${chapters.length} 节）`)
-      return { success: true, title: chapter.title, text: chapter.text, index }
+      // 维基文库：正文按页现取（缓存零重复请求）；IA：解析时已有全文
+      const text = chapter.wsBook ? await wikisource.fetchChapterText(ebookCacheRoot(), chapter.wsBook, chapter.page) : chapter.text
+      return { success: true, title: chapter.title, text, index }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -2151,6 +2169,7 @@ app.whenReady().then(async () => {
       const index = Number(input.index) || 0
       const chapter = chapters[index]
       if (!chapter) throw new Error(`没有第 ${index + 1} 节`)
+      if (chapter.wsBook) chapter.text = await wikisource.fetchChapterText(ebookCacheRoot(), chapter.wsBook, chapter.page)
       // 分块翻译：按段落打包，每块约 2000 字
       const blocks = []
       let current = ''

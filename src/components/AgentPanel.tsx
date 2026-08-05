@@ -157,6 +157,18 @@ export default function AgentPanel() {
     return () => window.removeEventListener('ai-player-attach-docs', handler)
   }, [])
 
+  // 在线媒体库/外部入口发来的拉片请求：与对话窗粘贴链接完全同一条链路
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const url = (event as CustomEvent<{ url: string }>).detail?.url
+      if (!url) return
+      useAgentStore.getState().openPanel()
+      void runLinkAnalysisTaskRef.current(url, '')
+    }
+    window.addEventListener('ai-player-link-analysis', handler)
+    return () => window.removeEventListener('ai-player-link-analysis', handler)
+  }, [])
+
   // 拖文件进对话窗 = 与系统选择框同级的显式授权
   const handleDropFiles = async (event: React.DragEvent) => {
     event.preventDefault()

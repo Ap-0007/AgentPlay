@@ -50,8 +50,8 @@ ChatGPT Plus / Claude Pro 这类订阅制账号没有面向第三方的免费 AP
 
 ## 在线内容（08-04 新增，合法源限定）
 
-- 在线媒体库：Internet Archive 公共领域与授权共享馆藏（电影限 feature_films/public_domain_film/Prelinger/classic_tv，音乐限 etree/librivoxaudio/publicdomain），mpv 原生流媒体在线看（边下边播），下载经域名白名单+SSRF 防护落盘进媒体库；archive.org 抖动自动重试。
-- 电子书阅读器：Gutenberg 公版书馆藏（collection:gutenberg）检索，epub 按 OPF spine 解析章节（txt 兜底），阅读器内置章节导航/字号/上下节；翻译双轨——离线 OPUS-MT 组件免费本地译、云模型精译走逐次授权同意闸，译文按书+引擎+章节缓存零重复消耗，原文/对照视图可切。
+- 在线媒体库：Internet Archive 公共领域与授权共享馆藏（电影限 feature_films/public_domain_film/Prelinger/classic_tv，音乐限 etree/librivoxaudio/publicdomain），mpv 原生流媒体在线看（边下边播），下载经域名白名单+SSRF 防护落盘进媒体库；archive.org 抖动自动重试；电影条目一键「拉片」与对话窗粘贴链接同一条链路（下载+深度解剖，授权/进度/报告全在对话流）。
+- 电子书阅读器：Gutenberg 公版书馆藏（collection:gutenberg）检索 + 维基文库中文公版书（zh.wikisource 官方 API，章节按页序目录、正文按页缓存、礼貌限速），IA（英文为主）与维基文库（中文为主）结果合并、来源徽标区分；维基文库条目直进阅读器。【08-05 真人实证 4/4：搜红楼梦→维基文库→120 回目录→第一回正文】，epub 按 OPF spine 解析章节（txt 兜底），阅读器内置章节导航/字号/上下节；翻译双轨——离线 OPUS-MT 组件免费本地译、云模型精译走逐次授权同意闸，译文按书+引擎+章节缓存零重复消耗，原文/对照视图可切。
 - 法律边界写在查询语句里，不抓盗版源、不绕付费墙。
 
 ## 其他平台

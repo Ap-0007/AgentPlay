@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import EbookReader from './EbookReader'
 
-interface Item { identifier: string; title: string; year: string; creator: string; downloads: number }
+interface Item { identifier: string; title: string; year: string; creator: string; downloads: number; source?: 'ia' | 'ws' }
 interface PlayFile { name: string; size: number; url: string; format: string }
 interface Props { onClose: () => void }
 
@@ -51,6 +51,11 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
   }
 
   const openFiles = async (item: Item) => {
+    // 维基文库中文书：不展文件列表，直接进阅读器（章节由服务按页序提供）
+    if (item.source === 'ws') {
+      setReading({ identifier: item.identifier, title: item.title, fileName: '' })
+      return
+    }
     if (expanded?.identifier === item.identifier) { setExpanded(null); return }
     setBusy(true)
     setError('')
@@ -150,9 +155,12 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
                 <button onClick={() => void openFiles(item)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/5">
                   <div className="min-w-0">
                     <p className="truncate text-sm text-gray-100">{item.title}</p>
-                    <p className="mt-0.5 truncate text-xs text-gray-500">{[item.year, item.creator].filter(Boolean).join(' · ') || '—'}</p>
+                    <p className="mt-0.5 truncate text-xs text-gray-500">
+                      {item.source === 'ws' && <span className="mr-1.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300">维基文库</span>}
+                      {[item.year, item.creator].filter(Boolean).join(' · ') || '—'}
+                    </p>
                   </div>
-                  <span className="shrink-0 text-xs text-gray-500">{expanded?.identifier === item.identifier ? '▾' : '▸'}</span>
+                  <span className="shrink-0 text-xs text-gray-500">{item.source === 'ws' ? '📖' : expanded?.identifier === item.identifier ? '▾' : '▸'}</span>
                 </button>
                 {expanded?.identifier === item.identifier && (
                   <div className="space-y-1 border-t border-white/10 px-4 py-3">
@@ -163,7 +171,18 @@ export default function OnlineMediaLibrary({ onClose }: Props) {
                         {kind === 'book' ? (
                           <button onClick={() => setReading({ identifier: expanded.identifier, title: expanded.title, fileName: file.name })} className="shrink-0 rounded bg-player-accent/80 px-2.5 py-1 text-white hover:bg-player-accent">📖 阅读{file.name.endsWith('.epub') ? '（章节版）' : ''}</button>
                         ) : (
-                          <button onClick={() => play(file, expanded.title)} className="shrink-0 rounded bg-player-accent/80 px-2.5 py-1 text-white hover:bg-player-accent">▶ 在线看</button>
+                          <>
+                            <button onClick={() => play(file, expanded.title)} className="shrink-0 rounded bg-player-accent/80 px-2.5 py-1 text-white hover:bg-player-accent">▶ 在线看</button>
+                            <button
+                              onClick={() => {
+                                // 与对话窗同一个拉片链路：下载 + 深度解剖（授权/进度/报告全在对话流里）
+                                window.dispatchEvent(new CustomEvent('ai-player-link-analysis', { detail: { url: file.url } }))
+                                onClose()
+                              }}
+                              title="下载后对这部影片做深度解剖（报告在对话窗产出）"
+                              className="shrink-0 rounded bg-emerald-600/80 px-2.5 py-1 text-white hover:bg-emerald-600"
+                            >🎬 拉片</button>
+                          </>
                         )}
                         <button disabled={!!downloading} onClick={() => void download(file, expanded.title)} className="shrink-0 rounded bg-white/10 px-2.5 py-1 hover:bg-white/15 disabled:opacity-40">⬇ 下载</button>
                       </div>
