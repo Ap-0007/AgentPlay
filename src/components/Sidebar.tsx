@@ -13,7 +13,7 @@ interface Props {
 }
 
 // 左栏：功能按钮组（上）+ 播放记录（下）+ 主题切换与钉住（底）
-export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenModelCenter, onOpenOnlineMedia, onOpenSmartCast }: Props) {
+export default function Sidebar({ pinned, onTogglePin, onOpenModelCenter, onOpenOnlineMedia, onOpenSmartCast }: Props) {
   const recentMedia = usePlayerStore((state) => state.recentMedia)
   const theme = useThemeStore((state) => state.theme)
   const setTheme = useThemeStore((state) => state.setTheme)

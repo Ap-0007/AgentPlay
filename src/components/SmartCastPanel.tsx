@@ -45,7 +45,6 @@ export default function SmartCastPanel({ onClose }: Props) {
       } catch { /* 忽略 */ }
       void scan()
     })()
-    // eslint-disable-next-line
   }, [])
 
   const refreshState = async (device: Device) => {
