@@ -154,7 +154,7 @@ interface AiPlayerAPI {
   ebook?: {
     open: (input: { identifier: string; fileName: string }) => Promise<{ success: boolean; error?: string; chapters: string[]; count: number }>
     chapter: (input: { identifier: string; fileName: string; index: number }) => Promise<{ success: boolean; error?: string; title: string; text: string; index: number }>
-    translate: (input: { identifier: string; fileName: string; index: number; engine: 'offline' | 'cloud' }) => Promise<{ success: boolean; error?: string; text: string; cached?: boolean }>
+    translate: (input: { identifier: string; fileName: string; index: number; engine: 'offline' | 'cloud'; target?: 'zh' | 'vernacular' | 'en' }) => Promise<{ success: boolean; error?: string; text: string; cached?: boolean }>
     onTranslateStatus: (cb: (event: { index: number; status: string }) => void) => () => void
   }
   rapidocrPack?: {

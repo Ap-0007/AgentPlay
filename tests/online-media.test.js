@@ -56,7 +56,13 @@ test('real archive.org: search public-domain films, list playable files, head st
   assert.ok(withFiles.length > 0, '前 5 条至少一条有可播放文件')
   const first = withFiles[0].files[0]
   assert.match(first.url, /^https:\/\/archive\.org\/download\//)
-  const head = await fetch(first.url, { method: 'HEAD', redirect: 'manual' })
+  let head
+  try {
+    head = await fetch(first.url, { method: 'HEAD', redirect: 'manual' })
+  } catch (error) {
+    t.skip(`直链网络不可用：${error.message}`)
+    return
+  }
   assert.ok([200, 301, 302, 303, 307, 308].includes(head.status), `直链应可访问，实际 ${head.status}`)
 })
 

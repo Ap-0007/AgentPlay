@@ -11,6 +11,7 @@ export default function EbookReader({ book, onClose }: Props) {
   const [current, setCurrent] = useState(0)
   const [text, setText] = useState('')
   const [translated, setTranslated] = useState('')
+  const [target, setTarget] = useState<'zh' | 'vernacular' | 'en'>('zh')
   const [showTranslation, setShowTranslation] = useState(true)
   const [loading, setLoading] = useState('')
   const [error, setError] = useState('')
@@ -62,7 +63,7 @@ export default function EbookReader({ book, onClose }: Props) {
     setError('')
     setLoading(engine === 'offline' ? '正在离线翻译本章（免费本地组件）…' : '正在云端翻译本章…')
     try {
-      const result = await window.aiPlayer?.ebook?.translate({ identifier: book.identifier, fileName: book.fileName, index: current, engine })
+      const result = await window.aiPlayer?.ebook?.translate({ identifier: book.identifier, fileName: book.fileName, index: current, engine, target })
       if (!result?.success) throw new Error(result?.error || '翻译失败')
       setTranslated(result.text)
       setShowTranslation(true)
@@ -99,7 +100,12 @@ export default function EbookReader({ book, onClose }: Props) {
         {/* 阅读区 */}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-2.5">
-            <button onClick={() => void translate('offline')} title="离线翻译组件（免费、不出机）" className="rounded-lg bg-emerald-600/80 px-3 py-1.5 text-xs text-white hover:bg-emerald-600">翻译本节（离线免费）</button>
+            <div className="flex rounded-lg bg-black/25 p-0.5 text-[11px]" title="翻译目标">
+              {([['zh', '中文'], ['vernacular', '白话文'], ['en', 'English']] as const).map(([value, label]) => (
+                <button key={value} onClick={() => setTarget(value)} className={`rounded-md px-2.5 py-1 ${target === value ? 'bg-player-accent text-white' : 'text-gray-400 hover:text-gray-200'}`}>{label}</button>
+              ))}
+            </div>
+            <button onClick={() => void translate('offline')} disabled={target !== 'zh'} title={target !== 'zh' ? '离线组件只支持英译中' : '离线翻译组件（免费、不出机）'} className="rounded-lg bg-emerald-600/80 px-3 py-1.5 text-xs text-white hover:bg-emerald-600 disabled:opacity-40">离线免费</button>
             <button onClick={() => void translate('cloud')} title="云端大模型（更准，发原文到云，逐次授权）" className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15">云模型精译</button>
             {translated && (
               <button onClick={() => setShowTranslation((value) => !value)} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15">

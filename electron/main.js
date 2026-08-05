@@ -2163,7 +2163,10 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       const engine = input.engine === 'cloud' ? 'cloud' : 'offline'
-      const cached = ebookService.readTranslationCache(ebookCacheRoot(), input.identifier, engine, Number(input.index) || 0)
+      // 目标语言：zh 中文（IA 英文书默认）/ vernacular 白话文（古籍适用）/ en 英文；缓存按目标隔离
+      const target = ['zh', 'vernacular', 'en'].includes(input.target) ? input.target : 'zh'
+      if (engine === 'offline' && target !== 'zh') throw new Error('离线翻译组件只支持英译中；翻白话文/英文请用云模型')
+      const cached = ebookService.readTranslationCache(ebookCacheRoot(), input.identifier, `${engine}-${target}`, Number(input.index) || 0)
       if (cached) return { success: true, text: cached, cached: true }
       const chapters = await loadEbookChapters(input.identifier, input.fileName)
       const index = Number(input.index) || 0
@@ -2189,8 +2192,13 @@ app.whenReady().then(async () => {
         } else {
           const approved = await ensureCloudConsent('电子书章节原文将发送给云端模型用于翻译。')
           if (!approved) throw new Error('已取消：未授权发送云端')
+          const PROMPTS = {
+            zh: '你是文学翻译助手。把内容翻成通顺的中文，保留段落结构与文学性，只输出译文。',
+            vernacular: '你是古文今译助手。把内容翻成通顺易懂的现代白话文，准确实在、不发挥、保留段落结构，只输出译文。',
+            en: 'You are a literary translator. Translate the following into natural, fluent English, preserving paragraph structure. Output the translation only.'
+          }
           const result = await llmComplete({
-            systemPrompt: '你是文学翻译助手。把英文公版书内容翻成通顺的中文，保留段落结构与文学性，只输出译文。',
+            systemPrompt: PROMPTS[target],
             prompt: blocks[i],
             timeoutMs: 120000
           })
@@ -2198,7 +2206,7 @@ app.whenReady().then(async () => {
         }
       }
       const text = translated.join('\n\n')
-      ebookService.writeTranslationCache(ebookCacheRoot(), input.identifier, engine, index, text)
+      ebookService.writeTranslationCache(ebookCacheRoot(), input.identifier, `${engine}-${target}`, index, text)
       return { success: true, text, cached: false }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }

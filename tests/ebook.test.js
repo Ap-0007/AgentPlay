@@ -70,7 +70,7 @@ test('ebook wiring: IPC, preload, reader UI with offline/cloud translate and bil
   assert.ok(preload.includes('bookFiles'))
   assert.match(panel, /电子书/)
   assert.match(panel, /EbookReader/)
-  assert.match(reader, /翻译本节（离线免费）/)
+  assert.match(reader, /离线免费/)
   assert.match(reader, /云模型精译/)
   // 云端翻译必须过同意闸
   assert.match(main, /ensureCloudConsent\('电子书章节原文将发送给云端模型用于翻译。'\)/)
