@@ -4,8 +4,13 @@ const path = require('node:path')
 const test = require('node:test')
 
 const ext = (...parts) => path.join(__dirname, '..', 'extension', ...parts)
+const extBuilt = fs.existsSync(ext('manifest.json'))
 
-test('extension build: manifest valid, all parts present, models complete', () => {
+test('extension build: manifest valid, all parts present, models complete', (t) => {
+  if (!extBuilt) {
+    t.skip('扩展构建产物不存在（CI 不出包；本机跑 scripts/build-extension.mjs 后此用例生效）')
+    return
+  }
   const manifest = JSON.parse(fs.readFileSync(ext('manifest.json'), 'utf8'))
   assert.equal(manifest.manifest_version, 3)
   assert.equal(manifest.background.service_worker, 'background.js')
