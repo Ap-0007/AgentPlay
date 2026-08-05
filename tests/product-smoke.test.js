@@ -39,6 +39,14 @@ test('playing media auto-hides chrome after idle while paused or blocked UI stay
 test('player right-click is a real context menu, not an open-file shortcut', () => {
   const playerView = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
   assert.match(playerView, /contextMenu\?\.show/)
+  // 右键菜单项链路：main 的 context:show 处理器、preload 桥、关键功能项
+  const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
+  const preloadSrc = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
+  assert.match(mainSrc, /ipcMain\.on\('context:show'/)
+  assert.match(preloadSrc, /contextMenu/)
+  for (const item of ['生成双语字幕', '实时翻译字幕', '实时识别字幕', '拉片（AI 对话解剖）', '截取当前画面']) {
+    assert.ok(mainSrc.includes(item), )
+  }
   assert.doesNotMatch(playerView, /onContextMenu={[\s\S]{0,240}dialog\?\.openFile/)
 })
 
