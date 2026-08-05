@@ -139,6 +139,7 @@ body {
 
 /* ============ 浅色主题下的文字/边框适配（深色三主题沿用浅色文字） ============ */
 [data-theme='light'] .text-white { color: #0f172a; }
+[data-theme='light'] .text-gray-100 { color: #111827; }
 [data-theme='light'] .text-gray-200 { color: #1e293b; }
 [data-theme='light'] .text-gray-300 { color: #334155; }
 [data-theme='light'] .text-gray-400 { color: #475569; }
