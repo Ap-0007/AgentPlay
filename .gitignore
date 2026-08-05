@@ -22,3 +22,6 @@ resources/**/*.zip
 
 # 一次性补丁/排障脚本（跑完即删，不入库）
 scripts/_*
+
+# 浏览器扩展构建产物（177MB 含模型，源在 extension-src/）
+extension/
