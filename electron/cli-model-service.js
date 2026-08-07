@@ -62,7 +62,7 @@ function resolveCliCommand(name) {
 }
 
 
-function runCli(command, args, { stdinText, signal, timeoutMs = CLI_TIMEOUT_MS }) {
+function runCli(command, args, { stdinText, signal, timeoutMs = CLI_TIMEOUT_MS, onEvent }) {
   return new Promise((resolve, reject) => {
     // shell:true 由 Node 处理 .cmd 宿主与引号；args 全是我们构造的固定值，prompt 只走 stdin，无注入面
     const child = spawn(resolveCliCommand(command), args, { windowsHide: true, shell: true })
@@ -84,7 +84,22 @@ function runCli(command, args, { stdinText, signal, timeoutMs = CLI_TIMEOUT_MS }
       finish(reject, new Error('已取消'))
     }
     signal?.addEventListener('abort', onAbort, { once: true })
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8') })
+    let streamBuf = ''
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString('utf8')
+      stdout += text
+      // 增量解析 JSONL 事件（codex --json：thread.started/turn.started/item.completed）
+      if (onEvent) {
+        streamBuf += text
+        const lines = streamBuf.split(/\r?\n/)
+        streamBuf = lines.pop()
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('{')) continue
+          try { onEvent(JSON.parse(trimmed)) } catch { /* 非 JSON 日志行 */ }
+        }
+      }
+    })
     child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8') })
     child.on('error', (error) => finish(reject, error))
     child.on('close', (code) => finish(resolve, { code, stdout, stderr }))
@@ -93,15 +108,23 @@ function runCli(command, args, { stdinText, signal, timeoutMs = CLI_TIMEOUT_MS }
   })
 }
 
-async function completeViaCodex({ messages, systemPrompt, model, signal, timeoutMs }) {
+async function completeViaCodex({ messages, systemPrompt, model, signal, timeoutMs, onStatus }) {
   const prompt = buildPrompt(messages, systemPrompt)
   const selectedModel = model || 'gpt-5.5'
+  onStatus?.('cli-connecting')
   // -s read-only：安全红线——订阅后端只做对话，绝不允许 CLI 在本机执行命令
   const { code, stdout, stderr } = await runCli('codex', [
     'exec', '--skip-git-repo-check', '-s', 'read-only',
     '--model', selectedModel, '-c', 'model_reasoning_effort=low',
     '--color', 'never', '--json', '-'
-  ], { stdinText: prompt, signal, timeoutMs })
+  ], {
+    stdinText: prompt, signal, timeoutMs,
+    // codex exec --json 没有 token 级增量，但有阶段事件：转成真实进度给用户看（不再干等）
+    onEvent: (event) => {
+      if (event?.type === 'thread.started') onStatus?.('cli-connected')
+      else if (event?.type === 'turn.started') onStatus?.('cli-generating')
+    }
+  })
   const text = extractCodexAnswer(stdout)
   if (text) return { text }
   if (/401|expired|未登录|login required/i.test(stderr)) {

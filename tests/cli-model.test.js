@@ -121,3 +121,15 @@ test('pending chat shows animated wave instead of looking frozen', () => {
   assert.match(css, /@keyframes ai-wave-bounce/)
   assert.match(css, /rgb\(var\(--player-accent\)\)/, '波浪必须走主题 accent 变量，四主题自适应')
 })
+
+test('cli phase streaming: runCli parses JSONL events incrementally, chat maps to honest phase text', () => {
+  const cli = fs.readFileSync(path.join(__dirname, '..', 'electron', 'cli-model-service.js'), 'utf8')
+  assert.match(cli, /onEvent\(JSON\.parse\(trimmed\)\)/, 'runCli 必须增量解析 JSONL 事件')
+  assert.match(cli, /thread\.started.*cli-connected|cli-connected/, 'thread.started → 通道已连接')
+  assert.match(cli, /turn\.started.*cli-generating|cli-generating/, 'turn.started → 生成中')
+  const llm = fs.readFileSync(path.join(__dirname, '..', 'electron', 'llm-service.js'), 'utf8')
+  assert.match(llm, /onStatus: options\.onStatus/, 'chat/completeText 必须透传 onStatus')
+  const store = fs.readFileSync(path.join(__dirname, '..', 'src', 'stores', 'agentStore.ts'), 'utf8')
+  assert.match(store, /正在启动订阅通道/)
+  assert.match(store, /通道已连接/)
+})

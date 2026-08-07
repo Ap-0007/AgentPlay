@@ -509,7 +509,7 @@ class AgentEngine {
       const { completeViaCodex, completeViaClaude } = require('./cli-model-service')
       const model = typeof apiKey === 'object' && apiKey !== null ? apiKey.model : null
       const result = cliProviderId === 'codex-chatgpt'
-        ? await completeViaCodex({ messages, systemPrompt: options.systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs })
+        ? await completeViaCodex({ messages, systemPrompt: options.systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs, onStatus: options.onStatus })
         : await completeViaClaude({ messages, systemPrompt: options.systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs })
       return { text: result.text, provider: cliProviderId, model: model || 'default' }
     }
@@ -723,8 +723,7 @@ class AgentEngine {
     const cliProviderId = typeof apiKey === 'object' && apiKey !== null ? apiKey.providerId : null
     if (cliProviderId === 'codex-chatgpt' || cliProviderId === 'claude-code') {
       try {
-        options.onStatus?.('cli-generating')
-        const result = await this.completeText(messages, apiKey, { signal: options.signal, timeoutMs: 180000 })
+        const result = await this.completeText(messages, apiKey, { signal: options.signal, timeoutMs: 180000, onStatus: options.onStatus })
         options.onDelta?.(result.text)
         return { text: result.text, toolResults: [] }
       } catch (error) {

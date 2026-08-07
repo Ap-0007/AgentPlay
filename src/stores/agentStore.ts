@@ -85,6 +85,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         if (event.delta) streamedText += event.delta
         const statusText: Record<string, string> = {
           queued: '请求已排队…', connecting: '正在连接模型…', loading: '模型正在加载…',
+          'cli-connecting': '正在启动订阅通道（约 20-30 秒）…', 'cli-connected': '通道已连接，正在生成…',
           'cli-generating': '订阅模型生成中（约需 1–2 分钟）…',
           'loading-local-model': '正在校验并启动内置离线模型…'
         }
