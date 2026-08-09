@@ -28,8 +28,11 @@ export default function Sidebar({ pinned, onTogglePin, onOpenModelCenter, onOpen
   const openAnalysisChat = () => {
     const store = useAgentStore.getState()
     store.openPanel()
+    // 每次都给可见反馈：空对话给完整引导，有历史给短提示（此前只在空对话才给提示，点按钮像死了）
     if (store.messages.length === 0) {
       store.addMessage('agent', '把 B站/YouTube/抖音等视频链接粘贴发给我，就自动下载并开始拉片；也可以先用「打开」选一个本地视频，然后对我说“深度解剖这个视频”。')
+    } else {
+      store.addMessage('agent', '想拉片的话：粘贴视频链接发来即自动下载解剖；或先用「打开」选个本地视频，对我说“深度解剖这个视频”。')
     }
   }
 

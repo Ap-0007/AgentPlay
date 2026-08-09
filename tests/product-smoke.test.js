@@ -39,6 +39,10 @@ test('playing media auto-hides chrome after idle while paused or blocked UI stay
 test('player right-click is a real context menu, not an open-file shortcut', () => {
   const playerView = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
   assert.match(playerView, /contextMenu\?\.show/)
+  // 拉片入口必须在三个地方可达：侧栏按钮（有历史也给反馈）、右键菜单、对话流
+  const sidebar = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'Sidebar.tsx'), 'utf8')
+  assert.match(sidebar, /拉片/)
+  assert.ok(sidebar.includes('想拉片的话：粘贴视频链接发来即自动下载解剖'), '有历史时也必须有可见提示')
   // 右键菜单项链路：main 的 context:show 处理器、preload 桥、关键功能项
   const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const preloadSrc = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
