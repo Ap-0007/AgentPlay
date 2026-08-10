@@ -3,10 +3,10 @@ const path = require('path')
 const crypto = require('crypto')
 const mammoth = require('mammoth')
 const ExcelJS = require('exceljs')
-const PptxGenJS = require('pptxgenjs')
 const JSZip = require('jszip')
 const { Document, HeadingLevel, Packer, Paragraph, TextRun } = require('docx')
 const { PDFDocument } = require('pdf-lib')
+const { writePresentation } = require('./pptx-generator')
 const { editDocx, parseEditInstruction } = require('./docx-editor')
 const { editPptx, parsePptxEditInstruction } = require('./pptx-editor')
 const { pdfToDocxLayout } = require('./pdf-to-docx-service')
@@ -206,7 +206,7 @@ async function extractText(filePath, ocr = null) {
       .replace(/&apos;/g, "'").replace(/&amp;/g, '&')
     for (let index = 0; index < slideNames.length; index += 1) {
       const xml = await archive.file(slideNames[index]).async('string')
-      const texts = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((match) => decodeXml(match[1]).trim()).filter(Boolean)
+      const texts = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((match) => decodeXml(match[1]).trim()).filter(Boolean)
       chunks.push(`## 第 ${index + 1} 页\n${texts.join('\n')}`)
     }
     return chunks.join('\n\n').slice(0, MAX_PROMPT_CHARS)
@@ -447,47 +447,6 @@ async function writeWorkbook(finalPath, sheets) {
   workbook.calcProperties.fullCalcOnLoad = true
   const tempPath = temporaryPath(finalPath)
   await workbook.xlsx.writeFile(tempPath)
-  fs.renameSync(tempPath, finalPath)
-}
-
-async function writePresentation(finalPath, title, slides) {
-  const pptx = new PptxGenJS()
-  pptx.layout = 'LAYOUT_WIDE'
-  pptx.author = 'AgentPlay'
-  pptx.subject = title
-  pptx.title = title
-  pptx.company = 'AgentPlay'
-  pptx.lang = 'zh-CN'
-  pptx.theme = {
-    headFontFace: 'Microsoft YaHei',
-    bodyFontFace: 'Microsoft YaHei',
-    lang: 'zh-CN'
-  }
-  const normalizedSlides = slides.length ? slides : [{ title, bullets: ['内容生成完成'] }]
-  normalizedSlides.forEach((item, index) => {
-    const slide = pptx.addSlide()
-    slide.background = { color: index === 0 ? '071426' : '0B1220' }
-    slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.16, h: 7.5, fill: { color: '2F80ED' }, line: { color: '2F80ED' } })
-    slide.addText(String(item.title || `第 ${index + 1} 页`), {
-      x: 0.75, y: 0.58, w: 11.4, h: 0.7, fontFace: 'Microsoft YaHei', fontSize: index === 0 ? 30 : 25,
-      bold: true, color: 'F8FAFC', margin: 0
-    })
-    const bullets = Array.isArray(item.bullets) ? item.bullets : String(item.content || '').split(/\r?\n/).filter(Boolean)
-    if (bullets.length) {
-      slide.addText(bullets.slice(0, 8).map((bullet) => ({
-        text: String(bullet), options: { bullet: { indent: 18 }, breakLine: true }
-      })), {
-        x: 0.95, y: 1.55, w: 11.1, h: 4.9, fontFace: 'Microsoft YaHei', fontSize: 20,
-        color: 'DCE7F7', breakLine: false, margin: 0.08, valign: 'top', paraSpaceAfterPt: 12
-      })
-    }
-    slide.addText(`AgentPlay · ${index + 1} / ${normalizedSlides.length}`, {
-      x: 9.8, y: 7.08, w: 2.3, h: 0.2, fontSize: 9, color: '64748B', align: 'right', margin: 0
-    })
-    if (item.notes) slide.addNotes(String(item.notes).split(/\r?\n/))
-  })
-  const tempPath = `${finalPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp.pptx`
-  await pptx.writeFile({ fileName: tempPath })
   fs.renameSync(tempPath, finalPath)
 }
 

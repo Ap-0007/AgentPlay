@@ -1,17 +1,17 @@
-# AI播放器 0.6.1 多端验证状态
+# AI播放器 0.7.6 候选版多端验证状态
 
 本文件只记录实际证据。能编译、能同步工程、能生成安装包和能在真机完整使用是四种不同结论。
 
-## 当前结论（2026-07-21）
+## 当前结论（2026-08-10）
 
 | 端 | 已验证 | 尚未验证 / 阻塞 |
 |---|---|---|
-| Windows 11 x64 | 131/131 自动化测试；TypeScript、ESLint、Web/PWA 构建、生产依赖审计 0 已知漏洞；0.6.1 标准版单安装包（本地 AI 应用内下载，用户实机确认）；统一对话窗收编文档能力（📎 全格式打开、附件任务内联、云端逐次授权、语音同路由），资源管理器“用 AgentPlay 智能处理”动词 14/14 注册在册并直达对话窗；DOCX 无损编辑（替换/修订/批注/插入/追加）、PPTX 页面级编辑、Excel 公式重算抽验、扫描 PDF 系统 OCR、本机 Office 高保真转换、多文件成套产出均自动化回归；包内 mpv + SAPI 完成 H.264/AAC 真渲染（既有） | 未购买 Authenticode 证书（SignPath 开源免费签名审批中），安装时显示未知发布者；Win11 第一层右键菜单不显示传统注册动词（系统限制，位于“显示更多选项”）；PDF/DOC 提取缺用户真实文件回归；拉片与 AI 成片真实模型端到端验收、实时翻译双语字幕、其他平台未交付；正式发布前须版本升级与静态资产核对 |
+| Windows 11 x64 | 414/414 自动化测试；TypeScript、ESLint、Vite 6 Web/PWA 构建；生产依赖 209 项、全依赖 988 项的审计均为 0 漏洞；Electron 43.3.0 + electron-builder 26.15.7 的 0.7.6 标准版安装包（202,453,185 字节，SHA-256 `B6680A6AE570268D4BA81D5E74CC3DE2D626063FBADCF7387467606F7F63E8CF`）；正式 EXE 完成视频加载、控制层显隐、统一拉片对话、文档能力和 X/Facebook 双下载选项冒烟；X 公公开视频已由真实 yt-dlp 链下载并校验 MP4；PPTX 已改为 JSZip/Open XML 确定性生成，成品 ASAR 不含 `pptxgenjs`/`image-size`，并由 PowerPoint 完成真实打开验证；DOCX/PPTX/Excel/PDF、OCR、转写、mpv/SAPI 等原有链路继续全量回归 | 0.7.6 未发布且未购买 Authenticode 证书，安装时显示未知发布者；Facebook 本轮没有可用登录 Cookies，已验证登录/导入入口与诚实失败提示，但登录后真实媒体下载仍待用户态闭环；Win11 第一层右键菜单仍受系统限制；其他平台未交付 |
 | Web PWA | Vite 生产构建退出 0；产物包含 index、JS、CSS、manifest、service worker | 浏览器没有 Electron IPC，不能直接访问本地模型密钥库、SAPI、mpv 创意渲染；不能算桌面功能等价 |
-| Android | Capacitor 8.4.2 `sync android` 曾成功，Web 产物已复制到 Android 工程 | 0.6.1 尚未重做 APK 构建与真机验证；文件选择、后台音频、AI 成片均未验证 |
+| Android | Capacitor 8.5.0 依赖已安装；历史 `sync android` 曾成功 | 0.7.6 尚未重做 sync、APK 构建与真机验证；文件选择、后台音频、AI 成片均未验证 |
 | macOS | CI 构建定义存在；代码对系统 `say` 配音有适配 | 本机不是 Mac，未生成/启动 DMG；仓库没有 macOS mpv 闭包，高级 MP4 渲染会明确显示不可用 |
 | Linux | CI 构建定义存在；代码对 `espeak-ng` 有适配 | WSL 有 Linux 内核但未形成可分发 mpv 闭包；AppImage/deb 启动、桌面集成和高级渲染未通过 |
-| iOS | 尚无 0.6.1 实机证据 | 需要 macOS、Xcode、iOS 工程、签名和真机；当前不能称已交付 |
+| iOS | 尚无 0.7.6 实机证据 | 需要 macOS、Xcode、iOS 工程、签名和真机；当前不能称已交付 |
 
 ## 已固化的验证入口
 
@@ -24,6 +24,12 @@ node node_modules/@capacitor/cli/bin/capacitor sync android
 pnpm platform:report -- --require-creative
 node scripts/smoke-creative-render.mjs --packaged
 node scripts/smoke-packaged-ui.mjs
+node scripts/smoke-packaged-download.mjs
+node scripts/verify-office-quality.cjs
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify-office-com.ps1
+pnpm security:scan:packaged
+pnpm audit --prod --registry=https://registry.npmjs.org
+pnpm audit --registry=https://registry.npmjs.org
 pnpm release:verify
 ```
 

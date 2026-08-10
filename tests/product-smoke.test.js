@@ -186,7 +186,7 @@ test('printing routes office formats to the local engine and validates authorize
   assert.match(service, /async printFile\(sourcePath\)/)
 })
 
-test('AgentPlay branding preserves the 0.6.x internal app identity and existing user data', () => {
+test('AgentPlay branding preserves the existing internal app identity and user data', () => {
   const packageConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8')
   assert.equal(packageConfig.name, 'ai-player')

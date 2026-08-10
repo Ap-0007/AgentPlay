@@ -10,10 +10,12 @@ param(
   [string]$ValueField = ''
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'office-com-helpers.ps1')
 
-$excel = New-Object -ComObject Excel.Application
+$excel = New-AgentPlayOfficeApplication -ProgId 'Excel.Application'
 $excel.Visible = $false
 $excel.DisplayAlerts = $false
+$wb = $null
 try {
   $wb = $excel.Workbooks.Open($File)
   $ws = $wb.Worksheets.Item(1)
@@ -54,8 +56,13 @@ try {
 
   $wb.Save()
   $wb.Close($false)
+  try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($wb) } catch { }
+  $wb = $null
   Write-Output 'ENRICH-OK'
 } finally {
-  $excel.Quit()
-  [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
+  if ($wb) {
+    try { $wb.Close($false) } catch { }
+    try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($wb) } catch { }
+  }
+  Stop-AgentPlayOfficeApplication -Application $excel -Name 'EXCEL'
 }

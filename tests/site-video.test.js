@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain, normalizeCookiesText, stripHashFromName } = require('../electron/site-video-service')
+const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain, normalizeCookiesText, stripHashFromName, extractorArgsForUrl } = require('../electron/site-video-service')
 const YTDLP_PACK = require('../electron/ytdlp-pack-manifest')
 
 function fakeSpawn(responder) {
@@ -85,7 +85,7 @@ test('download returns produced file and surfaces yt-dlp failures honestly', asy
       child.emit('exit', 1)
     })
   })
-  await assert.rejects(failing.download('https://example.com/vip', { destDir }), /only available for registered users/)
+  await assert.rejects(failing.download('https://www.facebook.com/watch/?v=1', { destDir }), /需要登录态.*扫码登录/)
 })
 
 test('download retries with imported cookies.txt on login-required errors', async () => {
@@ -179,6 +179,10 @@ test('expired cookies trigger silent refresh from the logged-in partition before
 test('cookies file mapping and domain detection', () => {
   assert.equal(cookiesFileForUrl('/ck', 'https://v.douyin.com/abc'), path.join('/ck', 'douyin.com.txt'))
   assert.equal(cookiesFileForUrl('/ck', 'https://www.bilibili.com/video/BV1'), path.join('/ck', 'bilibili.com.txt'))
+  assert.equal(cookiesFileForUrl('/ck', 'https://x.com/user/status/1'), path.join('/ck', 'x.com.txt'))
+  assert.equal(cookiesFileForUrl('/ck', 'https://twitter.com/user/status/1'), path.join('/ck', 'x.com.txt'))
+  assert.equal(cookiesFileForUrl('/ck', 'https://www.facebook.com/watch/?v=1'), path.join('/ck', 'facebook.com.txt'))
+  assert.equal(cookiesFileForUrl('/ck', 'https://fb.watch/abc/'), path.join('/ck', 'facebook.com.txt'))
   assert.equal(cookiesFileForUrl('/ck', 'https://b23.tv/xyz'), path.join('/ck', 'bilibili.com.txt'))
   assert.equal(cookiesFileForUrl('/ck', 'https://youtu.be/xyz'), path.join('/ck', 'youtube.com.txt'))
   assert.equal(cookiesFileForUrl('', 'https://v.douyin.com/abc'), '')
@@ -187,6 +191,27 @@ test('cookies file mapping and domain detection', () => {
   assert.equal(detected.domain, 'douyin.com')
   assert.equal(detected.count, 2)
   assert.equal(detectCookiesDomain('not a cookie file'), null)
+})
+
+test('Facebook uses a supported browser impersonation target without changing X', () => {
+  assert.deepEqual(extractorArgsForUrl('https://www.facebook.com/watch/?v=1'), ['--impersonate', 'Chrome-99'])
+  assert.deepEqual(extractorArgsForUrl('https://fb.watch/abc/'), ['--impersonate', 'Chrome-99'])
+  assert.deepEqual(extractorArgsForUrl('https://x.com/user/status/1'), [])
+})
+
+test('Facebook parse gate becomes an actionable login flow', async () => {
+  const service = new SiteVideoService({
+    enginePath: process.execPath,
+    cookiesDir: fs.mkdtempSync(path.join(os.tmpdir(), 'site-cookies-')),
+    spawnImpl: fakeSpawn(({ child }) => {
+      child.stderr.emit('data', Buffer.from('ERROR: [facebook] Cannot parse data; please report this issue'))
+      child.emit('exit', 1)
+    })
+  })
+  await assert.rejects(
+    service.resolve('https://www.facebook.com/watch/?v=1'),
+    /需要登录态.*扫码登录/
+  )
 })
 
 test('downloaded file names lose # so file:// and HTTP URLs cannot be truncated', () => {
@@ -286,6 +311,9 @@ test('site video wiring: auto component download, chat route and model center ca
   assert.match(main, /首次使用站点视频，正在下载解析组件/)
   assert.match(panel, /siteVideo\?\.download/)
   assert.match(panel, /站点视频下载/)
+  assert.match(panel, /login\(\{ url: targetUrl \}\)/)
+  assert.doesNotMatch(panel, /login\(\{ domain: 'douyin\.com' \}\)/)
+  assert.match(main, /cookiesDomainForUrl\(String\(input\.url/)
   assert.match(center, /站点视频解析组件 · yt-dlp 官方版/)
   assert.match(service, /裸链接视为下载意图/)
 })

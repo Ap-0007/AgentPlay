@@ -187,12 +187,16 @@ test('cancel keeps the partial file for a later resume', async (t) => {
   t.after(() => { server.close(); fs.rmSync(installRoot, { recursive: true, force: true }) })
 
   const service = new LocalAiDownloadService({ installRoot, manifest: buildManifest(`http://127.0.0.1:${port}`, slowPack), localOnly: true })
+  const part = path.join(installRoot, 'models', 'Qwen2.5-0.5B-Instruct-Q4_0.gguf.part')
   const promise = service.start()
-  await new Promise((resolve) => setTimeout(resolve, 150))
+  const deadline = Date.now() + 5000
+  while ((!fs.existsSync(part) || fs.statSync(part).size === 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  assert.ok(fs.existsSync(part) && fs.statSync(part).size > 0, '取消前必须先观察到真实的部分下载')
   assert.equal(service.cancel(), true)
   await assert.rejects(promise, /已取消下载/)
   assert.equal(service.status().active, false)
-  const part = path.join(installRoot, 'models', 'Qwen2.5-0.5B-Instruct-Q4_0.gguf.part')
   assert.ok(fs.existsSync(part))
   const partial = fs.statSync(part).size
   assert.ok(partial > 0 && partial < bigModel.length)

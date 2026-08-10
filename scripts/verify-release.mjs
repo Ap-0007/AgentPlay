@@ -55,7 +55,11 @@ for (const required of [
 
 const report = {
   version: pkg.version,
-  standard: { path: standard, bytes: fs.statSync(standard).size, sha256: sha256(standard) },
+  standard: {
+    path: path.relative(root, standard).split(path.sep).join('/'),
+    bytes: fs.statSync(standard).size,
+    sha256: sha256(standard)
+  },
   closure: {
     standardHasBundledModel: false,
     localAiDeliveredByInAppDownload: true,

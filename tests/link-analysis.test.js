@@ -41,6 +41,24 @@ test('download intent: bare link means full pipeline, explicit download means do
   assert.equal(extractUrl('拉片 https://www.bilibili.com/video/BV1xx 谢谢'), 'https://www.bilibili.com/video/BV1xx')
 })
 
+test('every recognized link keeps both download choices visible', async () => {
+  const { buildLinkChoice } = await import('../src/link-choice-policy.mjs')
+  for (const mode of ['download', 'analyze']) {
+    const choice = buildLinkChoice({
+      matched: true,
+      url: 'https://x.com/example/status/1234567890',
+      direct: false,
+      mode
+    }, '分享链接')
+    assert.deepEqual(choice, {
+      url: 'https://x.com/example/status/1234567890',
+      text: '分享链接',
+      direct: false,
+      canAnalyze: true
+    })
+  }
+})
+
 test('link analysis pipeline wiring: detect mode, IPC and approval-resume path', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')

@@ -28,7 +28,9 @@ function assertHttpUrl(value) {
 // 短链域名 → cookies 文件主域（导入的 cookies.txt 按主域命名存放）
 const SITE_ALIASES = {
   'b23.tv': 'bilibili.com',
-  'youtu.be': 'youtube.com'
+  'youtu.be': 'youtube.com',
+  'twitter.com': 'x.com',
+  'fb.watch': 'facebook.com'
 }
 
 function registrableDomain(hostname) {
@@ -36,17 +38,25 @@ function registrableDomain(hostname) {
   return parts.slice(-2).join('.')
 }
 
-// 由链接推导出对应的 cookies.txt 路径（如 v.douyin.com → <cookiesDir>/douyin.com.txt）
-function cookiesFileForUrl(cookiesDir, url) {
-  if (!cookiesDir) return ''
+function cookiesDomainForUrl(url) {
   try {
     const base = registrableDomain(new URL(url).hostname)
     const domain = SITE_ALIASES[base] || base
-    if (!/^[a-z0-9.-]+$/.test(domain) || !domain.includes('.')) return ''
-    return path.join(cookiesDir, `${domain}.txt`)
+    return /^[a-z0-9.-]+$/.test(domain) && domain.includes('.') ? domain : ''
   } catch {
     return ''
   }
+}
+
+function extractorArgsForUrl(url) {
+  return cookiesDomainForUrl(url) === 'facebook.com' ? ['--impersonate', 'Chrome-99'] : []
+}
+
+// 由链接推导出对应的 cookies.txt 路径（如 v.douyin.com → <cookiesDir>/douyin.com.txt）
+function cookiesFileForUrl(cookiesDir, url) {
+  if (!cookiesDir) return ''
+  const domain = cookiesDomainForUrl(url)
+  return domain ? path.join(cookiesDir, `${domain}.txt`) : ''
 }
 
 // 兼容 JSON 导出（J2TEAM Cookies / Cookie-Editor 等）：统一转成 Netscape cookies.txt 文本；非 JSON 原样返回
@@ -182,6 +192,9 @@ class SiteVideoService {
     const cookiesFile = cookiesFileForUrl(this.cookiesDir, target || '')
     const hasFile = Boolean(cookiesFile && fs.existsSync(cookiesFile))
     const attempts = hasFile ? [null, cookiesFile] : [null]
+    const targetDomain = cookiesDomainForUrl(target || '')
+    const isAuthGate = (message) => /fresh cookies|login|登录|cookie|会员|VIP|注册|registered users|sign in|not a bot|authentication/i.test(String(message || ''))
+      || (targetDomain === 'facebook.com' && /cannot parse data/i.test(String(message || '')))
     let lastError = null
     // 网络波动原地重试（X/YouTube 在当前网络下时通时断）：同一尝试最多 3 次，间隔 2.5s；
     // cookies/登录类错误立刻抛给外层换凭证重试，不在网络重试里空转
@@ -209,11 +222,11 @@ class SiteVideoService {
       } catch (error) {
         lastError = error
         if (signal?.aborted) throw error
-        if (!/fresh cookies|login|登录|cookie|会员|VIP|注册/i.test(String(error.message || ''))) break
+        if (!isAuthGate(error?.message)) break
       }
     }
     const message = String(lastError?.message || '')
-    if (/fresh cookies|login required|需要登录/i.test(message)) {
+    if (isAuthGate(message)) {
       // 内置登录态静默续期：分区里扫码登录过，隐藏窗重取最新 cookies 再试一次，用户无感
       if (this.refreshCookies) {
         onRetryNote?.('站点凭证过期，正在用已登录的内置账号自动续期')
@@ -244,8 +257,9 @@ class SiteVideoService {
   async resolve(url, { signal, onRetryNote } = {}) {
     const target = assertHttpUrl(url)
     if (!this.availability().available) throw new Error('站点视频解析组件未下载')
+    const extractorArgs = extractorArgsForUrl(target)
     const { stdout } = await this.attemptWithCookies(
-      (cookiesFile) => this.exec([...(cookiesFile ? ['--cookies', cookiesFile] : []), '--dump-single-json', '--no-playlist', '--no-warnings', target], { timeoutMs: this.resolveTimeoutMs, signal }),
+      (cookiesFile) => this.exec([...extractorArgs, ...(cookiesFile ? ['--cookies', cookiesFile] : []), '--dump-single-json', '--no-playlist', '--no-warnings', target], { timeoutMs: this.resolveTimeoutMs, signal }),
       { signal, onRetryNote, target }
     )
     let info
@@ -277,6 +291,7 @@ class SiteVideoService {
       : 'b[acodec!=none][vcodec!=none][ext=mp4]/b[acodec!=none][vcodec!=none]'
     const outTemplate = path.join(destDir, '%(title).80s-%(id)s.%(ext)s')
     const baseArgs = [
+      ...extractorArgsForUrl(target),
       ...(ffmpegOk ? ['--ffmpeg-location', this.ffmpegDir] : []),
       '-f', format,
       '--no-playlist', '--no-warnings', '--newline',
@@ -326,9 +341,11 @@ module.exports = {
   SiteVideoService,
   parseProgressLine,
   sanitizeTitle,
+  cookiesDomainForUrl,
   cookiesFileForUrl,
   detectCookiesDomain,
   normalizeCookiesText,
   stripHashFromName,
-  decodeConsole
+  decodeConsole,
+  extractorArgsForUrl
 }

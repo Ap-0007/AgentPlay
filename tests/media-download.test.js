@@ -57,6 +57,19 @@ test('video site share text triggers intent, plain pages do not', () => {
   assert.equal(isDownloadIntent('看看这个 https://example.com/news'), false)
 })
 
+test('X and Facebook links enter the site-video pipeline', () => {
+  const urls = [
+    'https://x.com/example/status/1234567890',
+    'https://twitter.com/example/status/1234567890',
+    'https://www.facebook.com/watch/?v=1234567890',
+    'https://fb.watch/abc123/'
+  ]
+  for (const url of urls) {
+    assert.equal(isVideoSiteUrl(url), true, `${url} 应交给站点视频下载器`)
+    assert.equal(isDownloadIntent(`看看这个 ${url}`), true, `${url} 的分享文字应触发链接处理`)
+  }
+})
+
 const { isVideoSiteUrl } = require('../electron/media-download-service')
 
 test('download writes file atomically with progress and follows redirects', async () => {
@@ -126,7 +139,7 @@ test('media download wires IPC, preload, types and agent panel route', () => {
   assert.match(panel, /linkChoice/)
   assert.match(panel, /仅下载/)
   assert.match(panel, /canAnalyze/)
-  assert.match(panel, /setLinkChoice\(\{ url: detection\.url/)
+  assert.match(panel, /setLinkChoice\(buildLinkChoice\(detection, text\)\)/)
   assert.match(panel, /mediaDownload\.detect\(text\)/)
   assert.match(panel, /视频下载/)
 })

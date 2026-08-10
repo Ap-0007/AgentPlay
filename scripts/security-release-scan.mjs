@@ -15,6 +15,19 @@ function git(args, encoding = 'utf8') {
   return result.stdout
 }
 
+function gitWithInput(args, input, encoding = 'utf8') {
+  const options = {
+    cwd: root,
+    input: encoding === 'buffer' ? Buffer.from(input, 'utf8') : input,
+    windowsHide: true,
+    maxBuffer: 256 * 1024 * 1024
+  }
+  if (encoding !== 'buffer') options.encoding = encoding
+  const result = spawnSync('git', args, options)
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} 失败：${result.stderr || result.stdout}`)
+  return result.stdout
+}
+
 function readText(filePath) {
   const stat = fs.statSync(filePath)
   if (!stat.isFile() || stat.size > maxTextBytes) return null
@@ -37,6 +50,42 @@ function historyBlobs() {
     if (isTextPath(filePath) && !unique.has(oid)) unique.set(oid, filePath)
   }
   return unique
+}
+
+function historyBlobContents() {
+  const entries = [...historyBlobs()]
+  if (!entries.length) return []
+  const allOids = `${entries.map(([oid]) => oid).join('\n')}\n`
+  const checks = gitWithInput(['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'], allOids)
+  const metadata = new Map()
+  for (const line of checks.split(/\r?\n/).filter(Boolean)) {
+    const [oid, type, sizeText] = line.trim().split(/\s+/)
+    metadata.set(oid, { type, size: Number(sizeText) })
+  }
+  const eligible = entries.filter(([oid]) => {
+    const item = metadata.get(oid)
+    return item?.type === 'blob' && Number.isFinite(item.size) && item.size <= maxTextBytes
+  })
+  if (!eligible.length) return []
+
+  const batch = gitWithInput(['cat-file', '--batch'], `${eligible.map(([oid]) => oid).join('\n')}\n`, 'buffer')
+  const output = []
+  let cursor = 0
+  for (const [expectedOid, filePath] of eligible) {
+    const headerEnd = batch.indexOf(0x0a, cursor)
+    if (headerEnd < 0) throw new Error(`git cat-file --batch 缺少对象头：${expectedOid}`)
+    const [oid, type, sizeText] = batch.subarray(cursor, headerEnd).toString('utf8').trim().split(/\s+/)
+    const size = Number(sizeText)
+    if (oid !== expectedOid || type !== 'blob' || !Number.isFinite(size)) throw new Error(`git cat-file --batch 对象头无效：${expectedOid}`)
+    const contentStart = headerEnd + 1
+    const contentEnd = contentStart + size
+    if (contentEnd > batch.length) throw new Error(`git cat-file --batch 对象内容不完整：${expectedOid}`)
+    output.push({ oid, filePath, text: batch.subarray(contentStart, contentEnd).toString('utf8') })
+    cursor = contentEnd
+    if (batch[cursor] === 0x0d) cursor++
+    if (batch[cursor] === 0x0a) cursor++
+  }
+  return output
 }
 
 function walk(directory) {
@@ -71,10 +120,7 @@ for (const relative of currentFiles()) {
 }
 
 if (includeHistory) {
-  for (const [oid, filePath] of historyBlobs()) {
-    const size = Number(git(['cat-file', '-s', oid]).trim())
-    if (!Number.isFinite(size) || size > maxTextBytes) continue
-    const text = git(['cat-file', '-p', oid])
+  for (const { oid, filePath, text } of historyBlobContents()) {
     scannedHistory++
     findings.push(...scanText(`history:${oid.slice(0, 12)}:${filePath}`, text))
   }

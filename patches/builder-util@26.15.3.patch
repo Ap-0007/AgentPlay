@@ -1,0 +1,22 @@
+diff --git a/out/util.js b/out/util.js
+index 177eb99..88e7900 100644
+--- a/out/util.js
++++ b/out/util.js
+@@ -289,7 +289,7 @@ function spawnAndWriteWithOutput(command, args, data, options) {
+         const timeout = setTimeout(() => {
+             timedOut = true;
+             childProcess.kill();
+-        }, 4 * 60 * 1000);
++        }, 15 * 60 * 1000);
+         childProcess.on("error", (err) => {
+             clearTimeout(timeout);
+             reject(err);
+@@ -312,7 +312,7 @@ function spawnAndWriteWithOutput(command, args, data, options) {
+         childProcess.once("close", (code) => {
+             clearTimeout(timeout);
+             if (timedOut) {
+-                reject(new Error(`${command} timed out after 4 minutes`));
++                reject(new Error(`${command} timed out after 15 minutes`));
+             }
+             else if (code === 0) {
+                 resolve({ stdout, stderr });

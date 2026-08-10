@@ -35,6 +35,21 @@ function localService(tempDir, officeConvert) {
   })
 }
 
+test('Office COM startup retries only transient server failures and every script releases the application', () => {
+  const root = path.join(__dirname, '..')
+  const helper = fs.readFileSync(path.join(root, 'electron', 'office-com-helpers.ps1'), 'utf8')
+  const convert = fs.readFileSync(path.join(root, 'electron', 'office-convert.ps1'), 'utf8')
+  const enrich = fs.readFileSync(path.join(root, 'electron', 'excel-enrich.ps1'), 'utf8')
+  assert.match(helper, /-2146959355/)
+  assert.match(helper, /-2147023174/)
+  assert.match(helper, /ValidateRange\(1, 5\).*MaxAttempts = 3/)
+  assert.match(helper, /FinalReleaseComObject/)
+  assert.match(convert, /New-AgentPlayOfficeApplication/)
+  assert.match(convert, /Stop-AgentPlayOfficeApplication/)
+  assert.match(enrich, /New-AgentPlayOfficeApplication/)
+  assert.match(enrich, /Stop-AgentPlayOfficeApplication/)
+})
+
 test('高保真意图路由到本机引擎转换，普通转换保持原路径', () => {
   const docx = [{ path: '合同.docx' }]
   assert.deepEqual(classifyTask(docx, '把这份合同高保真转成PDF', 'auto'), {

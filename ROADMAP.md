@@ -1,6 +1,6 @@
 # AgentPlay 后续工作清单
 
-更新时间：2026-07-22。本文只记录尚未达到“稳定交付”标准的工作；代码入口或按钮存在不等于完成。
+更新时间：2026-08-10。本文只记录尚未达到“稳定交付”标准的工作；代码入口或按钮存在不等于完成。
 
 ## 当前阶段：AI 文档工作台
 
@@ -62,5 +62,9 @@ ChatGPT Plus / Claude Pro 这类订阅制账号没有面向第三方的免费 AP
 4. iOS：需要Mac、Xcode、Apple开发配置和iPhone真机；先建立工程，再做权限、后台音频和文件提供器适配。
 
 ## 发布
+
+当前候选版本为 `0.7.6`：X/Facebook 进入统一下载链，并恢复每条链接的“仅下载 / 下载并拉片”双入口；PPTX 生成改为 JSZip/Open XML 确定性实现，Office 输出继续要求 XML 与真实 COM 双重验收。
+
+`0.7.6` 公开发布仍需完成全新克隆复现、Ubuntu/Windows CI、两层依赖审计、安装包远端资产校验、SPDX SBOM、匿名下载回读与哈希复核。Facebook 无有效用户 Cookies 时的真实媒体下载仍是明确限制，不得伪报成功。详细门禁见 [RELEASING.md](RELEASING.md)。
 
 上述变更通过源码检查后，还需要：版本号升级、Windows安装包（本地AI组件应用内下载落地后只出标准版一个包）、已安装EXE烟雾测试、安全扫描、公开Release资产校验，再发布到GitHub。【v0.7.4 于 08-04 发布：在线媒体库/电子书阅读器/投屏智能化/文档五件套深化全部进公开版；392/392、右键 ALL PASS、安全扫描零泄漏、CI 绿】【v0.7.3 于 08-04 发布：v0.7.2 公开版不含当日订阅链路修复，按纪律升级版本号而非替换公开资产；363/363、security:scan 零泄漏、右键动词端到端 ALL PASS、local-ai-pack-v1 真实下载验收通过】【v0.7.0 已于 07-30 完成全部动作并发布：security:scan 零泄漏、source+binary 校验、329/329、右键动词 ALL PASS、安装位冒烟 0.7.0 全过、旧安装位（Program Files+绿色版）清除、桌面快捷方式归一 Local\Programs；修正认知：向导式安装包（oneClick:false）的 /S 静默在本机不落位，维护者本机更新用 win-unpacked 同步代替，用户双击向导安装不受影响】每次出验证包后的固定动作（用户已明确要求）：由维护者直接静默安装到本机（`/S /CURRENTUSER` 免管理员，落位 `%LocalAppData%\Programs\ai-player`）、清除其它安装位与遗留快捷方式、保证桌面仅一个“AI播放器”快捷方式指向当前安装、复核右键动词注册（14/14）与冒烟启动，用户只从桌面图标启动。免费签名与分发路径已确认：SignPath 开源免费 Authenticode 签名申请已于 2026-07-21 通过 signpath.org/apply 提交（README 与 v0.6.1 发布页已含 Code signing policy 表述），审批约1–4周；批准后依次执行：SignPath 后台建项目与 release-signing 策略、关联 GitHub 仓库与发布工作流、配置 SIGNPATH_API_TOKEN 等 secrets、CI 自动签名，首个签名版本随后向 winget-pkgs 提交清单实现 `winget install` 免费分发；在此之前继续提供SHA-256并保留SmartScreen提示说明。

@@ -135,9 +135,17 @@ class LocalAiDownloadService {
       totalBytes: this.packInfo().totalBytes
     }
     this.active = { controller, progress, promise: null }
-    this.active.promise = this.runDownload(controller, progress, onProgress).finally(() => {
-      this.active = null
-    })
+    this.active.promise = this.runDownload(controller, progress, onProgress)
+      .catch((error) => {
+        // Node/Undici can surface cancellation before response headers, while
+        // streaming, or during body cleanup. Keep one stable product error at
+        // the service boundary regardless of which asynchronous phase won.
+        if (controller.signal.aborted) throw new Error('已取消下载')
+        throw error
+      })
+      .finally(() => {
+        this.active = null
+      })
     return this.active.promise
   }
 

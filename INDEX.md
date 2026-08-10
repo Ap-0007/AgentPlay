@@ -40,12 +40,13 @@ ai-player/
 
 ## 当前状态
 
-- **Windows 0.6.0 当前交付版**：完整状态与外部条件见 `MULTIPLATFORM.md` 和 `../../../方案文档/AI播放器完工方案.md`。
-- 验证：50 项产品回归 + TypeScript + ESLint + Web/PWA 构建 + 双 Electron/NSIS 安装包 + 正式 EXE 打开视频和创作工作台 + 包内 mpv/SAPI 真实生成 H.264/AAC 成片。
+- **Windows 0.7.6 本地候选版**：公开稳定版仍为 0.6.1；完整状态与外部条件见 `MULTIPLATFORM.md` 和 `../../../方案文档/AI播放器完工方案.md`。
+- 当前门禁：414 项自动化测试、TypeScript、ESLint、Web/PWA 构建、链接下载回归、全/生产依赖零漏洞审计、Office 实机验证、成品安全扫描和正式 EXE 冒烟；只有同一候选包全部闭环后才能视为可交付。
 - 画面规则：每次打开新媒体都回到“完整显示”；HTML5 与 mpv 都保留完整宽高比。裁剪铺满改成明确的可选模式并提示可能隐藏边缘。
 - 桌面播放：常见编码使用 HTML5 内嵌，特殊编码回退独立 mpv 兼容窗口；Web 端为浏览器能力子集。
 - Agent：无 Key 可执行基础播放控制；模型中心覆盖官方、聚合、本地和自定义服务，支持动态读取账户模型；Ollama、LM Studio、vLLM、llama.cpp、Colibri/Fara 可作为外部本机服务。
 - AI 创作：关键帧 + 字幕 + 人工拉片进入多模态模型；支持结构化原创方案、AI 图像新镜头、系统/云配音、三种字幕包装、授权音乐自动压低和最终 MP4。所选型号不接受图片时会明确回退文本证据，不伪称视觉分析。
+- 链接下载：B站、YouTube、抖音、X、Facebook 走统一站点链，识别后始终显示“仅下载 / 下载并拉片”；X 与 Facebook 登录态按原链接域名路由。
 - 仍未完整交付：macOS/Linux/Android/iOS 的高级渲染闭包与实机端到端验收；详见 `MULTIPLATFORM.md`。
 
 ## 运行
