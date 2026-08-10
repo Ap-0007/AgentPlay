@@ -20,6 +20,12 @@ function normalizeOcrText(text) {
     .trim()
 }
 
+function supportsOcrLanguage(status, lang = DEFAULT_LANG) {
+  const expected = String(lang || '').trim().toLowerCase()
+  if (!expected || !status?.available || !Array.isArray(status.languages)) return false
+  return status.languages.some((candidate) => String(candidate).trim().toLowerCase() === expected)
+}
+
 class WinRtOcrService {
   constructor({ scriptPath, powershellPath, spawnImpl, timeoutMs } = {}) {
     this.scriptPath = scriptPath || path.join(__dirname, 'ocr-winrt.ps1')
@@ -72,6 +78,11 @@ class WinRtOcrService {
 
   async recognize(imagePaths, { lang = DEFAULT_LANG } = {}) {
     if (!Array.isArray(imagePaths) || imagePaths.length === 0) return new Map()
+    if (lang) {
+      const status = await this.detect()
+      if (!status.available) throw new Error(status.reason || '系统 OCR 不可用')
+      if (!supportsOcrLanguage(status, lang)) throw new Error(`本机未安装 OCR 识别语言：${lang}`)
+    }
     const args = []
     if (lang) args.push('-LangTag', lang)
     args.push('-ImagePaths', ...imagePaths)
@@ -105,6 +116,11 @@ class WinRtOcrService {
   // 表格恢复模式：逐词坐标 [{text,x,y,w,h}]（走 ps1 -Words 输出）
   async recognizeWords(imagePaths, { lang = DEFAULT_LANG } = {}) {
     if (!Array.isArray(imagePaths) || imagePaths.length === 0) return new Map()
+    if (lang) {
+      const status = await this.detect()
+      if (!status.available) throw new Error(status.reason || '系统 OCR 不可用')
+      if (!supportsOcrLanguage(status, lang)) throw new Error(`本机未安装 OCR 识别语言：${lang}`)
+    }
     const args = ['-Words']
     if (lang) args.push('-LangTag', lang)
     args.push('-ImagePaths', ...imagePaths)
@@ -133,4 +149,4 @@ class WinRtOcrService {
   }
 }
 
-module.exports = { WinRtOcrService, normalizeOcrText }
+module.exports = { WinRtOcrService, normalizeOcrText, supportsOcrLanguage, DEFAULT_LANG }

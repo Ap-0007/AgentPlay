@@ -27,9 +27,12 @@ if ($ListLanguages) {
 $engine = $null
 if ($LangTag) {
   $lang = $available | Where-Object { $_.LanguageTag -eq $LangTag } | Select-Object -First 1
-  if ($lang) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang) }
+  if (-not $lang) { throw "本机未安装 OCR 识别语言：$LangTag" }
+  $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
+  if (-not $engine) { throw "无法启动 OCR 识别语言：$LangTag" }
+} else {
+  $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
 }
-if (-not $engine) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
 if (-not $engine) { throw '本机没有可用的 OCR 识别语言' }
 
 foreach ($imagePath in $ImagePaths) {

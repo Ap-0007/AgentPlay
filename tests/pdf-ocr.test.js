@@ -8,7 +8,7 @@ const { execFile } = require('child_process')
 const { promisify } = require('util')
 const { PDFDocument } = require('pdf-lib')
 const { extractText } = require('../electron/document-workspace-service')
-const { WinRtOcrService, normalizeOcrText } = require('../electron/ocr-service')
+const { WinRtOcrService, normalizeOcrText, supportsOcrLanguage, DEFAULT_LANG } = require('../electron/ocr-service')
 
 const execFileAsync = promisify(execFile)
 
@@ -71,11 +71,22 @@ test('recognize 解析 WinRT 脚本的协议输出，容忍单张失败', async 
   assert.match(results.get('C:\\b.png').error, /无法读取图片/)
 })
 
+test('指定中文 OCR 时，只有英文语言包必须在启动识别前故障关闭', async () => {
+  assert.equal(supportsOcrLanguage({ available: true, languages: ['en-US'] }, DEFAULT_LANG), false)
+  assert.equal(supportsOcrLanguage({ available: true, languages: ['ZH-HANS-CN'] }, DEFAULT_LANG), true)
+  const service = new WinRtOcrService()
+  service.detect = async () => ({ available: true, languages: ['en-US'] })
+  service.run = async () => { throw new Error('语言门禁后不应启动 OCR 子进程') }
+  await assert.rejects(() => service.recognize(['C:\\a.png']), /未安装 OCR 识别语言：zh-Hans-CN/)
+  await assert.rejects(() => service.recognizeWords(['C:\\a.png']), /未安装 OCR 识别语言：zh-Hans-CN/)
+})
+
 test('Windows 系统 OCR 端到端识别中文图片（仅 Windows 且识别语言可用）', async (t) => {
   if (process.platform !== 'win32') return t.skip('仅 Windows 可运行系统 OCR')
   const service = new WinRtOcrService()
   const status = await service.detect()
   if (!status.available) return t.skip(`本机系统 OCR 不可用：${status.reason}`)
+  if (!supportsOcrLanguage(status, DEFAULT_LANG)) return t.skip(`本机未安装中文 OCR 语言：${DEFAULT_LANG}`)
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-ocr-e2e-'))
   try {
     const pngPath = path.join(tempDir, 'sample.png')
