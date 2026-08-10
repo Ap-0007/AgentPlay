@@ -15,19 +15,34 @@ const COLLECTIONS = {
 }
 const MEDIATYPE = { movie: 'movies', audio: 'audio', book: 'texts' }
 
-function withTimeout(promise, ms = FETCH_TIMEOUT_MS) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('网络请求超时，请检查网络后重试')), ms))
-  ])
+async function fetchWithTimeout(url, options = {}, { timeoutMs = FETCH_TIMEOUT_MS, fetchImpl = globalThis.fetch } = {}) {
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    return await fetchImpl(url, { ...options, signal: controller.signal })
+  } catch (error) {
+    if (timedOut) throw new Error('网络请求超时，请检查网络后重试', { cause: error })
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, { timeoutMs = FETCH_TIMEOUT_MS, attempts = 2, fetchImpl = globalThis.fetch } = {}) {
   // archive.org 抖动是常态：超时/5xx 自动重试一次再如实报错
   let lastError = null
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await withTimeout(fetch(url, { headers: { 'User-Agent': 'AgentPlay/0.7 (legal public-domain media client)' } }))
+      const response = await fetchWithTimeout(
+        url,
+        { headers: { 'User-Agent': 'AgentPlay/0.7 (legal public-domain media client)' } },
+        { timeoutMs, fetchImpl }
+      )
       if (response.ok) return response.json()
       lastError = new Error(`archive.org 返回 ${response.status}`)
       if (response.status < 500) throw lastError
@@ -40,13 +55,13 @@ async function fetchJson(url) {
 }
 
 // kind: 'movie' | 'audio'；只返回规范化条目，年份/作者尽力而为
-async function searchMedia(query, kind = 'movie', { page = 1, rows = 24 } = {}) {
+async function searchMedia(query, kind = 'movie', { page = 1, rows = 24, timeoutMs, attempts } = {}) {
   const q = String(query || '').trim()
   if (!q) return { items: [], total: 0 }
   if (!COLLECTIONS[kind]) throw new Error(`未知检索类别：${kind}`)
   const fullQuery = `(${q}) AND mediatype:${MEDIATYPE[kind]} AND collection:(${COLLECTIONS[kind]})`
   const url = `${SEARCH_URL}?q=${encodeURIComponent(fullQuery)}&fl[]=identifier&fl[]=title&fl[]=year&fl[]=creator&fl[]=downloads&rows=${rows}&page=${page}&output=json`
-  const data = await fetchJson(url)
+  const data = await fetchJson(url, { timeoutMs, attempts })
   const docs = data?.response?.docs || []
   return {
     total: data?.response?.numFound || 0,
@@ -95,10 +110,10 @@ function fileScore(name, size, kind) {
 }
 
 // 列出条目的可播放文件（按可播性排序）；无文件时如实返回空
-async function listPlayableFiles(identifier, kind = 'movie') {
+async function listPlayableFiles(identifier, kind = 'movie', { timeoutMs, attempts } = {}) {
   const id = String(identifier || '').trim()
   if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('条目编号无效')
-  const data = await fetchJson(`${METADATA_URL}${encodeURIComponent(id)}`)
+  const data = await fetchJson(`${METADATA_URL}${encodeURIComponent(id)}`, { timeoutMs, attempts })
   const files = (data?.files || [])
     .filter((file) => isPlayableFile(file.name, kind))
     .map((file) => ({
@@ -145,4 +160,11 @@ async function listBookFiles(identifier) {
   return { identifier: id, title, creator: Array.isArray(creator) ? creator.join('、') : String(creator || ''), files }
 }
 
-module.exports = { searchMedia, listPlayableFiles, listBookFiles, assertArchiveUrl, COLLECTIONS }
+module.exports = {
+  searchMedia,
+  listPlayableFiles,
+  listBookFiles,
+  assertArchiveUrl,
+  COLLECTIONS,
+  __test: { fetchWithTimeout }
+}

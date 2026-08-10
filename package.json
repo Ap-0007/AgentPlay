@@ -19,7 +19,7 @@
     "release:public:verify:binary": "node scripts/verify-public-release-readiness.mjs --binary",
     "security:scan": "node scripts/security-release-scan.mjs --history",
     "security:scan:packaged": "node scripts/security-release-scan.mjs --history --packaged",
-    "test": "node --test tests/*.test.js tests/*.test.mjs",
+    "test": "node scripts/run-tests.mjs",
     "check": "pnpm exec tsc --noEmit && pnpm exec eslint src --max-warnings=0 && pnpm security:scan && pnpm release:public:verify && pnpm test && pnpm build:web"
   },
   "dependencies": {

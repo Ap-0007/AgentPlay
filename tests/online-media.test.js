@@ -8,6 +8,33 @@ const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.
 const sidebar = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'Sidebar.tsx'), 'utf8')
 const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'OnlineMediaLibrary.tsx'), 'utf8')
 const service = require('../electron/online-media-service')
+const NETWORK_TEST_TIMEOUT_MS = 8000
+const NETWORK_TEST_OPTIONS = { timeoutMs: NETWORK_TEST_TIMEOUT_MS, attempts: 1 }
+
+test('archive request timeout aborts the underlying fetch and clears successful timers', async () => {
+  let timedOutSignal
+  const hangingFetch = async (_url, { signal }) => {
+    timedOutSignal = signal
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+    })
+  }
+  await assert.rejects(
+    service.__test.fetchWithTimeout('https://archive.org/test', {}, { timeoutMs: 20, fetchImpl: hangingFetch }),
+    /网络请求超时/
+  )
+  assert.equal(timedOutSignal.aborted, true)
+
+  let successfulSignal
+  const immediateFetch = async (_url, { signal }) => {
+    successfulSignal = signal
+    return { ok: true }
+  }
+  await service.__test.fetchWithTimeout('https://archive.org/test', {}, { timeoutMs: 20, fetchImpl: immediateFetch })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(successfulSignal.aborted, false, '成功请求必须清理超时定时器')
+})
+
 
 test('archive url whitelist: only https archive.org passes', () => {
   assert.equal(service.assertArchiveUrl('https://archive.org/download/a/b.mp4'), 'https://archive.org/download/a/b.mp4')
@@ -36,40 +63,50 @@ test('wiring: IPC trio + cancel, preload bindings, sidebar entry, play via mpv s
   assert.match(panel, /ai-player-play-file/, '在线播放复用 mpv 流媒体链路')
 })
 
-test('real archive.org: search public-domain films, list playable files, head stream url', { timeout: 60000 }, async (t) => {
+test('real archive.org: search public-domain films, list playable files, head stream url', { timeout: 40000 }, async (t) => {
   let items
   try {
-    const result = await service.searchMedia('night of the living dead', 'movie')
+    const result = await service.searchMedia('night of the living dead', 'movie', NETWORK_TEST_OPTIONS)
     items = result.items
   } catch (error) {
     t.skip(`网络不可用：${error.message}`)
     return
   }
   assert.ok(items.length > 0, '公版电影检索应有结果')
-  const withFiles = []
-  for (const item of items.slice(0, 5)) {
+  const detailResults = await Promise.all(items.slice(0, 5).map(async (item) => {
     try {
-      const detail = await service.listPlayableFiles(item.identifier, 'movie')
-      if (detail.files.length > 0) withFiles.push(detail)
-    } catch { /* 单条失败换下一条 */ }
+      return { detail: await service.listPlayableFiles(item.identifier, 'movie', NETWORK_TEST_OPTIONS) }
+    } catch (error) {
+      return { error }
+    }
+  }))
+  const withFiles = detailResults.flatMap((result) => result.detail?.files.length > 0 ? [result.detail] : [])
+  if (withFiles.length === 0 && detailResults.some((result) => result.error)) {
+    const errors = detailResults.filter((result) => result.error).map((result) => result.error.message).join('；')
+    t.skip(`文件列表网络不可用：${errors}`)
+    return
   }
   assert.ok(withFiles.length > 0, '前 5 条至少一条有可播放文件')
   const first = withFiles[0].files[0]
   assert.match(first.url, /^https:\/\/archive\.org\/download\//)
   let head
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), NETWORK_TEST_TIMEOUT_MS)
   try {
-    head = await fetch(first.url, { method: 'HEAD', redirect: 'manual' })
+    head = await fetch(first.url, { method: 'HEAD', redirect: 'manual', signal: controller.signal })
   } catch (error) {
     t.skip(`直链网络不可用：${error.message}`)
     return
+  } finally {
+    clearTimeout(timer)
   }
   assert.ok([200, 301, 302, 303, 307, 308].includes(head.status), `直链应可访问，实际 ${head.status}`)
 })
 
-test('real archive.org: audio search stays inside licensed collections', { timeout: 60000 }, async (t) => {
+test('real archive.org: audio search stays inside licensed collections', { timeout: 15000 }, async (t) => {
   let result
   try {
-    result = await service.searchMedia('grateful dead', 'audio')
+    result = await service.searchMedia('grateful dead', 'audio', NETWORK_TEST_OPTIONS)
   } catch (error) {
     t.skip(`网络不可用：${error.message}`)
     return
