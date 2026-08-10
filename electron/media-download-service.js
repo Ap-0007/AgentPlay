@@ -25,7 +25,7 @@ function extractUrl(text) {
 }
 
 // 常见视频站域名：消息里带这些链接就视为视频下载/拉片意图（含分享口令格式）
-const VIDEO_SITE_HOSTS = ['bilibili.com', 'b23.tv', 'douyin.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'ixigua.com', 'kuaishou.com', 'xiaohongshu.com', 'v.qq.com', 'iqiyi.com', 'mgtv.com', 'youku.com', 'sohu.com', 'x.com', 'twitter.com']
+const VIDEO_SITE_HOSTS = ['bilibili.com', 'b23.tv', 'douyin.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'ixigua.com', 'kuaishou.com', 'xiaohongshu.com', 'v.qq.com', 'iqiyi.com', 'mgtv.com', 'youku.com', 'sohu.com', 'x.com', 'twitter.com', 'facebook.com', 'fb.watch']
 
 function isVideoSiteUrl(value) {
   try {

@@ -3,6 +3,16 @@ declare module '*.mjs' {
   export const PLAYER_MOUSE_WAKE_THRESHOLD_PX: number
   export function shouldAutoHideControls(input: { hasMedia?: boolean; playing: boolean; blocked?: boolean }): boolean
   export function isRealMouseActivity(last: { x: number; y: number } | null, next: { x: number; y: number } | null, threshold?: number): boolean
+  export interface LinkChoice {
+    url: string
+    text: string
+    direct: boolean
+    canAnalyze: boolean
+  }
+  export function buildLinkChoice(
+    detection: { matched?: boolean; url?: string; direct?: boolean; mode?: string | null } | null | undefined,
+    text: string
+  ): LinkChoice | null
 }
 
 // 桌面端 Electron 注入的全局 API 类型声明
@@ -127,7 +137,7 @@ interface AiPlayerAPI {
     download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; info?: { title: string; duration: number; uploader: string; extractor: string } }>
     importCookies: () => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; count?: number }>
     cookiesStatus: () => Promise<Array<{ domain: string; updatedAt: number }>>
-    login: (input: { domain?: string }) => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; file?: string }>
+    login: (input: { url: string }) => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; file?: string }>
     onComponentProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
   mirror?: {

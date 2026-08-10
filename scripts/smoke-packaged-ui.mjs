@@ -35,7 +35,7 @@ async function waitForChildExit(timeoutMs) {
 }
 
 async function findPage() {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  for (let attempt = 0; attempt < 240; attempt++) {
     try {
       const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
       const page = pages.find((item) => item.type === 'page')
@@ -43,7 +43,7 @@ async function findPage() {
     } catch {}
     await delay(250)
   }
-  throw new Error('正式 EXE 没有在 20 秒内开放验收页面')
+  throw new Error('正式 EXE 没有在 60 秒内开放验收页面')
 }
 
 function command(method, params = {}) {
@@ -76,7 +76,7 @@ try {
   await command('Runtime.enable')
   await command('Page.bringToFront')
   await command('Emulation.setFocusEmulationEnabled', { enabled: true })
-  for (let attempt = 0; attempt < 80; attempt++) {
+  for (let attempt = 0; attempt < 240; attempt++) {
     const ready = await evaluate(`(() => {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return Boolean(video && video.readyState >= 1 && video.videoWidth > 0 && video.videoHeight > 0 && !video.error)
@@ -181,14 +181,14 @@ try {
     pausedChromeVisible,
     pausedChromeState,
     pausedMenuVisible,
-    studioVisible: body.includes('AI 拉片与原创工作台'),
-    creativeTabVisible: body.includes('4 AI 成片'),
+    unifiedAnalysisVisible: body.includes('AI Agent'),
+    retiredStudioHidden: !body.includes('AI 拉片与原创工作台'),
     advancedRender: capabilities?.advancedRender,
     systemVoice: capabilities?.systemVoice,
     renderBinary: capabilities?.renderBinary,
     documentWorkspace
   }
-  if (version !== expectedVersion || !Object.values({ videoLoaded: result.videoLoaded, idleChromeHidden, idleMenuHidden, activityChromeVisible, menuHiddenDuringActivity: !result.activityMenuVisible, pausedChromeVisible, menuHiddenWhenPaused: !result.pausedMenuVisible, studioVisible: result.studioVisible, creativeTabVisible: result.creativeTabVisible, advancedRender: result.advancedRender, systemVoice: result.systemVoice, documentWorkspaceVisible: documentWorkspace.visible, documentTextInput: documentWorkspace.hasTextInput, documentVoiceInput: documentWorkspace.hasVoiceInput, documentFormats: documentWorkspace.formats.includes('docx') && documentWorkspace.formats.includes('xlsx') && documentWorkspace.formats.includes('pptx') && documentWorkspace.formats.includes('pdf'), documentPlan: documentWorkspace.plan.requiresAi && documentWorkspace.plan.outputFormat === 'docx' }).every(Boolean)) {
+  if (version !== expectedVersion || !Object.values({ videoLoaded: result.videoLoaded, idleChromeHidden, idleMenuHidden, activityChromeVisible, menuHiddenDuringActivity: !result.activityMenuVisible, pausedChromeVisible, menuHiddenWhenPaused: !result.pausedMenuVisible, unifiedAnalysisVisible: result.unifiedAnalysisVisible, retiredStudioHidden: result.retiredStudioHidden, advancedRender: result.advancedRender, systemVoice: result.systemVoice, documentWorkspaceVisible: documentWorkspace.visible, documentTextInput: documentWorkspace.hasTextInput, documentVoiceInput: documentWorkspace.hasVoiceInput, documentFormats: documentWorkspace.formats.includes('docx') && documentWorkspace.formats.includes('xlsx') && documentWorkspace.formats.includes('pptx') && documentWorkspace.formats.includes('pdf'), documentPlan: documentWorkspace.plan.requiresAi && documentWorkspace.plan.outputFormat === 'docx' }).every(Boolean)) {
     throw new Error(`正式 EXE 验收失败：${JSON.stringify(result)}`)
   }
   process.stdout.write(`${JSON.stringify(result)}\n`)

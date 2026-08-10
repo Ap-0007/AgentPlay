@@ -2,17 +2,18 @@
 
 AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的基础上，提供字幕、翻译、拉片、深度解剖、原创重构、成片渲染、模型接入与受控的电脑操作能力。
 
-开源项目与未来仓库统一使用 `AgentPlay`。Windows 0.6.x 暂时保留 `ai-player` 内部包名、“AI播放器”产品名与可执行文件名，以兼容已有用户数据、安装路径和“打开方式”注册；正式改名必须经过带数据与旧关联迁移的版本升级，不能只改文件名。
+开源项目与未来仓库统一使用 `AgentPlay`。Windows 0.7.x 继续保留 `ai-player` 内部包名、“AI播放器”产品名与可执行文件名，以兼容已有用户数据、安装路径和“打开方式”注册；正式改名必须经过带数据与旧关联迁移的版本升级，不能只改文件名。
 
-> 当前版本：`0.6.1`。Windows 11 x64 已完成安装包、真实 EXE、视频加载和 MP4 导出验收；macOS、Linux、Android、iOS 尚未完成同等级端到端验证。请以 [MULTIPLATFORM.md](MULTIPLATFORM.md) 为准，不把“代码存在”或“CI 配置存在”当作已交付。
+> 当前源码候选版本：`0.7.6`；公开稳定版为 `0.7.5`。Windows 11 x64 候选包必须通过安装包、真实 EXE、视频加载与链接下载验收后才能发布；macOS、Linux、Android、iOS 尚未完成同等级端到端验证。请以 [MULTIPLATFORM.md](MULTIPLATFORM.md) 为准，不把“代码存在”或“CI 配置存在”当作已交付。
 
-尚未完成的产品深化、跨平台验证和发布顺序统一记录在 [ROADMAP.md](ROADMAP.md)。
+尚未完成的产品深化、跨平台验证和发布顺序统一记录在 [ROADMAP.md](ROADMAP.md)；版本变化见 [CHANGELOG.md](CHANGELOG.md)，维护者发布门禁见 [RELEASING.md](RELEASING.md)。
 
 ## 下载
 
-- [AgentPlay 0.6.1 发布页](https://github.com/wg5759/AgentPlay/releases/tag/v0.6.1)
-- [Windows x64 标准版](https://github.com/wg5759/AgentPlay/releases/download/v0.6.1/AgentPlay-0.6.1-Windows-x64-Standard.exe)：不内置模型，SHA-256 `FE2E9D8C3BC3E6903395410512F9D74057553122F7DB9D87EDF4CF6BDE328BB2`
-- [Windows x64 本地 AI 版](https://github.com/wg5759/AgentPlay/releases/download/v0.6.1/AgentPlay-0.6.1-Windows-x64-Local-AI.exe)：内置轻量模型，SHA-256 `C7D3371D64DA3BB23B2C95555D18C3397DFF25824116777BDF58E7A0CDAAEE21`
+以下仍是公开稳定版；本地 `0.7.6` 候选包未经签名且尚未发布到 GitHub Release。
+
+- [AgentPlay 0.7.5 发布页](https://github.com/wg5759/AgentPlay/releases/tag/v0.7.5)
+- [Windows x64 标准版](https://github.com/wg5759/AgentPlay/releases/download/v0.7.5/AgentPlay-Setup-0.7.5.exe)：不内置模型，SHA-256 `170FF78CA27C080EF6D329C8C71D07B8AA6A73E8AC4BD510158501FEEB7C5DF3`
 
 当前版本未购买 Authenticode 代码签名证书，Windows SmartScreen 可能提示“未知发布者”。请只从上述官方 Release 下载并核对 SHA-256。
 
@@ -26,7 +27,8 @@ AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的
 - 模型中心：主流云模型、自定义 OpenAI 兼容接口、Ollama、LM Studio、vLLM、llama.cpp 等本地服务。
 - 局域网投送、设备同步、DLNA 分享/接收；全部默认关闭，由用户显式开启。
 - 可选本地 Qwen2.5-0.5B Q4_0 轻量模型（模型接入中心一键下载组件，含断点续传与 SHA-256 校验），播放器控制仍走本地规则，不让小模型阻塞基础操作。
-- AI 文档工作台：文字输入或语音输入统一驱动文档任务；支持文本/DOCX生成与转换、XLSX清理去重和公式写入、PPTX生成、PDF合并拆分。所有结果默认另存，复杂内容任务在发送给云端模型前要求用户明确同意。
+- AI 文档工作台：文字输入或语音输入统一驱动文档任务；支持文本/DOCX生成与转换、XLSX清理去重和公式写入、基于 JSZip/Open XML 的确定性 PPTX 生成、PDF合并拆分。所有结果默认另存，复杂内容任务在发送给云端模型前要求用户明确同意。
+- 链接视频：B站、YouTube、抖音、X 与 Facebook 统一进入站点下载链；每个识别链接都保留“仅下载”和“下载并拉片”两个选择。需要登录态的平台通过站点登录或导入 Cookies，失败时明确提示，不伪造下载成功。
 
 ## Windows 版本与本地 AI
 
@@ -65,10 +67,13 @@ pnpm dev:electron
 ```powershell
 pnpm check
 pnpm audit --prod --registry=https://registry.npmjs.org
+pnpm audit --registry=https://registry.npmjs.org
 pnpm build:electron
 pnpm release:verify
 node scripts/smoke-packaged-ui.mjs
+node scripts/smoke-packaged-download.mjs
 node scripts/smoke-creative-render.mjs --packaged
+pnpm security:scan:packaged
 ```
 
 Windows 安装包依赖仓库外的可再分发媒体与本地模型资源。大体积二进制和模型由构建准备流程放入 `resources/`，不会提交到 Git。

@@ -7,20 +7,22 @@
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+. (Join-Path $PSScriptRoot 'office-com-helpers.ps1')
 
 if ($ProbeEngines) {
   foreach ($prog in 'Word.Application', 'Excel.Application', 'PowerPoint.Application') {
     $instance = $null
     try {
-      $instance = New-Object -ComObject $prog
+      $instance = New-AgentPlayOfficeApplication -ProgId $prog
       $name = $prog.Split('.')[0].ToUpper()
       Write-Output ("ENGINE-OK " + $name + " " + $instance.Version)
     } catch {
       $name = $prog.Split('.')[0].ToUpper()
       Write-Output ("ENGINE-FAIL " + $name + " " + $_.Exception.Message)
     } finally {
-      if ($instance) { try { $instance.Quit() } catch { } }
+      if ($instance) { Stop-AgentPlayOfficeApplication -Application $instance -Name $name }
     }
+    Start-Sleep -Milliseconds 150
   }
   exit 0
 }
@@ -30,7 +32,7 @@ $office = $null
 try {
   switch ($App) {
     'Word' {
-      $office = New-Object -ComObject Word.Application
+      $office = New-AgentPlayOfficeApplication -ProgId 'Word.Application'
       $office.Visible = $false
       $office.DisplayAlerts = 0
       try { $office.AutomationSecurity = 3 } catch { }
@@ -44,7 +46,7 @@ try {
       } finally { $doc.Close($false) }
     }
     'Excel' {
-      $office = New-Object -ComObject Excel.Application
+      $office = New-AgentPlayOfficeApplication -ProgId 'Excel.Application'
       $office.Visible = $false
       $office.DisplayAlerts = $false
       try { $office.AutomationSecurity = 3 } catch { }
@@ -56,7 +58,7 @@ try {
       finally { $wb.Close($false) }
     }
     'PowerPoint' {
-      $office = New-Object -ComObject PowerPoint.Application
+      $office = New-AgentPlayOfficeApplication -ProgId 'PowerPoint.Application'
       try { $office.AutomationSecurity = 3 } catch { }
       $pres = $office.Presentations.Open($Source, $true, $true, $false)
       try {
@@ -71,5 +73,5 @@ try {
   if ($Print) { Write-Output "PRINT-OK $Source" }
   else { Write-Output "CONVERT-OK $Target" }
 } finally {
-  if ($office) { try { $office.Quit() } catch { } }
+  if ($office) { Stop-AgentPlayOfficeApplication -Application $office -Name $App.ToUpperInvariant() }
 }

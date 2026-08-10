@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAgentStore } from '../stores/agentStore'
 import { usePlayerStore } from '../stores/playerStore'
+import { buildLinkChoice } from '../link-choice-policy.mjs'
+import type { LinkChoice } from '../link-choice-policy.mjs'
 
 const EXAMPLE_TASKS = [
   { label: '整理成 Word', format: 'docx', text: '把所选资料整理成结构清晰的中文 Word 文档，保留事实和关键数据，增加标题和要点。' },
@@ -36,7 +38,7 @@ export default function AgentPanel() {
   const listRef = useRef<HTMLDivElement>(null)
   useEffect(() => { inputRef.current?.focus() }, [focusNonce])
   const [showHistory, setShowHistory] = useState(false)
-  const [linkChoice, setLinkChoice] = useState<{ url: string; text: string; direct: boolean; canAnalyze: boolean } | null>(null)
+  const [linkChoice, setLinkChoice] = useState<LinkChoice | null>(null)
   const [recutOffer, setRecutOffer] = useState<{ reportText: string; mediaName: string } | null>(null)
   const [attachments, setAttachments] = useState<Array<{ token: string; name: string; ext: string; size: number }>>([])
   const [docCaps, setDocCaps] = useState<{ modelConfigured: boolean; modelLocal: boolean; providerName: string; model: string } | null>(null)
@@ -514,7 +516,7 @@ export default function AgentPanel() {
           // 选择权交给用户：仅下载 / 下载并拉片
           addMessage('user', text)
           setInputText('')
-          setLinkChoice({ url: detection.url, text, direct: detection.direct !== false, canAnalyze: detection.mode === 'analyze' })
+          setLinkChoice(buildLinkChoice(detection, text))
           return
         }
       } catch { /* 意图检测失败时按普通对话处理 */ }
@@ -590,9 +592,14 @@ export default function AgentPanel() {
   const loginSite = async () => {
     const api = window.aiPlayer?.siteVideo
     if (!api?.login) return
+    const targetUrl = pendingTaskRef.current === 'link-analysis' ? linkAnalysisUrlRef.current : downloadUrlRef.current
+    if (!targetUrl) {
+      addMessage('agent', '[错误] 没有可登录的站点链接')
+      return
+    }
     addMessage('agent', '已打开站点登录窗口，请扫码或登录（只需这一次，以后自动续期）…')
     try {
-      const result = await api.login({ domain: 'douyin.com' })
+      const result = await api.login({ url: targetUrl })
       if (result.success) {
         addMessage('agent', '登录成功，站点凭证已保存，之后过期会自动续期，点「重试」继续')
       } else if (!result.canceled) {

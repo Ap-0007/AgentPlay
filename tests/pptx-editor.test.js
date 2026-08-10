@@ -4,22 +4,52 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const JSZip = require('jszip')
-const PptxGenJS = require('pptxgenjs')
+const ExcelJS = require('exceljs')
 const { editPptx, parsePptxEditInstruction } = require('../electron/pptx-editor')
+const { writePresentation } = require('../electron/pptx-generator')
 const { DocumentWorkspaceService, classifyTask } = require('../electron/document-workspace-service')
 
 async function buildFixture(filePath) {
-  const pptx = new PptxGenJS()
-  const s1 = pptx.addSlide()
-  s1.addText('年度汇报', { x: 0.5, y: 0.5, w: 9, h: 1, fontSize: 32, bold: true })
-  s1.addText('汇报人：张三', { x: 0.5, y: 1.6, w: 9, h: 0.6, fontSize: 18 })
-  s1.addNotes('首页备注')
-  const s2 = pptx.addSlide()
-  s2.addText('第二季度数据', { x: 0.5, y: 0.5, w: 9, h: 0.8, fontSize: 24, bold: true })
-  s2.addText([{ text: '收入增长 20%' }, { text: '成本下降 5%' }], { x: 0.8, y: 1.5, w: 8, h: 2, bullet: true, fontSize: 16 })
-  const s3 = pptx.addSlide()
-  s3.addText('感谢观看', { x: 0.5, y: 2.5, w: 9, h: 1, fontSize: 28 })
-  await pptx.writeFile({ fileName: filePath })
+  await writePresentation(filePath, '年度汇报', [
+    { title: '年度汇报', bullets: ['汇报人：张三'], notes: '首页备注' },
+    { title: '第二季度数据', bullets: ['收入增长 20%', '成本下降 5%'] },
+    { title: '感谢观看', bullets: [] }
+  ])
+}
+
+function escapeXml(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+async function buildChartFixture(filePath, { labels, values, title = '季度销售', slideNumber = 2 }) {
+  const slides = Array.from({ length: Math.max(2, slideNumber) }, (_unused, index) => ({
+    title: index === 0 ? '封面' : `第 ${index + 1} 页`, bullets: []
+  }))
+  await writePresentation(filePath, title, slides)
+  const workbook = new ExcelJS.Workbook()
+  const sheet = workbook.addWorksheet('Sheet1')
+  sheet.addRow(['类别', '销售额'])
+  labels.forEach((label, index) => sheet.addRow([label, values[index]]))
+
+  const archive = await JSZip.loadAsync(fs.readFileSync(filePath))
+  const categoryPoints = labels.map((label, index) => `<c:pt idx="${index}"><c:v>${escapeXml(label)}</c:v></c:pt>`).join('')
+  const valuePoints = values.map((value, index) => `<c:pt idx="${index}"><c:v>${Number(value)}</c:v></c:pt>`).join('')
+  const lastRow = labels.length + 1
+  const chartXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="zh-CN"/><a:t>${escapeXml(title)}</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>销售额</c:v></c:tx><c:cat><c:strRef><c:f>Sheet1!$A$2:$A$${lastRow}</c:f><c:strCache><c:ptCount val="${labels.length}"/>${categoryPoints}</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>Sheet1!$B$2:$B$${lastRow}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${values.length}"/>${valuePoints}</c:numCache></c:numRef></c:val></c:ser><c:axId val="123456"/><c:axId val="654321"/></c:barChart><c:catAx><c:axId val="123456"/><c:crossAx val="654321"/></c:catAx><c:valAx><c:axId val="654321"/><c:crossAx val="123456"/></c:valAx></c:plotArea></c:chart><c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData></c:chartSpace>`
+  archive.file('ppt/charts/chart1.xml', chartXml)
+  archive.file('ppt/charts/_rels/chart1.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="../embeddings/Microsoft_Excel_Worksheet1.xlsx"/></Relationships>')
+  archive.file('ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx', await workbook.xlsx.writeBuffer())
+
+  const slidePath = `ppt/slides/slide${slideNumber}.xml`
+  const slideXml = await archive.file(slidePath).async('string')
+  const chartFrame = '<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="20" name="Chart 1"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="914400" y="914400"/><a:ext cx="7315200" cy="3657600"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rIdChart1"/></a:graphicData></a:graphic></p:graphicFrame>'
+  archive.file(slidePath, slideXml.replace('</p:spTree>', `${chartFrame}</p:spTree>`))
+  const slideRelsPath = `ppt/slides/_rels/slide${slideNumber}.xml.rels`
+  const slideRels = await archive.file(slideRelsPath).async('string')
+  archive.file(slideRelsPath, slideRels.replace('</Relationships>', '<Relationship Id="rIdChart1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>'))
+  const types = await archive.file('[Content_Types].xml').async('string')
+  archive.file('[Content_Types].xml', types.replace('</Types>', '<Default Extension="xlsx" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/><Override PartName="/ppt/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/></Types>'))
+  fs.writeFileSync(filePath, await archive.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }))
 }
 
 async function slideTexts(filePath) {
@@ -200,16 +230,13 @@ test('moving pages reorders the deck while parts stay intact', async () => {
 test('pptx keeps master, layouts, theme, animations and notes after edits', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-complex-'))
   try {
-    const pptx = new PptxGenJS()
-    pptx.defineSlideMaster({ title: 'M', background: { color: '1F2A44' } })
-    const s1 = pptx.addSlide('M')
-    s1.addText('封面旧标题', { x: 1, y: 1.5, w: 8, h: 1, fontSize: 32, color: 'FFFFFF' })
-    const s2 = pptx.addSlide('M')
-    s2.addText('带动画的第二页', { x: 1, y: 1.5, w: 8, h: 1, fontSize: 24, color: 'FFFFFF' })
     const fixture = path.join(dir, 'deck.pptx')
-    await pptx.writeFile({ fileName: fixture })
+    await writePresentation(fixture, '复杂演示', [
+      { title: '封面旧标题', bullets: [], notes: '首页备注' },
+      { title: '带动画的第二页', bullets: [] }
+    ])
 
-    // 手工注入动画块与备注页（pptxgenjs 不产这些部件）
+    // 手工注入动画块；备注页由确定性的 Open XML 生成器创建。
     const TIMING = '<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"/></p:par></p:tnLst></p:timing>'
     let zip = await JSZip.loadAsync(fs.readFileSync(fixture))
     let slide2 = await zip.file('ppt/slides/slide2.xml').async('string')
@@ -256,13 +283,8 @@ test('parsePptxEditInstruction reads chart and animation operations', () => {
 test('chart title and data point edits hit cache and embedded workbook, other parts intact', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-chart-'))
   try {
-    const pptx = new PptxGenJS()
-    const s1 = pptx.addSlide()
-    s1.addText('封面', { x: 1, y: 1, w: 8, h: 1 })
-    const s2 = pptx.addSlide()
-    s2.addChart(pptx.ChartType.bar, [{ name: '销售额', labels: ['一月', '二月', '三月'], values: [100, 200, 150] }], { x: 1, y: 1, w: 8, h: 4, showTitle: true, title: '季度销售' })
     const fixture = path.join(dir, 'chart.pptx')
-    await pptx.writeFile({ fileName: fixture })
+    await buildChartFixture(fixture, { labels: ['一月', '二月', '三月'], values: [100, 200, 150], title: '季度销售' })
     const out = path.join(dir, 'chart-out.pptx')
     await editPptx(fixture, out, [
       { type: 'chart-title', to: '全年汇总', page: 2 },
@@ -276,7 +298,6 @@ test('chart title and data point edits hit cache and embedded workbook, other pa
     // 嵌入式工作簿同步：Sheet1!B3（二月行）必须是 500
     const embedName = Object.keys(archive.files).find((n) => /embeddings\/.*\.xlsx$/.test(n))
     assert.ok(embedName, '必须有嵌入式工作簿')
-    const ExcelJS = require('exceljs')
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(await archive.file(embedName).async('nodebuffer'))
     const sheet = workbook.getWorksheet('Sheet1')
@@ -294,15 +315,11 @@ test('chart title and data point edits hit cache and embedded workbook, other pa
 test('chart-data errors honestly when label or chart missing', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-chart-miss-'))
   try {
-    const pptx = new PptxGenJS()
-    pptx.addSlide().addText('纯文字页', { x: 1, y: 1, w: 8, h: 1 })
     const fixture = path.join(dir, 'nochart.pptx')
-    await pptx.writeFile({ fileName: fixture })
+    await writePresentation(fixture, '纯文字页', [{ title: '纯文字页', bullets: [] }])
     await assert.rejects(() => editPptx(fixture, path.join(dir, 'x.pptx'), [{ type: 'chart-data', label: '一月', value: 1, page: 1 }]), /没有图表/)
-    const pptx2 = new PptxGenJS()
-    pptx2.addSlide().addChart(pptx2.ChartType.bar, [{ name: 's', labels: ['一月'], values: [1] }], { x: 1, y: 1, w: 8, h: 4 })
     const fixture2 = path.join(dir, 'c.pptx')
-    await pptx2.writeFile({ fileName: fixture2 })
+    await buildChartFixture(fixture2, { labels: ['一月'], values: [1], slideNumber: 1 })
     await assert.rejects(() => editPptx(fixture2, path.join(dir, 'y.pptx'), [{ type: 'chart-data', label: '十二月', value: 1, page: null }]), /找不到类别：十二月/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -312,12 +329,12 @@ test('chart-data errors honestly when label or chart missing', async () => {
 test('anim-clear removes timing from target page only and errors on page without animation', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-anim-'))
   try {
-    const pptx = new PptxGenJS()
-    pptx.addSlide().addText('第一页', { x: 1, y: 1, w: 8, h: 1 })
-    pptx.addSlide().addText('第二页', { x: 1, y: 1, w: 8, h: 1 })
-    pptx.addSlide().addText('第三页', { x: 1, y: 1, w: 8, h: 1 })
     const fixture = path.join(dir, 'anim.pptx')
-    await pptx.writeFile({ fileName: fixture })
+    await writePresentation(fixture, '动画夹具', [
+      { title: '第一页', bullets: [] },
+      { title: '第二页', bullets: [] },
+      { title: '第三页', bullets: [] }
+    ])
     const TIMING = '<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"/></p:par></p:tnLst></p:timing>'
     const zip = await JSZip.loadAsync(fs.readFileSync(fixture))
     for (const name of ['ppt/slides/slide2.xml', 'ppt/slides/slide3.xml']) {

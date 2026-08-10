@@ -71,6 +71,17 @@ test('quit cleanup covers analysis, downloads, mirror, live subtitle and whisper
   assert.match(quit, /mirrorSender\?\.close\(\)/)
 })
 
+test('quit cleanup state is declared in the same outer scope as before-quit', () => {
+  const main = source('electron/main.js')
+  const ready = main.indexOf('app.whenReady()')
+  const beforeQuit = main.indexOf("app.on('before-quit'")
+  assert.ok(ready > 0 && beforeQuit > ready, '测试需要定位 ready 与 before-quit')
+  for (const name of ['mirrorReceiver', 'mirrorSender', 'mirrorCaptureTimer', 'mirrorWindow', 'liveSubtitleSession']) {
+    const declaration = main.indexOf(`let ${name}`)
+    assert.ok(declaration >= 0 && declaration < ready, `${name} 必须在 before-quit 可见的外层作用域声明`)
+  }
+})
+
 test('chat tool loop honours the outer abort signal', () => {
   const llm = source('electron/llm-service.js')
   assert.match(llm, /options\.signal\?\.aborted\) return \{ text: '\[已取消\]'/)
@@ -125,4 +136,23 @@ test('long videos are refused upfront instead of burning CPU into a timeout', ()
   const main = source('electron/main.js')
   assert.match(main, /dur > 45 \* 60/)
   assert.match(main, /dur \* 3000 \+ 5 \* 60 \* 1000/)
+})
+
+test('production PPTX generation is independent from pptxgenjs and image-size', () => {
+  const workspace = source('electron/document-workspace-service.js')
+  const generator = source('electron/pptx-generator.js')
+  const packageJson = JSON.parse(source('package.json'))
+  assert.match(workspace, /require\('\.\/pptx-generator'\)/)
+  assert.doesNotMatch(workspace, /pptxgenjs|image-size/i)
+  assert.doesNotMatch(generator, /pptxgenjs|image-size|ppt\/media/i)
+  assert.match(generator, /buildPresentationBuffer/)
+  assert.equal(packageJson.dependencies.pptxgenjs, undefined)
+  assert.equal(packageJson.devDependencies.pptxgenjs, undefined)
+})
+
+test('release history scan batches git object reads instead of spawning per blob', () => {
+  const scan = source('scripts/security-release-scan.mjs')
+  assert.match(scan, /cat-file', '--batch-check=/)
+  assert.match(scan, /cat-file', '--batch'/)
+  assert.doesNotMatch(scan, /cat-file', '-[sp]'/)
 })

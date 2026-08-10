@@ -4,17 +4,16 @@
 
 | 组件 | 当前用途/版本证据 | 许可证与来源 |
 |---|---|---|
-| Electron / Chromium / Node.js | 桌面运行时，Electron 28.3.3 | 各项目许可证；<https://www.electronjs.org/> |
+| Electron / Chromium / Node.js | 桌面运行时，Electron 43.3.0 | 各项目许可证；<https://www.electronjs.org/> |
 | React / React DOM | UI，18.3.x | MIT；<https://react.dev/> |
 | Zustand | 状态管理，4.5.x | MIT；<https://github.com/pmndrs/zustand> |
 | Mammoth.js | DOCX 安全预览，1.12.x | BSD-2-Clause；<https://github.com/mwilliamson/mammoth.js> |
 | ExcelJS | XLSX 安全预览，4.4.0 | MIT；<https://github.com/exceljs/exceljs> |
 | word-extractor | AI 文档工作台提取老式 .doc 文字，1.0.4 | MIT；<https://github.com/morungos/word-extractor> |
-| docx | AI 文档工作台生成 DOCX，9.5.1 | MIT；<https://docx.js.org/> |
-| PptxGenJS | AI 文档工作台生成 PPTX，4.0.1 | MIT；<https://gitbrent.github.io/PptxGenJS/> |
+| docx | AI 文档工作台生成 DOCX，9.7.1 | MIT；<https://docx.js.org/> |
 | pdf-lib | AI 文档工作台合并、拆分 PDF，1.17.1 | MIT；<https://pdf-lib.js.org/> |
-| unpdf（内嵌 PDF.js） | AI 文档工作台提取 PDF 文字层，1.6.x | MIT；<https://github.com/unjs/unpdf> |
-| JSZip | 提取 PPTX 中的可读文本，3.10.1 | MIT 或 GPL-3.0-or-later；<https://stuk.github.io/jszip/> |
+| unpdf（内嵌 PDF.js） | AI 文档工作台提取 PDF 文字层，1.8.x | MIT；<https://github.com/unjs/unpdf> |
+| JSZip | 确定性生成、编辑并提取 PPTX Open XML，3.10.1 | MIT 或 GPL-3.0-or-later；<https://stuk.github.io/jszip/> |
 | Formidable | 显式开启的局域网上传，3.5.x | MIT；<https://github.com/node-formidable/formidable> |
 | mpv | 播放与 MP4 渲染；v0.41.0、commit `41f6a645...`，本项目可复现 GPL 构建的本地文件与发布清单哈希一致 | 本构建明确启用 GPL；许可证与来源证据位于 `resources/licenses/mpv/`；[二进制、清单与完整对应源码](https://github.com/wg5759/AgentPlay/releases/tag/mpv-gpl-v0.41.0-20260719) |
 | FFmpeg | 静态进入上述官方 mpv 构建，报告 `f853d12`；官方构建脚本明确设置 `ffmpeg:gpl=enabled` | GPL 构建；<https://github.com/mpv-player/mpv/blob/41f6a645068483470267271e1d09966ca3b9f413/ci/build-win32.ps1> |

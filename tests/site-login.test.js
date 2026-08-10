@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { SiteLoginService, electronCookiesToNetscape, hasLoginMarker } = require('../electron/site-login-service')
+const { SiteLoginService, electronCookiesToNetscape, hasLoginMarker, SITE_HOME } = require('../electron/site-login-service')
 
 const douyinCookies = [
   { domain: '.douyin.com', name: 'ttwid', value: 'a1', path: '/', secure: true, expirationDate: 1780000000 },
@@ -22,8 +22,15 @@ test('electron cookies convert to Netscape format', () => {
 
 test('login marker detection follows session cookies', () => {
   assert.equal(hasLoginMarker(douyinCookies), true)
+  assert.equal(hasLoginMarker([{ domain: '.x.com', name: 'auth_token', value: 'x-session' }]), true)
+  assert.equal(hasLoginMarker([{ domain: '.facebook.com', name: 'c_user', value: '123' }]), true)
   assert.equal(hasLoginMarker([{ domain: '.douyin.com', name: 'ttwid', value: 'a1' }]), false)
   assert.equal(hasLoginMarker([{ domain: '.douyin.com', name: 'sessionid', value: '' }]), false)
+})
+
+test('X and Facebook login pages are explicit supported homes', () => {
+  assert.equal(SITE_HOME['x.com'], 'https://x.com/')
+  assert.equal(SITE_HOME['facebook.com'], 'https://www.facebook.com/')
 })
 
 test('openLogin polls until login then writes cookies file', async () => {

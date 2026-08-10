@@ -13,13 +13,29 @@
 ## 提交前检查
 
 ```powershell
+pnpm install --frozen-lockfile
 pnpm exec tsc --noEmit
 pnpm exec eslint src --max-warnings=0
 pnpm test
 pnpm build:web
 pnpm audit --prod --registry=https://registry.npmjs.org
+pnpm audit --registry=https://registry.npmjs.org
 ```
 
-影响安装包时还应运行 `pnpm release:verify`、`node scripts/smoke-packaged-ui.mjs` 和真实媒体渲染验收。
+影响安装包、下载器或 Office 处理时，还必须在 Windows 上按改动范围运行：
+
+```powershell
+pnpm build:electron
+pnpm release:verify
+node scripts/smoke-packaged-ui.mjs
+node scripts/smoke-packaged-download.mjs
+node scripts/verify-office-quality.cjs
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-office-com.ps1
+pnpm security:scan:packaged
+```
+
+发布候选提交必须在一个全新克隆中完成 `pnpm install --frozen-lockfile`、源码质量门、两层依赖审计和适用的 Windows 实机验收。不得把已有 `node_modules`、构建缓存、未入库资源或历史成功记录当作可复现证明。
+
+安装包、模型、媒体样例和其它大体积二进制不得进入 Git 历史；它们只能作为 GitHub Release 资产，并附 SHA-256、许可证/来源说明、发布校验 JSON、安全扫描报告与 SBOM。完整流程见 [RELEASING.md](RELEASING.md)。
 
 安全漏洞不要提交公开 Issue，请按 [SECURITY.md](SECURITY.md) 私密报告。

@@ -91,6 +91,11 @@ const activeAnalysisRequests = new Map()
 const activeMediaDownloads = new Map()
 let liveSubtitleSession = null
 let liveTranscribeSession = null
+let mirrorReceiver = null
+let mirrorSender = null
+let mirrorCaptureTimer = null
+let mirrorWindow = null
+let mirrorDiscovery = null
 let llmComplete = null
 let llmCompleteVisionMulti = null
 const approvedDocumentSelections = new Map()
@@ -517,8 +522,8 @@ const whisperSmallDownload = new LocalAiDownloadService({
 })
 const TRANSLATE_PACK = require('./translate-pack-manifest')
 const YTDLP_PACK = require('./ytdlp-pack-manifest')
-const { SiteVideoService, detectCookiesDomain, normalizeCookiesText, cookiesFileForUrl } = require('./site-video-service')
-const { SiteLoginService } = require('./site-login-service')
+const { SiteVideoService, detectCookiesDomain, normalizeCookiesText, cookiesDomainForUrl, cookiesFileForUrl } = require('./site-video-service')
+const { SiteLoginService, SITE_HOME } = require('./site-login-service')
 const { MirrorReceiver, MirrorSender, MirrorDiscovery } = require('./mirror-service')
 const { VideoFrameService } = require('./video-frame-service')
 const ytdlpDownload = new LocalAiDownloadService({
@@ -905,12 +910,6 @@ app.whenReady().then(async () => {
 
   }
   // AgentPlay 互投（屏幕镜像）：接收端开 TCP+UDP 广播并弹镜像窗；发送端采集全屏推流
-  let mirrorReceiver = null
-  let mirrorSender = null
-  let mirrorCaptureTimer = null
-  let mirrorWindow = null
-  let mirrorDiscovery = null
-
   const closeMirrorWindow = () => {
     try { mirrorWindow?.close() } catch { /* 忽略 */ }
     mirrorWindow = null
@@ -1458,7 +1457,10 @@ app.whenReady().then(async () => {
   // App 内扫码登录（抖音等需要登录态的站点）：一次登录，分区自持+静默续期
   ipcMain.handle('media:site-login', async (event, input = {}) => {
     assertTrustedSender(event)
-    const domain = /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(input.domain || '')) ? String(input.domain) : 'douyin.com'
+    const domain = cookiesDomainForUrl(String(input.url || ''))
+    if (!domain || !Object.prototype.hasOwnProperty.call(SITE_HOME, domain)) {
+      return { success: false, error: '当前链接不支持 App 内登录，请导入该站点的 cookies.txt' }
+    }
     return siteLogin.openLogin(domain, siteSessionCookies)
   })
   ipcMain.handle('media:site-download', async (event, input = {}) => {

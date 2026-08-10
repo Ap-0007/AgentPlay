@@ -5,11 +5,13 @@ const fs = require('fs')
 const path = require('path')
 
 const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-const LOGIN_MARKERS = ['sessionid', 'sid_guard', 'passport_csrf_token', 'LOGIN_STATUS']
+const LOGIN_MARKERS = ['sessionid', 'sid_guard', 'passport_csrf_token', 'LOGIN_STATUS', 'auth_token', 'c_user']
 const SITE_HOME = {
   'douyin.com': 'https://www.douyin.com/',
   'bilibili.com': 'https://www.bilibili.com/',
-  'youtube.com': 'https://www.youtube.com/'
+  'youtube.com': 'https://www.youtube.com/',
+  'x.com': 'https://x.com/',
+  'facebook.com': 'https://www.facebook.com/'
 }
 
 // Electron session cookies → Netscape cookies.txt 文本

@@ -4,10 +4,10 @@ const os = require('os')
 const path = require('path')
 const JSZip = require('jszip')
 const { Document, Packer, Paragraph, TextRun, Header, Footer, Table, TableRow, TableCell, WidthType, ImageRun, HeadingLevel } = require('docx')
-const PptxGenJS = require('pptxgenjs')
 const ExcelJS = require('exceljs')
 const { editDocx } = require('../electron/docx-editor')
 const { editPptx } = require('../electron/pptx-editor')
+const { writePresentation } = require('../electron/pptx-generator')
 
 const OUT = path.join(os.tmpdir(), 'office-quality')
 fs.rmSync(OUT, { recursive: true, force: true })
@@ -52,14 +52,14 @@ async function buildDocxFixture() {
       ]
     }]
   })
-  const file = path.join(OUT, '复杂夹具.docx')
+  const file = path.join(OUT, 'complex-fixture.docx')
   fs.writeFileSync(file, await Packer.toBuffer(doc))
   return file
 }
 
 async function verifyDocx() {
   const fixture = await buildDocxFixture()
-  const edited = path.join(OUT, '复杂夹具-已编辑.docx')
+  const edited = path.join(OUT, 'complex-fixture-edited.docx')
   await editDocx(fixture, edited, [
     { type: 'replace', from: '一千万元整', to: '壹仟贰佰万元整' },
     { type: 'replace', from: '继续加油干', to: '利润翻倍冲', mode: 'track' },
@@ -102,33 +102,24 @@ async function verifyDocx() {
 // ── PPTX 夹具（手工注入动画与备注页） ──
 const TIMING_BLOCK = '<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"/></p:par></p:tnLst></p:timing>'
 async function buildPptxFixture() {
-  const pptx = new PptxGenJS()
-  pptx.defineSlideMaster({
-    title: 'CUSTOM_MASTER',
-    background: { color: '1F2A44' },
-    objects: [{ rect: { x: 0.2, y: 0.2, w: 2, h: 0.4, fill: { color: 'F2A900' } } }]
-  })
-  let s1 = pptx.addSlide('CUSTOM_MASTER')
-  s1.addText('封面：旧标题文字', { x: 1, y: 1.5, w: 8, h: 1, fontSize: 32, color: 'FFFFFF' })
-  let s2 = pptx.addSlide('CUSTOM_MASTER')
-  s2.addText('第二页：保留这段动画', { x: 1, y: 1.5, w: 8, h: 1, fontSize: 24, color: 'FFFFFF' })
-  const file = path.join(OUT, '母版夹具.pptx')
-  await pptx.writeFile({ fileName: file })
+  const file = path.join(OUT, 'master-fixture.pptx')
+  await writePresentation(file, '母版夹具', [
+    { title: '封面：旧标题文字', bullets: [], notes: '首页备注' },
+    { title: '第二页：保留这段动画', bullets: [] }
+  ])
 
-  // 注入动画块到 slide2、给 slide1 加备注页
+  // 注入动画块到 slide2；备注页由确定性的 Open XML 生成器创建。
   const zip = await JSZip.loadAsync(fs.readFileSync(file))
   let slide2 = await zip.file('ppt/slides/slide2.xml').async('string')
   slide2 = slide2.replace('</p:sld>', TIMING_BLOCK + '</p:sld>')
   zip.file('ppt/slides/slide2.xml', slide2)
-  const notesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld></notes>'
-  zip.file('ppt/notesSlides/notesSlide1.xml', notesXml)
   fs.writeFileSync(file, await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }))
   return file
 }
 
 async function verifyPptx() {
   const fixture = await buildPptxFixture()
-  const edited = path.join(OUT, '母版夹具-已编辑.pptx')
+  const edited = path.join(OUT, 'master-fixture-edited.pptx')
   await editPptx(fixture, edited, [
     { type: 'replace', from: '旧标题文字', to: '新标题文字' },
     { type: 'replace', from: '保留这段动画', to: '动画还在我身上' },
@@ -162,7 +153,7 @@ async function verifyPptx() {
 
 // ── XLSX 公式夹具 ──
 async function verifyXlsx() {
-  const file = path.join(OUT, '公式夹具.xlsx')
+  const file = path.join(OUT, 'formula-fixture.xlsx')
   const wb = new ExcelJS.Workbook()
   const ws = wb.addWorksheet('数据')
   ws.getCell('A1').value = 5
