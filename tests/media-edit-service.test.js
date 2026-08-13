@@ -144,3 +144,122 @@ test('remove-segment supports a silent video and drops stale chapter timestamps'
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('concat-segments reorders every requested video and audio range on a continuous output timeline', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-concat-segments-'))
+  try {
+    const sourcePath = path.join(dir, 'source.mp4')
+    const outputPath = path.join(dir, 'source-reordered.mp4')
+    fs.writeFileSync(sourcePath, Buffer.from('original-video'))
+    const original = fs.readFileSync(sourcePath)
+    let runArgs = []
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (filePath) => filePath === sourcePath ? 20 : 8.03,
+      probeHasAudio: async () => true,
+      run: async (args) => {
+        runArgs = args
+        fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+      }
+    }
+    const decision = compileEditDecisionList({ instruction: '把第8秒到第12秒放前面，再接第0秒到第4秒', sourcePath })
+    const result = await new MediaEditService({ frames }).concatSegments({ sourcePath, outputPath, decision })
+
+    assert.equal(result.success, true)
+    assert.equal(result.expectedDurationSeconds, 8)
+    assert.equal(result.durationSeconds, 8.03)
+    assert.deepEqual(result.timelineReceipt, [
+      { operation: '拼接片段 1', sourceRange: '00:08.000 → 00:12.000', outputRange: '00:00.000 → 00:04.000' },
+      { operation: '拼接片段 2', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:04.000 → 00:08.000' }
+    ])
+    assert.deepEqual(fs.readFileSync(sourcePath), original)
+    const filter = runArgs[runArgs.indexOf('-filter_complex') + 1]
+    assert.match(filter, /\[0:v:0\]trim=start=8\.000:end=12\.000,setpts=PTS-STARTPTS\[v0\]/)
+    assert.match(filter, /\[0:v:0\]trim=start=0\.000:end=4\.000,setpts=PTS-STARTPTS\[v1\]/)
+    assert.match(filter, /\[v0\]\[v1\]concat=n=2:v=1:a=0/)
+    assert.match(filter, /\[a0\]\[a1\]concat=n=2:v=0:a=1/)
+    assert.equal(runArgs[runArgs.indexOf('-map_chapters') + 1], '-1')
+    assert.notEqual(runArgs.at(-1), outputPath, 'ffmpeg must write a temporary artifact before atomic rename')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('concat recovery rejects a corrupted frozen segment list even when the artifact duration matches', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-concat-recovery-'))
+  try {
+    const sourcePath = path.join(dir, 'source.mp4')
+    const outputPath = path.join(dir, 'reordered.mp4')
+    fs.writeFileSync(sourcePath, Buffer.from('original-video'))
+    fs.writeFileSync(outputPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (filePath) => filePath === sourcePath ? 20 : 8.03,
+      probeHasAudio: async () => true,
+      run: async () => { throw new Error('recovery must not encode again') }
+    }
+    const decision = compileEditDecisionList({ instruction: '把第8秒到第12秒放前面，再接第0秒到第4秒', sourcePath })
+    decision.timeline.segments = decision.timeline.segments.slice(0, 1)
+
+    await assert.rejects(
+      new MediaEditService({ frames }).verify({ sourcePath, outputPath, decision }),
+      /拼接时间线无效/
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('concat recovery revalidates every frozen source range against the current source duration', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-concat-range-recovery-'))
+  try {
+    const sourcePath = path.join(dir, 'source.mp4')
+    const outputPath = path.join(dir, 'reordered.mp4')
+    fs.writeFileSync(sourcePath, Buffer.from('original-video'))
+    fs.writeFileSync(outputPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (filePath) => filePath === sourcePath ? 20 : 8.03,
+      probeHasAudio: async () => true,
+      run: async () => { throw new Error('recovery must not encode again') }
+    }
+    const decision = compileEditDecisionList({ instruction: '把第18秒到第22秒放前面，再接第0秒到第4秒', sourcePath })
+
+    await assert.rejects(
+      new MediaEditService({ frames }).verify({ sourcePath, outputPath, decision }),
+      /超出源视频时长/
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('concat recovery refuses an oversized frozen filter graph', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-concat-limit-recovery-'))
+  try {
+    const sourcePath = path.join(dir, 'source.mp4')
+    const outputPath = path.join(dir, 'reordered.mp4')
+    fs.writeFileSync(sourcePath, Buffer.from('original-video'))
+    fs.writeFileSync(outputPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const decision = {
+      schemaVersion: 1,
+      kind: 'media.concat-segments',
+      source: { path: sourcePath },
+      timeline: {
+        segments: Array.from({ length: 25 }, (_, index) => ({ sourceStartSeconds: 0, sourceEndSeconds: 1, durationSeconds: 1, targetStartSeconds: index, targetEndSeconds: index + 1 })),
+        durationSeconds: 25
+      },
+      verification: { toleranceSeconds: 0.2 }
+    }
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (filePath) => filePath === sourcePath ? 30 : 25.03,
+      probeHasAudio: async () => true,
+      run: async () => { throw new Error('recovery must not encode again') }
+    }
+
+    await assert.rejects(new MediaEditService({ frames }).verify({ sourcePath, outputPath, decision }), /拼接时间线无效/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

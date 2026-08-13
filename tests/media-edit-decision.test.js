@@ -42,6 +42,7 @@ test('consultation, negation and examples never become executable edit decisions
   ]) {
     assert.equal(compileEditDecisionList({ instruction, sourcePath: 'D:\\Videos\\source.mp4' }), null, instruction)
   }
+
 })
 
 test('ambiguous or invalid ranges stay in conversation instead of guessing', () => {
@@ -53,6 +54,7 @@ test('ambiguous or invalid ranges stay in conversation instead of guessing', () 
   ]) {
     assert.equal(compileEditDecisionList({ instruction, sourcePath: 'D:\\Videos\\source.mp4' }), null, instruction)
   }
+
 })
 
 test('only an explicit undo or redo command becomes an edit-history action', () => {
@@ -83,4 +85,45 @@ test('an explicit remove-range command compiles to one removed timeline segment'
   for (const instruction of ['能不能删除第4秒到第20秒？', '不要删除第4秒到第20秒', '比如删除第4秒到第20秒', '删除视频']) {
     assert.equal(compileEditDecisionList({ instruction, sourcePath: 'D:\\Videos\\source.mp4' }), null, instruction)
   }
+})
+
+test('explicit multi-range join preserves the spoken segment order in one frozen timeline', () => {
+  const decision = compileEditDecisionList({
+    instruction: '把第8秒到第12秒放前面，再接第0秒到第4秒',
+    sourcePath: 'D:\\Videos\\source.mp4'
+  })
+
+  assert.deepEqual(decision, {
+    schemaVersion: 1,
+    kind: 'media.concat-segments',
+    instruction: '把第8秒到第12秒放前面，再接第0秒到第4秒',
+    source: { path: 'D:\\Videos\\source.mp4', name: 'source.mp4' },
+    timeline: {
+      segments: [
+        { sourceStartSeconds: 8, sourceEndSeconds: 12, durationSeconds: 4, targetStartSeconds: 0, targetEndSeconds: 4 },
+        { sourceStartSeconds: 0, sourceEndSeconds: 4, durationSeconds: 4, targetStartSeconds: 4, targetEndSeconds: 8 }
+      ],
+      durationSeconds: 8
+    },
+    operations: [
+      { type: 'append', sourceStartSeconds: 8, sourceEndSeconds: 12, targetStartSeconds: 0 },
+      { type: 'append', sourceStartSeconds: 0, sourceEndSeconds: 4, targetStartSeconds: 4 }
+    ],
+    output: { container: 'mp4', overwrite: false, suffix: '拼接版-2段-00m08s' },
+    verification: { expectedDurationSeconds: 8, toleranceSeconds: 0.2 }
+  })
+
+  for (const instruction of [
+    '能不能把第8秒到第12秒放前面，再接第0秒到第4秒？',
+    '不要把第8秒到第12秒和第0秒到第4秒拼起来',
+    '比如把第8秒到第12秒放前面，再接第0秒到第4秒',
+    '把第8秒到第12秒放前面'
+  ]) {
+    assert.equal(compileEditDecisionList({ instruction, sourcePath: 'D:\\Videos\\source.mp4' }), null, instruction)
+  }
+})
+
+test('multi-range joins are bounded to a safe maximum segment count', () => {
+  const tooManyRanges = `按顺序拼接${Array.from({ length: 25 }, (_, index) => `第${index}秒到第${index + 1}秒`).join('和')}`
+  assert.equal(compileEditDecisionList({ instruction: tooManyRanges, sourcePath: 'D:\\Videos\\source.mp4' }), null)
 })

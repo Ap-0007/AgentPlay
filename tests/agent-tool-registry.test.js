@@ -5,7 +5,7 @@ const { AgentRunLedger } = require('../electron/agent-run-ledger')
 
 test('agent tool registry is the single metadata source for model tools', () => {
   const tools = listAgentTools()
-  assert.equal(tools.length, 24)
+  assert.equal(tools.length, 25)
   assert.equal(tools[0].function.name, 'pause')
   assert.equal(getAgentTool('summarize_video').risk, 'read-only')
   assert.deepEqual(tools.find((tool) => tool.function.name === 'seek').function.parameters.required, ['seconds'])
@@ -13,6 +13,7 @@ test('agent tool registry is the single metadata source for model tools', () => 
   assert.equal(getAgentTool('compress_video').risk, 'local-write')
   assert.equal(getAgentTool('trim_video').risk, 'local-write')
   assert.equal(getAgentTool('remove_video_segment').risk, 'local-write')
+  assert.equal(getAgentTool('concat_video_segments').risk, 'local-write')
   assert.equal(getAgentTool('undo_media_edit').risk, 'control')
   assert.equal(getAgentTool('redo_media_edit').risk, 'control')
   assert.equal(getAgentTool('find_duplicates').risk, 'read-only')
@@ -41,6 +42,20 @@ test('long-running media tools dispatch through the renderer workflow instead of
   assert.equal(remove.action, 'start_remove_video_segment')
   assert.deepEqual(remove.value, { startSeconds: 4, endSeconds: 20 })
   assert.equal(remove.execution, 'renderer')
+  const concat = await executeAgentTool('concat_video_segments', {
+    segments: [
+      { start_seconds: 8, end_seconds: 12 },
+      { start_seconds: 0, end_seconds: 4 }
+    ]
+  })
+  assert.equal(concat.action, 'start_concat_video_segments')
+  assert.deepEqual(concat.value, { segments: [{ startSeconds: 8, endSeconds: 12 }, { startSeconds: 0, endSeconds: 4 }] })
+  assert.equal(concat.execution, 'renderer')
+  const tooManySegments = await executeAgentTool('concat_video_segments', {
+    segments: Array.from({ length: 25 }, (_, index) => ({ start_seconds: index, end_seconds: index + 1 }))
+  })
+  assert.equal(tooManySegments.success, false)
+  assert.match(tooManySegments.error, /最多 24 个/)
   const undo = await executeAgentTool('undo_media_edit')
   assert.equal(undo.action, 'start_edit_history')
   assert.deepEqual(undo.value, { direction: 'undo' })

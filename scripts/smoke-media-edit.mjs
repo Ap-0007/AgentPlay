@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
-const { VideoFrameService } = require('../electron/video-frame-service')
+const { VideoFrameService, meanAbsDiff } = require('../electron/video-frame-service')
 const { MediaEditService } = require('../electron/media-edit-service')
 const { compileEditDecisionList } = require('../electron/media-edit-decision')
 
@@ -24,8 +24,10 @@ const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-edit-real'
 fs.mkdirSync(evidenceDir, { recursive: true })
 const outputPath = path.join(evidenceDir, 'trim-4s-20s.mp4')
 const removedOutputPath = path.join(evidenceDir, 'trim-4s-20s-remove-4s-8s.mp4')
+const concatOutputPath = path.join(evidenceDir, 'trim-remove-reordered-8s.mp4')
 if (fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true })
 if (fs.existsSync(removedOutputPath)) fs.rmSync(removedOutputPath, { force: true })
+if (fs.existsSync(concatOutputPath)) fs.rmSync(concatOutputPath, { force: true })
 
 function quickFingerprint(filePath) {
   const stat = fs.statSync(filePath)
@@ -57,6 +59,37 @@ const removeResult = await service.removeSegment({ sourcePath: outputPath, outpu
 const trimAfterDelete = { bytes: fs.statSync(outputPath).size, fingerprint: quickFingerprint(outputPath) }
 if (trimBeforeDelete.bytes !== trimAfterDelete.bytes || trimBeforeDelete.fingerprint !== trimAfterDelete.fingerprint) throw new Error('继续编辑覆盖了上一版本')
 if (Math.abs(removeResult.durationSeconds - 12) > 0.2) throw new Error(`删除片段后的成品时长不合格：${removeResult.durationSeconds}`)
+const removedBeforeConcat = { bytes: fs.statSync(removedOutputPath).size, fingerprint: quickFingerprint(removedOutputPath) }
+const concatDecision = compileEditDecisionList({ instruction: '把第8秒到第12秒放前面，再接第0秒到第4秒', sourcePath: removedOutputPath })
+if (!concatDecision || concatDecision.kind !== 'media.concat-segments') throw new Error('明确拼接重排指令未生成决策')
+const concatResult = await service.concatSegments({ sourcePath: removedOutputPath, outputPath: concatOutputPath, decision: concatDecision })
+const removedAfterConcat = { bytes: fs.statSync(removedOutputPath).size, fingerprint: quickFingerprint(removedOutputPath) }
+if (removedBeforeConcat.bytes !== removedAfterConcat.bytes || removedBeforeConcat.fingerprint !== removedAfterConcat.fingerprint) throw new Error('拼接重排覆盖了上一版本')
+if (Math.abs(concatResult.durationSeconds - 8) > 0.2) throw new Error(`拼接重排后的成品时长不合格：${concatResult.durationSeconds}`)
+
+const orderDir = path.join(evidenceDir, 'order-check')
+fs.rmSync(orderDir, { recursive: true, force: true })
+fs.mkdirSync(orderDir, { recursive: true })
+async function readGrayFrame(filePath, seconds, name) {
+  const framePath = path.join(orderDir, `${name}.gray`)
+  await frames.run(['-hide_banner', '-nostdin', '-ss', Number(seconds).toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', 'scale=32:32,format=gray', '-f', 'rawvideo', '-y', framePath])
+  return fs.readFileSync(framePath)
+}
+const [sourceFirst, sourceSecond, outputFirst, outputSecond] = await Promise.all([
+  readGrayFrame(removedOutputPath, 8.5, 'source-first'),
+  readGrayFrame(removedOutputPath, 0.5, 'source-second'),
+  readGrayFrame(concatOutputPath, 0.5, 'output-first'),
+  readGrayFrame(concatOutputPath, 4.5, 'output-second')
+])
+const orderEvidence = {
+  firstToRequested: meanAbsDiff(outputFirst, sourceFirst),
+  firstToWrong: meanAbsDiff(outputFirst, sourceSecond),
+  secondToRequested: meanAbsDiff(outputSecond, sourceSecond),
+  secondToWrong: meanAbsDiff(outputSecond, sourceFirst)
+}
+if (!(orderEvidence.firstToRequested < orderEvidence.firstToWrong && orderEvidence.secondToRequested < orderEvidence.secondToWrong)) {
+  throw new Error(`拼接顺序画面校验失败：${JSON.stringify(orderEvidence)}`)
+}
 
 const receipt = {
   passed: true,
@@ -68,9 +101,14 @@ const receipt = {
   result,
   removeDecision,
   removeResult,
+  concatDecision,
+  concatResult,
   trimBeforeDelete,
-  trimAfterDelete
+  trimAfterDelete,
+  removedBeforeConcat,
+  removedAfterConcat,
+  orderEvidence
 }
 const receiptPath = path.join(evidenceDir, 'receipt.json')
 fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-process.stdout.write(`${JSON.stringify({ passed: true, outputPath, removedOutputPath, receiptPath, durationSeconds: result.durationSeconds, removedDurationSeconds: removeResult.durationSeconds, sourceUnchanged: true, priorVersionUnchanged: true }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ passed: true, outputPath, removedOutputPath, concatOutputPath, receiptPath, durationSeconds: result.durationSeconds, removedDurationSeconds: removeResult.durationSeconds, concatDurationSeconds: concatResult.durationSeconds, orderEvidence, sourceUnchanged: true, priorVersionsUnchanged: true }, null, 2)}\n`)

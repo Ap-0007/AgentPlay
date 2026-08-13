@@ -21,6 +21,7 @@ const stagedFfmpeg = path.join(profileDir, 'yt-dlp', 'ffmpeg-8.0.1-essentials_bu
 const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-edit-packaged')
 const instruction = '我想要第四秒到第20秒的这段视频'
 const removeInstruction = '删除第4秒到第8秒'
+const concatInstruction = '把第8秒到第12秒放前面，再接第0秒到第4秒'
 
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 
@@ -45,6 +46,23 @@ function quickFingerprint(filePath) {
     fs.readSync(fd, last, 0, size, Math.max(0, stat.size - size))
   } finally { fs.closeSync(fd) }
   return { bytes: stat.size, sha256: crypto.createHash('sha256').update(first).update(last).update(String(stat.size)).digest('hex') }
+}
+
+function meanAbsDiff(a, b) {
+  if (!a || !b || a.length !== b.length || a.length === 0) return 255
+  let sum = 0
+  for (let index = 0; index < a.length; index += 1) sum += Math.abs(a[index] - b[index])
+  return sum / a.length
+}
+
+async function runExecutable(executablePath, args) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(executablePath, args, { windowsHide: true, shell: false })
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += String(chunk) })
+    child.once('error', reject)
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`${path.basename(executablePath)} 退出码 ${code}：${stderr.slice(-1000)}`)))
+  })
 }
 
 async function waitForExit(child, timeoutMs) {
@@ -227,6 +245,37 @@ try {
         ? { duration: video.duration, currentSrc: video.currentSrc }
         : null
     }, '重做删除并回到新成片', 30000)
+    const concatPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(concatInstruction)}, sourcePath: removeTask.result.outputPath })
+    if (!concatPlan.matched || concatPlan.decision?.kind !== 'media.concat-segments' || concatPlan.decision.timeline?.segments?.length !== 2) throw new Error('安装态拼接重排计划不合格')
+    await sendText(${JSON.stringify(concatInstruction)})
+    const concatTask = await waitFor(async () => {
+      const tasks = await window.aiPlayer.taskRuntime.list()
+      const candidate = [...tasks].reverse().find((item) => item.type === 'media.edit-concat')
+      return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
+    }, '拼接重排任务完成')
+    if (concatTask.state !== 'completed') throw new Error(concatTask.error || concatTask.status || '拼接重排任务未完成')
+    const concatPreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 8) <= 0.2
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '自动预览拼接重排成片', 30000)
+    if (concatTask.result?.projectCapsule?.versionCount !== 4 || concatTask.result?.projectCapsule?.canUndo !== true) throw new Error('拼接重排没有进入同一编辑项目')
+    if (!Array.isArray(concatTask.result?.timelineReceipt) || concatTask.result.timelineReceipt.length !== 2) throw new Error('拼接重排没有返回每个片段的时间线映射')
+    await sendText(undoInstruction)
+    const concatUndoPreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 12) <= 0.2 && document.body.innerText.includes('项目版本：3/4')
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '撤销拼接并回到删除版', 30000)
+    await sendText(redoInstruction)
+    const concatRedoPreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 8) <= 0.2 && document.body.innerText.includes('项目版本：4/4')
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '重做拼接并回到重排版', 30000)
     const bodyText = document.body.innerText
     return {
       version: window.aiPlayer.version,
@@ -244,7 +293,12 @@ try {
       removePreview,
       removeUndoPreview,
       removeRedoPreview,
-      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：') && bodyText.includes('删除片段：源片') && bodyText.includes('未进入成片') && bodyText.includes('项目版本：3/3')
+      concatPlan,
+      concatTask,
+      concatPreview,
+      concatUndoPreview,
+      concatRedoPreview,
+      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：') && bodyText.includes('拼接片段 1：源片') && bodyText.includes('拼接片段 2：源片') && bodyText.includes('项目版本：4/4')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -265,18 +319,48 @@ try {
   if (pageResult.removeTask.quality?.passed !== true || pageResult.removeTask.quality?.score !== 100) throw new Error('安装态删除片段质量门未通过')
   if (Math.abs(Number(pageResult.removeUndoPreview?.duration) - 16) > 0.2) throw new Error('安装态撤销删除没有回到上一成片')
   if (Math.abs(Number(pageResult.removeRedoPreview?.duration) - 12) > 0.2) throw new Error('安装态重做删除没有回到新成片')
+  const concatOutputPath = pageResult.concatTask?.result?.outputPath
+  if (!concatOutputPath || !fs.existsSync(concatOutputPath)) throw new Error('安装态拼接重排任务没有真实成果文件')
+  if (Math.abs(Number(pageResult.concatTask.result.durationSeconds) - 8) > 0.2) throw new Error('安装态拼接重排成品时长不合格')
+  if (pageResult.concatTask.quality?.passed !== true || pageResult.concatTask.quality?.score !== 100) throw new Error('安装态拼接重排质量门未通过')
+  if (Math.abs(Number(pageResult.concatUndoPreview?.duration) - 12) > 0.2) throw new Error('安装态撤销拼接没有回到删除版')
+  if (Math.abs(Number(pageResult.concatRedoPreview?.duration) - 8) > 0.2) throw new Error('安装态重做拼接没有回到重排版')
+  const orderDir = path.join(evidenceDir, 'order-check')
+  fs.rmSync(orderDir, { recursive: true, force: true })
+  fs.mkdirSync(orderDir, { recursive: true })
+  const ffmpegPath = path.join(installedFfmpeg, 'bin', 'ffmpeg.exe')
+  const readGrayFrame = async (filePath, seconds, name) => {
+    const framePath = path.join(orderDir, `${name}.gray`)
+    await runExecutable(ffmpegPath, ['-hide_banner', '-nostdin', '-ss', Number(seconds).toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', 'scale=32:32,format=gray', '-f', 'rawvideo', '-y', framePath])
+    return fs.readFileSync(framePath)
+  }
+  const [sourceFirst, sourceSecond, outputFirst, outputSecond] = await Promise.all([
+    readGrayFrame(removedOutputPath, 8.5, 'source-first'),
+    readGrayFrame(removedOutputPath, 0.5, 'source-second'),
+    readGrayFrame(concatOutputPath, 0.5, 'output-first'),
+    readGrayFrame(concatOutputPath, 4.5, 'output-second')
+  ])
+  const orderEvidence = {
+    firstToRequested: meanAbsDiff(outputFirst, sourceFirst),
+    firstToWrong: meanAbsDiff(outputFirst, sourceSecond),
+    secondToRequested: meanAbsDiff(outputSecond, sourceSecond),
+    secondToWrong: meanAbsDiff(outputSecond, sourceFirst)
+  }
+  if (!(orderEvidence.firstToRequested < orderEvidence.firstToWrong && orderEvidence.secondToRequested < orderEvidence.secondToWrong)) throw new Error(`安装态拼接顺序画面校验失败：${JSON.stringify(orderEvidence)}`)
   const persistedOutputPath = path.join(evidenceDir, 'packaged-trim-4s-20s.mp4')
   fs.copyFileSync(outputPath, persistedOutputPath)
   const persistedRemovedOutputPath = path.join(evidenceDir, 'packaged-trim-then-remove-4s-8s.mp4')
   fs.copyFileSync(removedOutputPath, persistedRemovedOutputPath)
+  const persistedConcatOutputPath = path.join(evidenceDir, 'packaged-trim-remove-reordered-8s.mp4')
+  fs.copyFileSync(concatOutputPath, persistedConcatOutputPath)
   const projectStatePath = path.join(profileDir, 'media-edit-projects', 'media-edit-projects-v1.json')
   if (!fs.existsSync(projectStatePath)) throw new Error('安装态没有持久化编辑项目状态')
   const persistedProjectStatePath = path.join(evidenceDir, 'media-edit-projects-v1.json')
   fs.copyFileSync(projectStatePath, persistedProjectStatePath)
-  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, removedOutputBytes: fs.statSync(removedOutputPath).size, persistedOutputPath, persistedRemovedOutputPath, persistedProjectStatePath, screenshotPath, pageResult }
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, removedOutputBytes: fs.statSync(removedOutputPath).size, concatOutputBytes: fs.statSync(concatOutputPath).size, orderEvidence, persistedOutputPath, persistedRemovedOutputPath, persistedConcatOutputPath, persistedProjectStatePath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, removedDurationSeconds: pageResult.removeTask.result.durationSeconds, qualityScore: pageResult.task.quality.score, removeQualityScore: pageResult.removeTask.quality.score, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration, removeUndoDurationSeconds: pageResult.removeUndoPreview.duration, removeRedoDurationSeconds: pageResult.removeRedoPreview.duration }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, removedDurationSeconds: pageResult.removeTask.result.durationSeconds, concatDurationSeconds: pageResult.concatTask.result.durationSeconds, qualityScore: pageResult.task.quality.score, removeQualityScore: pageResult.removeTask.quality.score, concatQualityScore: pageResult.concatTask.quality.score, orderEvidence, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration, removeUndoDurationSeconds: pageResult.removeUndoPreview.duration, removeRedoDurationSeconds: pageResult.removeRedoPreview.duration, concatUndoDurationSeconds: pageResult.concatUndoPreview.duration, concatRedoDurationSeconds: pageResult.concatRedoPreview.duration }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

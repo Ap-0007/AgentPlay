@@ -118,3 +118,36 @@ test('removed-segment media uses the same artifact, duration, timeline and proje
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('reordered concat quality requires a receipt for every frozen segment', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-concat-segments-'))
+  try {
+    const output = path.join(dir, 'reordered.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const spec = {
+      decision: {
+        kind: 'media.concat-segments',
+        timeline: { segments: [{}, {}], durationSeconds: 8 },
+        verification: { toleranceSeconds: 0.2 }
+      }
+    }
+    const result = {
+      success: true,
+      outputs: [output],
+      durationSeconds: 8.03,
+      expectedDurationSeconds: 8,
+      timelineReceipt: [
+        { operation: '拼接片段 1', sourceRange: '00:08.000 → 00:12.000', outputRange: '00:00.000 → 00:04.000' },
+        { operation: '拼接片段 2', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:04.000 → 00:08.000' }
+      ],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }
+
+    assert.equal(evaluateTaskResult('media.edit-concat', result, spec).passed, true)
+    const incomplete = evaluateTaskResult('media.edit-concat', { ...result, timelineReceipt: result.timelineReceipt.slice(0, 1) }, spec)
+    assert.equal(incomplete.passed, false)
+    assert.ok(incomplete.reasons.some((item) => item.code === 'SEGMENT_RECEIPT_INCOMPLETE'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

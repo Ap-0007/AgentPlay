@@ -16,6 +16,12 @@ function quickFingerprint(filePath, stat = fs.statSync(filePath), fsImpl = fs) {
   return crypto.createHash('sha256').update(first).update(last).update(String(stat.size)).digest('hex')
 }
 
+function editVersionKind(decision) {
+  if (decision?.kind === 'media.remove-segment') return 'remove-segment'
+  if (decision?.kind === 'media.concat-segments') return 'concat-segments'
+  return 'trim'
+}
+
 class MediaEditProjectStore {
   constructor({ rootDir, fsImpl = fs, now = () => Date.now(), idFactory = () => crypto.randomUUID() } = {}) {
     if (!rootDir) throw new Error('编辑项目目录不能为空')
@@ -106,7 +112,7 @@ class MediaEditProjectStore {
       if (!repairing) this.validate(version.artifact)
       else {
         version.artifact = output
-        version.kind = decision?.kind === 'media.remove-segment' ? 'remove-segment' : 'trim'
+        version.kind = editVersionKind(decision)
         version.decision = JSON.parse(JSON.stringify(decision || null))
       }
       existingTask.cursor = versionIndex
@@ -137,7 +143,7 @@ class MediaEditProjectStore {
     project.versions.push({
       id: `version-${this.idFactory()}`,
       taskId: taskKey,
-      kind: decision?.kind === 'media.remove-segment' ? 'remove-segment' : 'trim',
+      kind: editVersionKind(decision),
       artifact: output,
       decision: JSON.parse(JSON.stringify(decision || null)),
       createdAt: now

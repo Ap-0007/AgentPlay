@@ -128,6 +128,33 @@ test('a removed-segment result enters the same project and remains undoable', ()
   }
 })
 
+test('a reordered concat result is persisted as its own undoable edit version', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const stateDir = path.join(root, 'state')
+    const decision = {
+      schemaVersion: 1,
+      kind: 'media.concat-segments',
+      timeline: {
+        segments: [
+          { sourceStartSeconds: 8, sourceEndSeconds: 12, durationSeconds: 4, targetStartSeconds: 0, targetEndSeconds: 4 },
+          { sourceStartSeconds: 0, sourceEndSeconds: 4, durationSeconds: 4, targetStartSeconds: 4, targetEndSeconds: 8 }
+        ],
+        durationSeconds: 8
+      }
+    }
+    const store = new MediaEditProjectStore({ rootDir: stateDir })
+    const capsule = store.recordEdit({ taskId: 'concat-1', sourcePath, outputPath, decision })
+
+    assert.equal(capsule.versionCount, 2)
+    assert.equal(store.navigate({ currentPath: outputPath, direction: 'undo' }).currentPath, sourcePath)
+    const persisted = JSON.parse(fs.readFileSync(path.join(stateDir, 'media-edit-projects-v1.json'), 'utf8'))
+    assert.equal(persisted.projects[0].versions[1].kind, 'concat-segments')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a repeated task validates its recorded artifact and only an explicit quality repair may refresh it', () => {
   const { root, sourcePath, outputPath } = fixture()
   try {

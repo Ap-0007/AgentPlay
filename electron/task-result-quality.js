@@ -5,7 +5,7 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.avi', '.m4v
 const OFFICE_ZIP_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.odt', '.ods', '.odp', '.epub'])
 const HARD_FAILURES = new Set([
   'RESULT_FAILED', 'ARTIFACT_MISSING', 'ARTIFACT_EMPTY', 'INVALID_FORMAT', 'SUBTITLE_EMPTY',
-  'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH'
+  'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -112,13 +112,22 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('format', '文件结构', formatRatio, 15, formatFailure)
     add('history', '历史记录', result.historyId ? 1 : 0, 20, reason('HISTORY_MISSING', '成果尚未写入历史记录', true))
     add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 10, reason('SUMMARY_MISSING', '缺少结果说明', true))
-  } else if (taskType === 'media.edit-trim' || taskType === 'media.edit-remove') {
+  } else if (taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat') {
     const expectedDuration = Number(result.expectedDurationSeconds || spec.decision?.timeline?.durationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
     const durationOk = expectedDuration > 0 && actualDuration > 0 && Math.abs(actualDuration - expectedDuration) <= tolerance
     const timelineReceipt = Array.isArray(result.timelineReceipt) ? result.timelineReceipt : []
-    const hasTimelineReceipt = timelineReceipt.some((item) => String(item?.sourceRange || '').includes('→') && String(item?.outputRange || '').includes('→'))
+    const mappedTimelineReceipts = timelineReceipt.filter((item) => String(item?.sourceRange || '').includes('→') && String(item?.outputRange || '').includes('→'))
+    const expectedSegmentCount = taskType === 'media.edit-concat' && Array.isArray(spec.decision?.timeline?.segments)
+      ? spec.decision.timeline.segments.length
+      : 0
+    const hasTimelineReceipt = expectedSegmentCount > 0
+      ? timelineReceipt.length === expectedSegmentCount && mappedTimelineReceipts.length === expectedSegmentCount
+      : mappedTimelineReceipts.length > 0
+    const timelineFailure = expectedSegmentCount > 0
+      ? reason('SEGMENT_RECEIPT_INCOMPLETE', `拼接时间线回执不完整：期望 ${expectedSegmentCount} 段，实际 ${mappedTimelineReceipts.length} 段`, true)
+      : reason('TIMELINE_RECEIPT_MISSING', '缺少可核对的源片段与成品时间线回执', true)
     const projectCapsule = result.projectCapsule
     const hasProjectCapsule = projectCapsule?.schemaVersion === 1
       && String(projectCapsule.projectId || '').startsWith('edit-')
@@ -131,7 +140,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('artifacts', '剪辑视频', artifactRatio, 25, artifactFailure)
     add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
     add('duration-receipt', '成品时长', durationOk ? 1 : 0, 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
-    add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, 10, reason('TIMELINE_RECEIPT_MISSING', '缺少可核对的源片段与成品时间线回执', true))
+    add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, 10, timelineFailure)
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.compress') {
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))

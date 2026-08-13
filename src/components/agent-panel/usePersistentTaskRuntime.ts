@@ -19,7 +19,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isCreative = isVideoGeneration || isRecut
       const isBatch = runtimeTask.type === 'media.batch'
       const isCompress = runtimeTask.type === 'media.compress'
-      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove'
+      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat'
       const isDedup = runtimeTask.type === 'media.dedup'
       const isDownload = String(runtimeTask.type || '').startsWith('download.')
       const dedupRoot = runtimeTask.spec?.root as { path?: string } | undefined
@@ -33,7 +33,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const outputPaths = isDedup ? [] : allOutputPaths
       const batchKind = runtimeTask.spec?.kind === 'transcribe' ? 'transcribe' : 'compress'
       const compressMode = runtimeTask.spec?.mode === 'remux' ? 'remux' : 'compress'
-      const trimDecision = runtimeTask.spec?.decision as { timeline?: { startSeconds?: number; endSeconds?: number } } | undefined
+      const trimDecision = runtimeTask.spec?.decision as { timeline?: { startSeconds?: number; endSeconds?: number; segments?: Array<{ sourceStartSeconds?: number; sourceEndSeconds?: number }> } } | undefined
 
       let kind: WorkspaceTaskKind = 'download'
       let label = runtimeTask.type === 'download.site' ? '站点视频下载' : '视频下载'
@@ -58,7 +58,9 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         const start = Number(trimDecision?.timeline?.startSeconds) || 0
         const end = Number(trimDecision?.timeline?.endSeconds) || 0
         const removesSegment = runtimeTask.type === 'media.edit-remove'
-        kind = 'media'; label = `${removesSegment ? '删除' : '保留'} ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || `${removesSegment ? '删除' : '保留'}第${start}秒到第${end}秒`); source = firstSourcePath
+        const concatenatesSegments = runtimeTask.type === 'media.edit-concat'
+        const segmentCount = trimDecision?.timeline?.segments?.length || 0
+        kind = 'media'; label = concatenatesSegments ? `拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'} ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || (concatenatesSegments ? `按顺序拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'}第${start}秒到第${end}秒`)); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isCompress) {
         kind = 'media'; label = compressMode === 'remux' ? '转码为 MP4' : `压缩到 ${Number(runtimeTask.spec?.targetMb) || 25}MB`

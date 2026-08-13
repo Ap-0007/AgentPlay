@@ -18,7 +18,8 @@ type TrimInput = {
   sourcePath: string
   startSeconds: number
   endSeconds: number
-  operation?: 'trim' | 'remove'
+  operation?: 'trim' | 'remove' | 'concat'
+  segments?: Array<{ startSeconds: number; endSeconds: number }>
 }
 
 type MediaCreativeTaskOptions = {
@@ -224,31 +225,33 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     if (!sourcePath || /^(https?|blob):/i.test(sourcePath) || !window.aiPlayer?.mediaTools?.planEdit) return false
     let startSeconds = override?.startSeconds || 0
     let endSeconds = override?.endSeconds || 0
-    let removesSegment = override?.operation === 'remove'
+    let operation: 'trim' | 'remove' | 'concat' = override?.operation || 'trim'
+    let segments = override?.segments || []
     if (!override) {
       try {
         const plan = await window.aiPlayer.mediaTools.planEdit({ instruction: text, sourcePath })
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment'].includes(decision.kind)) return false
-        removesSegment = decision.kind === 'media.remove-segment'
-        startSeconds = Number(decision.timeline.startSeconds)
-        endSeconds = Number(decision.timeline.endSeconds)
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments'].includes(decision.kind)) return false
+        operation = decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim'
+        startSeconds = Number(decision.timeline.startSeconds || decision.timeline.segments?.[0]?.sourceStartSeconds || 0)
+        endSeconds = Number(decision.timeline.endSeconds || decision.timeline.segments?.at(-1)?.sourceEndSeconds || 0)
+        segments = (decision.timeline.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
       } catch {
         return false
       }
     }
     if (busyRef.current) return true
-    const input: TrimInput = { instruction: text, sourcePath, startSeconds, endSeconds, operation: removesSegment ? 'remove' : 'trim' }
+    const input: TrimInput = { instruction: text, sourcePath, startSeconds, endSeconds, operation, segments }
     trimInputRef.current = input
     busyRef.current = true
     if (!override) {
       addMessage('user', text)
       setInputText('')
     }
-    const actionLabel = removesSegment ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
+    const actionLabel = operation === 'concat' ? `按顺序拼接 ${segments.length} 个片段` : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
       kind: 'media', label: actionLabel, phase: 'running',
-      status: removesSegment ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: text, source: sourcePath,
+      status: operation === 'concat' ? '正在按口述顺序重排片段、拼接连续音画并核验成品…' : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: text, source: sourcePath,
       retry: { kind: 'trim', instruction: text, sourcePath }
     })
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -367,7 +370,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
 
   useEffect(() => {
     const onAgentMediaTask = (event: Event) => {
-      const detail = (event as CustomEvent<{ action?: string; value?: { targetMb?: number; mode?: 'compress' | 'remux'; startSeconds?: number; endSeconds?: number; direction?: 'undo' | 'redo' } }>).detail || {}
+      const detail = (event as CustomEvent<{ action?: string; value?: { targetMb?: number; mode?: 'compress' | 'remux'; startSeconds?: number; endSeconds?: number; segments?: Array<{ startSeconds: number; endSeconds: number }>; direction?: 'undo' | 'redo' } }>).detail || {}
       if (detail.action === 'start_batch_transcribe') {
         void runBatchTask('全部转写')
         return
@@ -388,6 +391,11 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         const startSeconds = Math.max(0, Number(detail.value?.startSeconds) || 0)
         const endSeconds = Math.max(0, Number(detail.value?.endSeconds) || 0)
         void runTrimTask(`删除第${startSeconds}秒到第${endSeconds}秒`)
+        return
+      }
+      if (detail.action === 'start_concat_video_segments') {
+        const segments = (detail.value?.segments || []).filter((segment) => Number.isFinite(segment.startSeconds) && Number.isFinite(segment.endSeconds) && segment.startSeconds >= 0 && segment.endSeconds > segment.startSeconds)
+        if (segments.length >= 2) void runTrimTask(`按顺序拼接${segments.map((segment) => `第${segment.startSeconds}秒到第${segment.endSeconds}秒`).join('和')}`)
         return
       }
       if (detail.action === 'start_edit_history') {
@@ -438,14 +446,16 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       const planAndRetry = async () => {
         const plan = await window.aiPlayer?.mediaTools?.planEdit({ instruction: retry.instruction || '', sourcePath: retry.sourcePath || '' })
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment'].includes(decision.kind)) {
-          addMessage('agent', '[错误] 原剪辑指令已无法还原成唯一时间线，请从原视频重新说明要保留或删除的时间段。')
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments'].includes(decision.kind)) {
+          addMessage('agent', '[错误] 原剪辑指令已无法还原成唯一时间线，请从原视频重新说明要保留、删除或按顺序拼接的时间段。')
           return
         }
         void runTrimTask(retry.instruction || '', {
           instruction: retry.instruction || '', sourcePath: retry.sourcePath || '',
-          startSeconds: decision.timeline.startSeconds, endSeconds: decision.timeline.endSeconds,
-          operation: decision.kind === 'media.remove-segment' ? 'remove' : 'trim'
+          startSeconds: Number(decision.timeline.startSeconds || decision.timeline.segments?.[0]?.sourceStartSeconds || 0),
+          endSeconds: Number(decision.timeline.endSeconds || decision.timeline.segments?.at(-1)?.sourceEndSeconds || 0),
+          operation: decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim',
+          segments: (decision.timeline.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
         })
       }
       void planAndRetry()
