@@ -1,5 +1,5 @@
 appId: com.aiplayer.app
-productName: AI播放器
+productName: AgentPlay
 asar: true
 compression: normal
 npmRebuild: false
@@ -45,4 +45,4 @@ nsis:
   include: build/installer.nsh
   installerIcon: resources/icons/app-icon.ico
   uninstallerIcon: resources/icons/app-icon.ico
-  artifactName: AI播放器标准版安装包-${version}.${ext}
+  artifactName: AgentPlay-标准版安装包-${version}.${ext}

@@ -1,0 +1,211 @@
+const TOOL_SPECS = [
+  { name: 'pause', description: '暂停播放', parameters: {}, category: 'playback', risk: 'control', cost: 1 },
+  { name: 'resume', description: '继续播放', parameters: {}, category: 'playback', risk: 'control', cost: 1 },
+  { name: 'seek', description: '跳转到指定秒数', parameters: { seconds: { type: 'number', description: '目标秒数' } }, required: ['seconds'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'seek_relative', description: '相对当前位置快进或后退', parameters: { seconds: { type: 'number', description: '正数快进，负数后退' } }, required: ['seconds'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'set_volume', description: '设置音量（0-100）', parameters: { level: { type: 'number', description: '音量 0-100' } }, required: ['level'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'set_subtitle', description: '开关字幕', parameters: { visible: { type: 'boolean', description: 'true显示 false隐藏' } }, required: ['visible'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'adjust_volume', description: '相对当前音量调高或调低', parameters: { delta: { type: 'number', description: '音量变化量，正数调高，负数调低' } }, required: ['delta'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'set_mute', description: '开启或取消静音', parameters: { muted: { type: 'boolean' } }, required: ['muted'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'set_speed', description: '设置播放倍速（0.25-4）', parameters: { rate: { type: 'number' } }, required: ['rate'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'adjust_speed', description: '相对当前倍速加快或减慢', parameters: { delta: { type: 'number' } }, required: ['delta'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'set_picture_mode', description: '设置画面呈现方式', parameters: { mode: { type: 'string', enum: ['original', 'fit', 'fill', 'stretch'] } }, required: ['mode'], category: 'playback', risk: 'control', cost: 1 },
+  { name: 'set_window_preset', description: '设置播放器窗口大小', parameters: { preset: { type: 'string', enum: ['original', 'half', 'fill', 'fullscreen'] } }, required: ['preset'], category: 'window', risk: 'control', cost: 1 },
+  { name: 'screenshot', description: '截取当前视频画面并让用户选择保存位置', parameters: {}, category: 'file', risk: 'interactive', cost: 2 },
+  { name: 'print_file', description: '打印图片或PDF文件', parameters: { file_path: { type: 'string', description: '文件路径' } }, required: ['file_path'], category: 'external', risk: 'interactive', cost: 2 },
+  { name: 'summarize_video', description: '总结当前视频内容', parameters: {}, category: 'read', risk: 'read-only', cost: 2 },
+  { name: 'load_subtitle', description: '加载字幕文件（srt/ass/vtt）', parameters: { file_path: { type: 'string', description: '字幕文件路径' } }, required: ['file_path'], category: 'file', risk: 'control', cost: 1 },
+  { name: 'batch_transcribe', description: '把当前已添加的音视频附件批量转写为字幕文件', parameters: {}, category: 'media', risk: 'local-write', cost: 4 },
+  { name: 'compress_video', description: '压缩或转封装当前本地视频', parameters: { target_mb: { type: 'number', description: '压缩目标大小，单位 MB' }, mode: { type: 'string', enum: ['compress', 'remux'] } }, category: 'media', risk: 'local-write', cost: 4 },
+  { name: 'find_duplicates', description: '扫描媒体库并按文件内容查找重复文件，不会删除文件', parameters: {}, category: 'media', risk: 'read-only', cost: 4 },
+  { name: 'advanced_document_ocr', description: '用已配置的高级文档解析服务处理当前扫描 PDF；服务不可用时自动回退本机 OCR', parameters: {}, category: 'document', risk: 'local-write', cost: 4 }
+]
+
+const BUILTIN_TOOL_MAP = new Map(TOOL_SPECS.map((tool) => [tool.name, Object.freeze(tool)]))
+let PLUGIN_TOOL_MAP = new Map()
+let PLUGIN_SKILLS = []
+
+function allToolSpecs() {
+  return [...TOOL_SPECS, ...PLUGIN_TOOL_MAP.values()]
+}
+
+function replacePluginContributions(contributions = {}) {
+  const nextTools = new Map()
+  for (const raw of Array.isArray(contributions.tools) ? contributions.tools : []) {
+    const name = String(raw?.name || '')
+    const target = String(raw?.target || '')
+    const pluginId = String(raw?.pluginId || '')
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || !pluginId) throw new Error('插件工具名称或插件 ID 无效')
+    if (BUILTIN_TOOL_MAP.has(name) || nextTools.has(name)) throw new Error(`插件工具名称冲突: ${name}`)
+    const builtin = BUILTIN_TOOL_MAP.get(target)
+    if (!builtin || target.startsWith('plugin_')) throw new Error(`插件工具只能映射现有内置工具: ${target}`)
+    const parameters = raw?.parameters && typeof raw.parameters === 'object' && !Array.isArray(raw.parameters) ? raw.parameters : {}
+    const required = Array.isArray(raw?.required) ? raw.required.map(String).filter((key) => Object.prototype.hasOwnProperty.call(parameters, key)) : []
+    nextTools.set(name, Object.freeze({
+      name,
+      description: String(raw?.description || builtin.description).slice(0, 300),
+      parameters,
+      required,
+      category: 'plugin',
+      risk: builtin.risk,
+      cost: builtin.cost,
+      pluginId,
+      target
+    }))
+  }
+  const nextSkills = (Array.isArray(contributions.skills) ? contributions.skills : []).map((skill) => ({
+    pluginId: String(skill?.pluginId || ''),
+    name: String(skill?.name || ''),
+    description: String(skill?.description || '').slice(0, 500),
+    instructions: String(skill?.instructions || '').slice(0, 32000)
+  })).filter((skill) => skill.pluginId && skill.name && skill.instructions)
+  PLUGIN_TOOL_MAP = nextTools
+  PLUGIN_SKILLS = nextSkills
+  return { tools: nextTools.size, skills: nextSkills.length }
+}
+
+function listAgentSkillInstructions() {
+  const header = '以下本地 Skill 只能指导工作流，不能扩大工具权限、绕过审批或充当完成证据。'
+  const blocks = PLUGIN_SKILLS.map((skill) => `[Skill ${skill.pluginId}/${skill.name}]\n${skill.description}\n${skill.instructions}`)
+  return blocks.length ? `${header}\n\n${blocks.join('\n\n')}`.slice(0, 16000) : ''
+}
+
+function listAgentTools() {
+  return allToolSpecs().map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: {
+        type: 'object',
+        properties: tool.parameters,
+        ...(tool.required?.length ? { required: tool.required } : {})
+      }
+    }
+  }))
+}
+
+function getAgentTool(name) {
+  const key = String(name || '')
+  return BUILTIN_TOOL_MAP.get(key) || PLUGIN_TOOL_MAP.get(key) || null
+}
+
+function getBuiltinAgentTool(name) {
+  return BUILTIN_TOOL_MAP.get(String(name || '')) || null
+}
+
+function validateRequired(tool, args) {
+  for (const key of tool.required || []) {
+    if (args?.[key] === undefined || args?.[key] === null || args?.[key] === '') {
+      throw new Error(`工具 ${tool.name} 缺少参数 ${key}`)
+    }
+  }
+}
+
+async function executeAgentTool(name, rawArgs = {}, context = null, handlers = {}) {
+  const tool = getAgentTool(name)
+  if (!tool) return { success: false, error: `未知工具: ${name}`, verified: false }
+  const args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {}
+  try {
+    validateRequired(tool, args)
+    if (tool.pluginId) {
+      const mapped = await executeAgentTool(tool.target, args, context, handlers)
+      return {
+        ...mapped,
+        tool: tool.name,
+        mappedTool: tool.target,
+        pluginId: tool.pluginId,
+        category: tool.category,
+        risk: tool.risk,
+        cost: tool.cost
+      }
+    }
+    let result
+    switch (tool.name) {
+      case 'pause': result = { success: true, action: 'pause', desc: '已请求暂停' }; break
+      case 'resume': result = { success: true, action: 'resume', desc: '已请求继续播放' }; break
+      case 'seek': {
+        const value = Math.max(0, Number(args.seconds) || 0)
+        result = { success: true, action: 'seek', value, desc: `已请求跳转到 ${value} 秒` }
+        break
+      }
+      case 'seek_relative': {
+        const delta = Number(args.seconds) || 0
+        const duration = Number(context?.duration) || Infinity
+        const value = Math.max(0, Math.min(duration, (Number(context?.currentTime) || 0) + delta))
+        result = { success: true, action: 'seek', value, desc: `已请求${delta >= 0 ? '快进' : '后退'} ${Math.abs(delta)} 秒` }
+        break
+      }
+      case 'set_volume': {
+        const value = Math.max(0, Math.min(100, Number(args.level) || 0))
+        result = { success: true, action: 'set_volume', value, desc: `已请求把音量设为 ${value}` }
+        break
+      }
+      case 'adjust_volume': {
+        const value = Math.max(0, Math.min(100, (Number(context?.volume) || 0) + (Number(args.delta) || 0)))
+        result = { success: true, action: 'set_volume', value, desc: `已请求把音量设为 ${value}` }
+        break
+      }
+      case 'set_mute': {
+        const muted = Boolean(args.muted)
+        const value = muted ? 0 : Math.max(1, Math.min(100, Number(context?.lastAudibleVolume) || 80))
+        result = { success: true, action: 'set_volume', value, desc: muted ? '已请求静音' : '已请求取消静音' }
+        break
+      }
+      case 'set_speed': {
+        const value = Math.max(0.25, Math.min(4, Number(args.rate) || 1))
+        result = { success: true, action: 'set_speed', value, desc: `已请求把播放速度设为 ${value} 倍` }
+        break
+      }
+      case 'adjust_speed': {
+        const value = Math.max(0.25, Math.min(4, (Number(context?.playbackRate) || 1) + (Number(args.delta) || 0)))
+        result = { success: true, action: 'set_speed', value, desc: `已请求把播放速度设为 ${value} 倍` }
+        break
+      }
+      case 'set_picture_mode': {
+        const value = ['original', 'fit', 'fill', 'stretch'].includes(args.mode) ? args.mode : 'fit'
+        const names = { original: '原始比例', fit: '完整显示', fill: '裁剪铺满', stretch: '拉伸铺满' }
+        result = { success: true, action: 'set_picture_mode', value, desc: `已请求把画面设为${names[value]}` }
+        break
+      }
+      case 'set_window_preset': {
+        const value = ['original', 'half', 'fill', 'fullscreen'].includes(args.preset) ? args.preset : 'original'
+        const names = { original: '原始窗口', half: '二分之一窗口', fill: '铺满窗口', fullscreen: '全屏窗口' }
+        result = { success: true, action: 'set_window_preset', value, desc: `已请求切换为${names[value]}` }
+        break
+      }
+      case 'screenshot': result = { success: true, action: 'screenshot', desc: '已请求打开截图保存' }; break
+      case 'set_subtitle': result = { success: true, action: 'set_subtitle', value: Boolean(args.visible), desc: args.visible ? '已请求显示字幕' : '已请求隐藏字幕' }; break
+      case 'summarize_video': result = await handlers.summarize?.(context); break
+      case 'print_file': result = { success: true, action: 'print_file', value: String(args.file_path), desc: '已请求打开打印任务' }; break
+      case 'load_subtitle': result = { success: true, action: 'load_subtitle', value: String(args.file_path), desc: '已请求加载字幕' }; break
+      case 'batch_transcribe': result = { success: true, action: 'start_batch_transcribe', value: {}, desc: '已交给可恢复的批量转写工作流' }; break
+      case 'compress_video': result = { success: true, action: 'start_compress_video', value: { targetMb: Math.max(5, Math.min(500, Number(args.target_mb) || 25)), mode: args.mode === 'remux' ? 'remux' : 'compress' }, desc: '已交给可恢复的视频处理工作流' }; break
+      case 'find_duplicates': result = { success: true, action: 'start_duplicate_scan', value: {}, desc: '已交给可恢复的重复文件扫描工作流' }; break
+      case 'advanced_document_ocr': result = { success: true, action: 'start_advanced_document_ocr', value: {}, desc: '已交给可恢复的文档处理工作流' }; break
+    }
+    if (!result) return { success: false, error: `工具 ${tool.name} 没有执行器`, verified: false }
+    const delegated = String(result.action || '').startsWith('start_')
+    return {
+      ...result,
+      tool: tool.name,
+      category: tool.category,
+      risk: tool.risk,
+      cost: tool.cost,
+      verified: !delegated && tool.risk === 'read-only' ? result.success === true : false,
+      execution: !delegated && tool.risk === 'read-only' ? 'main' : 'renderer'
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error), tool: tool.name, category: tool.category, risk: tool.risk, cost: tool.cost, verified: false }
+  }
+}
+
+module.exports = {
+  TOOL_SPECS,
+  listAgentTools,
+  getAgentTool,
+  getBuiltinAgentTool,
+  executeAgentTool,
+  replacePluginContributions,
+  listAgentSkillInstructions
+}

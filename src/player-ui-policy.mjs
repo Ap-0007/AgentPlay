@@ -4,8 +4,8 @@ export const PLAYER_CHROME_HIDE_DELAY_MS = 3000
 // 连续 mousemove；低于该位移不视为用户活动，避免控制栏被反复唤醒、菜单栏跟着显隐。
 export const PLAYER_MOUSE_WAKE_THRESHOLD_PX = 4
 
-export function shouldAutoHideControls({ hasMedia = true, playing, blocked = false }) {
-  return Boolean(hasMedia && playing && !blocked)
+export function shouldAutoHideControls({ hasMedia = true, playing, immersive = false, blocked = false }) {
+  return Boolean(hasMedia && playing && immersive && !blocked)
 }
 
 // 上次坐标与本次坐标位移是否达到“真实鼠标活动”标准（供单测与 PlayerView 共用）

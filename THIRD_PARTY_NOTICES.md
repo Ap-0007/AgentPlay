@@ -19,6 +19,7 @@
 | FFmpeg | 静态进入上述官方 mpv 构建，报告 `f853d12`；官方构建脚本明确设置 `ffmpeg:gpl=enabled` | GPL 构建；<https://github.com/mpv-player/mpv/blob/41f6a645068483470267271e1d09966ca3b9f413/ci/build-win32.ps1> |
 | llama.cpp | 本地 AI 服务，tag `b10063`，commit `7d56da7e...` | MIT；许可证副本位于 `resources/licenses/llama.cpp/` |
 | Qwen2.5-0.5B-Instruct-GGUF | 本地 AI 组件内置 Q4_0 模型（应用内下载） | Apache-2.0；许可证和模型卡位于 `resources/licenses/qwen2.5-0.5b/` |
+| Unlimited-OCR（可选外部服务） | AgentPlay 只提供 OpenAI-compatible 协议适配与配置入口；不捆绑其源码、容器或模型权重 | MIT；<https://github.com/baidu/Unlimited-OCR>；部署者需自行复核其运行依赖许可 |
 
 JavaScript 依赖的精确闭包由 `pnpm-lock.yaml` 记录。`resources/bundled-ai-manifest.json` 记录内置模型、运行时、来源和 SHA-256。
 

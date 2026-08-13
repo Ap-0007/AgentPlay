@@ -13,6 +13,28 @@ function safeText(value, max = 10000) {
   return String(value || '').replace(/\u0000/g, '').slice(0, max)
 }
 
+function abortableDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const abortError = () => signal?.reason instanceof Error && signal.reason.name !== 'AbortError'
+      ? signal.reason
+      : new Error('已取消')
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(abortError())
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function normalizeDataUrl(value) {
   const match = String(value || '').match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/)
   if (!match) return null
@@ -270,8 +292,14 @@ async function generateVideoAsset(config, input = {}) {
   const baseUrl = config.baseUrl || 'https://apihub.agnes-ai.com/v1'
   const root = baseUrl.replace(/\/v1\/?$/, '')
   const controller = new AbortController()
+  const onOuterAbort = () => controller.abort(input.signal?.reason || new Error('已取消'))
+  if (input.signal) {
+    if (input.signal.aborted) onOuterAbort()
+    else input.signal.addEventListener('abort', onOuterAbort, { once: true })
+  }
   const timeout = setTimeout(() => controller.abort(new Error('视频生成超时（20 分钟）')), 20 * 60 * 1000)
   try {
+    if (controller.signal.aborted) throw new Error('已取消')
     const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` }
     // Agnes 视频参数名是 width/height/num_frames/frame_rate（写成 size/fps 会 401"无效的令牌"）
     const [width, height] = String(input.size || '1280x720').toLowerCase().split('x').map((v) => Number(v) || 0)
@@ -280,33 +308,37 @@ async function generateVideoAsset(config, input = {}) {
       // 图生视频：必须纯 base64（带 data-URI 前缀会报 Incorrect padding）
       body.image = String(input.imageBase64).replace(/^data:image\/[a-z]+;base64,/i, '')
     }
-    let created = null
-    let createdText = ''
-    // 服务端单任务串行：队列满/Service busy/网络抖动都按忙时退避重试（safeFetch 对网络错误直接抛出）
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      try {
-        created = await safeFetch({ ...config, baseUrl }, `${baseUrl}/videos`, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
-        if (created.ok) break
-        createdText = await created.text()
-      } catch (error) {
-        createdText = error instanceof Error ? error.message : String(error)
+    let videoId = safeText(input.resumeVideoId, 300)
+    if (!videoId) {
+      let created = null
+      let createdText = ''
+      // 服务端单任务串行：队列满/Service busy/网络抖动都按忙时退避重试（safeFetch 对网络错误直接抛出）
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        try {
+          created = await safeFetch({ ...config, baseUrl }, `${baseUrl}/videos`, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+          if (created.ok) break
+          createdText = await created.text()
+        } catch (error) {
+          createdText = error instanceof Error ? error.message : String(error)
+        }
+        const busy = !created || created.status === 503 || /Service busy|queue full|queue_full|fetch failed|ECONNRESET|ETIMEDOUT|timeout/i.test(createdText)
+        if (!busy || controller.signal.aborted) break
+        await abortableDelay(45000, controller.signal)
       }
-      const busy = !created || created.status === 503 || /Service busy|queue full|queue_full|fetch failed|ECONNRESET|ETIMEDOUT|timeout/i.test(createdText)
-      if (!busy || controller.signal.aborted) break
-      await new Promise((resolve) => setTimeout(resolve, 45000))
+      if (!created || !created.ok) {
+        if (/rate limit/i.test(createdText)) throw new Error('Agnes 视频今日额度已打满（UTC 计日，北京 08:00 重置）；明天再试或减镜头数')
+        throw new Error(`视频生成请求返回 ${created ? created.status : '网络错误'}: ${createdText.slice(0, 500)}`)
+      }
+      const createdBody = await created.json()
+      videoId = String(createdBody.video_id || '')
+      // 铁律：创建响应必须存在 video_id，否则立即失败并保留原响应（拿 task_id 轮询必 404）
+      if (!videoId) throw new Error(`视频任务创建响应缺少 video_id：${JSON.stringify(createdBody).slice(0, 400)}`)
+      input.onCheckpoint?.({ stage: 'remote-created', videoId, numFrames })
     }
-    if (!created || !created.ok) {
-      if (/rate limit/i.test(createdText)) throw new Error('Agnes 视频今日额度已打满（UTC 计日，北京 08:00 重置）；明天再试或减镜头数')
-      throw new Error(`视频生成请求返回 ${created ? created.status : '网络错误'}: ${createdText.slice(0, 500)}`)
-    }
-    const createdBody = await created.json()
-    const videoId = String(createdBody.video_id || '')
-    // 铁律：创建响应必须存在 video_id，否则立即失败并保留原响应（拿 task_id 轮询必 404）
-    if (!videoId) throw new Error(`视频任务创建响应缺少 video_id：${JSON.stringify(createdBody).slice(0, 400)}`)
     const started = Date.now()
     let completed = null
     while (Date.now() - started < 19 * 60 * 1000) {
-      await new Promise((resolve) => setTimeout(resolve, 13000))
+      await abortableDelay(13000, controller.signal)
       // 轮询期网络抖动照常继续（长任务跑到十几分钟，断一次就全盘输太亏）
       const poll = await safeFetch({ ...config, baseUrl: root }, `${root}/agnesapi?video_id=${encodeURIComponent(videoId)}`, { headers, signal: controller.signal }).catch(() => null)
       if (!poll || !poll.ok) continue
@@ -334,6 +366,7 @@ async function generateVideoAsset(config, input = {}) {
     return { success: true, outputPath, bytes: bytes.length, videoId, numFrames }
   } finally {
     clearTimeout(timeout)
+    input.signal?.removeEventListener('abort', onOuterAbort)
   }
 }
 
@@ -528,6 +561,7 @@ async function renderCreativeVideo({ mpvPath, ffmpegPath, input, outputPath, onS
 }
 
 module.exports = {
+  abortableDelay,
   buildCreativePrompt,
   buildSubtitleAss,
   collectVisualEvidence,

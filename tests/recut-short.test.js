@@ -2,11 +2,12 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
 const analysis = fs.readFileSync(path.join(__dirname, '..', 'electron', 'analysis-chat-service.js'), 'utf8')
-const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+const panel = agentPanelSource()
 
 test('recut-short IPC: report to shots to clips to ffmpeg concat, all existing infra', () => {
   assert.match(main, /ipcMain\.handle\('studio:recut-short'/)
@@ -14,7 +15,8 @@ test('recut-short IPC: report to shots to clips to ffmpeg concat, all existing i
   assert.match(main, /你是短视频导演，只返回 JSON/)
   assert.match(main, /planJson\.shots/)
   // 逐镜头走已封装的 generateVideoAsset
-  assert.match(main, /generateVideoAsset\(creativeConfig\(\),/)
+  assert.match(main, /generateVideoAsset\(config,/)
+  assert.match(main, /resumeVideoId:\s*clipJobs\[index\]\?\.videoId/)
   assert.match(main, /function creativeConfig\(\)/)
   assert.match(main, /stash\?\.chat/)
   // 拼接走 ffmpeg concat + 统一重编码
@@ -28,13 +30,13 @@ test('recut-short IPC: report to shots to clips to ffmpeg concat, all existing i
 })
 
 test('analysis returns excerpt for downstream recut', () => {
-  assert.match(analysis, /excerpt: String\(aiText \|\| ''\)\.slice\(0, 2000\)/)
+  assert.match(analysis, /excerpt: String\(aiText \|\| offlineDraft\)\.slice\(0, 2000\)/)
 })
 
 test('agent panel offers recut after successful analysis, auto-plays result', () => {
   assert.match(panel, /recutOffer/)
   assert.match(panel, /生成重构短片（3 个 AI 镜头拼接）/)
-  assert.match(panel, /setRecutOffer\(\{ reportText: result\.excerpt/)
+  assert.match(panel, /(?:setRecutOffer|offerRecut)\(\{ reportText: result\.excerpt/)
   assert.match(panel, /studio\?\.recutShort/)
   assert.match(panel, /onRecutProgress/)
   assert.match(panel, /ai-player-play-file'.*detail: result\.outputPath/)

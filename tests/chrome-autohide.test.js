@@ -15,27 +15,29 @@ test('mouse wake threshold ignores sub-pixel/optical jitter but honours real mov
   assert.equal(isRealMouseActivity({ x: 100, y: 100 }, { x: 103, y: 103 }, 4), false) // 单轴均未超阈
 })
 
-test('auto hide policy unchanged: only while playing and unblocked', async () => {
+test('auto hide is limited to immersive playback so normal workspace controls remain available', async () => {
   const { PLAYER_CHROME_HIDE_DELAY_MS, PLAYER_MOUSE_WAKE_THRESHOLD_PX, shouldAutoHideControls } = await policyPromise
   assert.equal(PLAYER_CHROME_HIDE_DELAY_MS, 3000)
   assert.ok(PLAYER_MOUSE_WAKE_THRESHOLD_PX >= 3 && PLAYER_MOUSE_WAKE_THRESHOLD_PX <= 8)
-  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true }), true)
+  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, immersive: false }), false)
+  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, immersive: true }), true)
   assert.equal(shouldAutoHideControls({ hasMedia: true, playing: false }), false)
-  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, blocked: true }), false)
+  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, immersive: true, blocked: true }), false)
   assert.equal(shouldAutoHideControls({ hasMedia: false, playing: true }), false)
 })
 
 test('player view routes mousemove through the jitter threshold and closes subtitle panel after tasks', () => {
   const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
   assert.match(view, /onMouseMove=\{handleMouseMove\}/)
+  assert.match(view, /onPointerEnter=\{handleUserActivity\}/)
   assert.match(view, /isRealMouseActivity\(last, next\)/)
   assert.doesNotMatch(view, /onMouseMove=\{handleUserActivity\}/)
   // 离开控件区域只重新武装隐藏计时、不强制显示，否则隐藏瞬间 pointerleave 会再显示形成抖动循环
   assert.match(view, /onInteractionEnd={scheduleAutoHide}/)
   assert.match(view, /onPointerLeave={scheduleAutoHide}/)
   assert.doesNotMatch(view, /onPointerLeave={handleUserActivity}/)
-  // 菜单栏只随有无媒体切换，不随控制栏显隐：显隐改变客户区高度会把按钮挪到静止光标下形成循环
-  assert.match(view, /setPlaybackChromeVisible\(!isMedia\)/)
+  // AI-native 工作区默认隐藏旧菜单栏；功能保留在 Alt、快捷键和右键，不再占据固定一行
+  assert.match(view, /setPlaybackChromeVisible\(false\)/)
   assert.doesNotMatch(view, /setPlaybackChromeVisible\(controlsVisible/)
   // 点击控制控件后必须立即归还焦点，否则隐藏计时到点看到焦点在控制区会永久放弃隐藏
   assert.match(view, /onClickCapture=\{releaseChromeFocus\}/)

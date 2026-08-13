@@ -1,0 +1,33 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
+
+test('main process, preload and model center expose explainable model evaluation routing', () => {
+  const main = read('electron/main.js')
+  const preload = read('electron/preload.js')
+  const types = read('src/types/global.d.ts')
+  const ui = read('src/components/ModelCenter.tsx')
+  assert.match(main, /new ModelPerformanceRouter/)
+  assert.match(main, /models:routing-status/)
+  assert.match(main, /models:routing-settings/)
+  assert.match(preload, /routingStatus/)
+  assert.match(preload, /routingSettings/)
+  assert.match(types, /ModelRoutingStatus/)
+  assert.match(ui, /智能选择（推荐）/)
+  assert.match(ui, /只在本机/)
+  assert.match(ui, /优先效果/)
+  assert.match(ui, /使用云端或产生费用时仍按任务确认/)
+})
+
+test('model calls record real latency and usage while persistent quality feeds the same ledger', () => {
+  const main = read('electron/main.js')
+  const runtime = read('electron/persistent-task-runtime.js')
+  const engine = read('electron/llm-service.js')
+  assert.match(main, /modelPerformanceRouter\.recordCall/)
+  assert.match(main, /modelPerformanceRouter\.select/)
+  assert.match(runtime, /onQuality/)
+  assert.match(engine, /usage:/)
+})

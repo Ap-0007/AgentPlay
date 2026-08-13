@@ -7,7 +7,7 @@ const path = require('path')
 const { PDFDocument, rgb } = require('pdf-lib')
 
 const root = path.resolve(__dirname, '..')
-const executable = process.argv[2] || path.join(root, 'release', 'win-unpacked', 'AI播放器.exe')
+const executable = process.argv[2] || path.join(root, 'release', 'win-unpacked', 'AgentPlay.exe')
 const port = 19355
 
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }

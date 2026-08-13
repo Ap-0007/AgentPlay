@@ -33,6 +33,85 @@ function buildBilingualSrt(entries, translations) {
   }).join('\n\n') + '\n'
 }
 
+function subtitleTextLanguage(entries) {
+  const value = (Array.isArray(entries) ? entries : [])
+    .slice(0, 30)
+    .map((entry) => String(entry?.text || ''))
+    .join(' ')
+  const cjk = (value.match(/[\u3400-\u9fff]/g) || []).length
+  const latin = (value.match(/[A-Za-z]/g) || []).length
+  if (cjk >= 8 && cjk >= latin / 3) return 'zh'
+  if (latin >= 20 && latin >= cjk * 3) return 'en'
+  return 'other'
+}
+
+function chooseOppositeTarget(entries) {
+  return subtitleTextLanguage(entries) === 'zh' ? '英文' : '中文'
+}
+
+function parseSrtTimestamp(value) {
+  const match = String(value || '').trim().match(/^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$/)
+  if (!match) return null
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / 1000
+}
+
+function splitCaptionLines(text, maxChars) {
+  const rest = Array.from(String(text || '').replace(/\s+/g, ' ').trim())
+  const lines = []
+  const naturalBreak = /[，。！？；：、,.!?;:]|\s/
+  while (rest.length) {
+    if (rest.length <= maxChars) {
+      const finalLine = rest.join('').trim()
+      if (finalLine) lines.push(finalLine)
+      break
+    }
+    const minimum = Math.max(1, Math.floor(maxChars * 0.4))
+    let cut = maxChars
+    for (let index = maxChars - 1; index >= minimum; index -= 1) {
+      if (naturalBreak.test(rest[index])) {
+        cut = index + 1
+        break
+      }
+    }
+    const line = rest.splice(0, cut).join('').trim()
+    if (line) lines.push(line)
+    while (rest[0] === ' ') rest.shift()
+  }
+  return lines
+}
+
+function buildTranslationOnlySrt(entries, translations, { targetLang = '中文', maxLines = 2 } = {}) {
+  const maxChars = /^英/.test(String(targetLang || '')) ? 42 : 16
+  const output = []
+  let outputIndex = 1
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const translated = String(translations?.get(entry.index) || '').trim()
+    if (!translated) continue
+    const lines = splitCaptionLines(translated, maxChars)
+    const cards = []
+    for (let index = 0; index < lines.length; index += maxLines) cards.push(lines.slice(index, index + maxLines))
+    if (!cards.length) continue
+    const startSeconds = parseSrtTimestamp(entry.start)
+    const endSeconds = parseSrtTimestamp(entry.end)
+    const validRange = Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds
+    const weights = cards.map((card) => Math.max(1, Array.from(card.join('')).length))
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+    let usedWeight = 0
+    for (let index = 0; index < cards.length; index += 1) {
+      const cueStart = index === 0 || !validRange
+        ? entry.start
+        : formatSrtTimestamp(startSeconds + ((endSeconds - startSeconds) * usedWeight) / totalWeight)
+      usedWeight += weights[index]
+      const cueEnd = index === cards.length - 1 || !validRange
+        ? entry.end
+        : formatSrtTimestamp(startSeconds + ((endSeconds - startSeconds) * usedWeight) / totalWeight)
+      output.push(`${outputIndex}\n${cueStart} --> ${cueEnd}\n${cards[index].join('\n')}`)
+      outputIndex += 1
+    }
+  }
+  return output.length ? `${output.join('\n\n')}\n` : ''
+}
+
 function parseTranslationsJson(text) {
   const raw = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
   let parsed
@@ -72,18 +151,38 @@ async function translateBatch(entries, complete, { targetLang = '中文', signal
   return translations
 }
 
-async function translateEntries(entries, complete, { batchSize = 20, targetLang = '中文', signal } = {}) {
+function subtitleAbortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason
+  const error = new Error('字幕翻译已停止')
+  error.name = 'AbortError'
+  return error
+}
+
+function throwIfSubtitleAborted(signal) {
+  if (signal?.aborted) throw subtitleAbortError(signal)
+}
+
+async function translateEntries(entries, complete, { batchSize = 20, targetLang = '中文', signal, onProgress } = {}) {
   const translations = new Map()
   let failed = 0
   for (let start = 0; start < entries.length; start += batchSize) {
+    throwIfSubtitleAborted(signal)
     const batch = entries.slice(start, start + batchSize)
     try {
       const map = await translateBatch(batch, complete, { targetLang, signal })
+      throwIfSubtitleAborted(signal)
       for (const [index, text] of map) translations.set(index, text)
       failed += batch.filter((entry) => !translations.has(entry.index)).length
-    } catch {
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') throw subtitleAbortError(signal)
       failed += batch.length
     }
+    await onProgress?.({
+      done: Math.min(start + batch.length, entries.length),
+      total: entries.length,
+      translated: translations.size,
+      failed
+    })
   }
   return { translations, failed }
 }
@@ -139,4 +238,4 @@ async function runLiveTranslation({ cues, complete, getPosition = () => 0, onBat
   return { translations, failed: failed.size, done: true, cancelled: false }
 }
 
-module.exports = { parseSrt, formatSrtEntries, buildBilingualSrt, parseTranslationsJson, translateEntries, translateBatch, formatSrtTimestamp, cuesToEntries, nextLiveBatch, runLiveTranslation }
+module.exports = { parseSrt, formatSrtEntries, buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, subtitleTextLanguage, parseTranslationsJson, translateEntries, translateBatch, formatSrtTimestamp, cuesToEntries, nextLiveBatch, runLiveTranslation }

@@ -10,12 +10,13 @@ const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'A
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const store = fs.readFileSync(path.join(__dirname, '..', 'src', 'stores', 'agentStore.ts'), 'utf8')
 
-test('task card lives in agent store and panel renders progress, retry and outputs', () => {
-  assert.match(store, /interface AgentTask/)
-  assert.match(store, /setTask: \(patch: Partial<AgentTask>\) => void/)
-  assert.match(panel, /task\.running/)
-  assert.match(panel, /task\.error/)
-  assert.match(panel, /重试/)
+test('task card is backed by a durable task ledger and renders progress, retry and outputs', () => {
+  assert.match(store, /type AgentTask = WorkspaceTask/)
+  assert.match(store, /name: 'agentplay-workspace-tasks'/)
+  assert.match(store, /restoreWorkspaceTasks\(stored\.tasks\)/)
+  assert.match(panel, /executionTask\.running/)
+  assert.match(panel, /executionTask\.error/)
+  assert.match(panel, /再次执行|重试/)
   assert.match(panel, /animate-pulse.*rounded-full bg-blue-400/)
 })
 
@@ -69,6 +70,8 @@ test('image understanding wires vision first with OCR fallback, and images attac
   const llm = fs.readFileSync(path.join(__dirname, '..', 'electron', 'llm-service.js'), 'utf8')
   assert.match(llm, /completeVision/)
   assert.match(llm, /image_url/)
-  assert.match(panel, /attachPaths/)
+  const incomingFiles = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'agent-panel', 'useIncomingFiles.ts'), 'utf8')
+  assert.match(panel, /useIncomingFiles/)
+  assert.match(incomingFiles, /attachPaths/)
   assert.match(panel, /handleDropFiles/)
 })

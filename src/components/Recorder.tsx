@@ -23,7 +23,7 @@ export default function Recorder({ trigger = 0, hidden = false }: Props) {
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = 'AI播放器-录制-' + Date.now() + '.webm'
+        a.download = 'AgentPlay-录制-' + Date.now() + '.webm'
         a.click()
         URL.revokeObjectURL(url)
         stream.getTracks().forEach((t) => t.stop())

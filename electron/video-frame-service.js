@@ -4,19 +4,26 @@ const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 
-const SCENE_THRESHOLD = 0.3
 const FRAME_WIDTH = 512
 const THUMB = 16
 const DEDUP_THRESHOLD = 2.0
-const MAX_FRAMES = 20
+const MAX_FRAMES = 24
 
 // 帧预算：短视密、长视稀，硬顶 MAX_FRAMES。
 // 注意图片是视觉请求的主要耗时来源：实测火山 Coding Plan 端点 30+ 张会拖到超时，20 以内稳妥。
 function frameBudget(durationSec) {
   const d = Number(durationSec) || 0
   if (d <= 30) return 12
-  if (d <= 60) return 16
+  if (d <= 60) return 18
   return MAX_FRAMES
+}
+
+// 短片需要捕捉 UI 卡片、景别硬切等细变化；长片降低敏感度，避免转场噪声淹没预算。
+function sceneThreshold(durationSec) {
+  const d = Number(durationSec) || 0
+  if (d <= 120) return 0.18
+  if (d <= 600) return 0.22
+  return 0.28
 }
 
 function formatTimestamp(sec) {
@@ -102,18 +109,37 @@ class VideoFrameService {
     })
   }
 
-  async probeDuration(sourcePath) {
+  async probeDuration(sourcePath, { signal } = {}) {
     if (!this.ffprobePath || !fs.existsSync(this.ffprobePath)) return 0
     try {
       const child = this.spawnImpl(this.ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', sourcePath], { windowsHide: true, shell: false })
       let out = ''
-      await new Promise((resolve) => {
+      await new Promise((resolve, reject) => {
+        let settled = false
+        const finish = (fn, value) => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', onAbort)
+          fn(value)
+        }
+        const onAbort = () => {
+          try { child.kill() } catch { /* 已退出 */ }
+          finish(reject, new Error('已取消'))
+        }
+        if (signal) {
+          if (signal.aborted) {
+            onAbort()
+            return
+          }
+          signal.addEventListener('abort', onAbort, { once: true })
+        }
         child.stdout?.on('data', (chunk) => { out += chunk.toString('utf8') })
-        child.once('error', resolve)
-        child.once('exit', resolve)
+        child.once('error', () => finish(resolve))
+        child.once('exit', () => finish(resolve))
       })
       return Number.parseFloat(out.trim()) || 0
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw error
       return 0
     }
   }
@@ -124,6 +150,7 @@ class VideoFrameService {
     if (!sourcePath || !fs.existsSync(sourcePath)) return []
     const duration = Number(durationSec) > 0 ? Number(durationSec) : await this.probeDuration(sourcePath)
     const cap = Math.min(Number(budget) > 0 ? Number(budget) : frameBudget(duration), MAX_FRAMES)
+    const threshold = sceneThreshold(duration)
 
     const readFiles = () => (fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((name) => name.endsWith('.jpg')).sort() : [])
     const loadThumbs = async (vf, count) => {
@@ -146,7 +173,7 @@ class VideoFrameService {
     try {
       const result = await this.run([
         '-hide_banner', '-nostdin', '-i', sourcePath,
-        '-vf', `select='gt(scene,${SCENE_THRESHOLD})',showinfo,scale=${FRAME_WIDTH}:-2,format=yuvj420p`,
+        '-vf', `select='gt(scene,${threshold})',showinfo,scale=${FRAME_WIDTH}:-2,format=yuvj420p`,
         '-fps_mode', 'vfr', '-frames:v', String(cap * 3), '-q:v', '4',
         path.join(outDir, 'f%04d.jpg')
       ], { signal })
@@ -156,7 +183,7 @@ class VideoFrameService {
     let files = readFiles()
     let thumbs = []
     if (files.length) {
-      try { thumbs = await loadThumbs(`select='gt(scene,${SCENE_THRESHOLD})',scale=${THUMB}:${THUMB},format=gray`, files.length) } catch { thumbs = [] }
+      try { thumbs = await loadThumbs(`select='gt(scene,${threshold})',scale=${THUMB}:${THUMB},format=gray`, files.length) } catch { thumbs = [] }
     }
     let keep = thumbs.length === files.length && files.length > 0 ? dedupeThumbs(thumbs) : files.map((_, i) => i)
 
@@ -200,6 +227,7 @@ module.exports = {
   VideoFrameService,
   frameBudget,
   formatTimestamp,
+  sceneThreshold,
   meanAbsDiff,
   dedupeThumbs,
   thinToBudget,

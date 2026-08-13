@@ -72,15 +72,17 @@ test('models:test for cli providers probes with a real short chat instead of net
 })
 
 
-test('cloud-protocol consumers all go through creativeConfig guard (cli falls back to stash cloud)', () => {
-  // 视觉/指路/问这帧/云语音统一走 creativeConfig（cli 时自动回退 stash 云端），不再裸用 resolved(chat)
-  assert.match(main, /llmCompleteVisionMulti = async[\s\S]{0,200}creativeConfig\(\)/)
-  assert.match(main, /requestScreenGuide\(creativeConfig\(\)/)
-  assert.match(main, /askAboutImage\(creativeConfig\(\)/)
-  assert.match(main, /synthesizeCloudVoice\(creativeConfig\(\)/)
-  assert.match(main, /describeImage = async[\s\S]{0,120}creativeConfig\(\)/)
-  // 对话本身保留 resolved(chat)——cli 分支要走订阅
-  assert.match(main, /llmComplete = async[\s\S]{0,200}resolved\('chat'\)/)
+test('cloud-protocol consumers keep an explicit approved config or go through the cloud guard', () => {
+  // 拉片视觉使用任务冻结的已审批 modelConfig；独立云能力先取受偏好约束的 config，再审批并传递同一对象。
+  assert.match(main, /llmCompleteVisionMulti = async[\s\S]{0,300}selectConfiguredModel\([\s\S]{0,160}modelConfig/)
+  assert.match(main, /guide:annotate[\s\S]{0,260}const config = cloudConfigForExplicitFeature\(\)[\s\S]{0,260}requestScreenGuide\(config,/)
+  assert.match(main, /guide:askFrame[\s\S]{0,360}const config = cloudConfigForExplicitFeature\(\)[\s\S]{0,800}askAboutImage\(config,/)
+  assert.match(main, /input\.engine !== 'cloud'[\s\S]{0,180}const config = cloudConfigForExplicitFeature\(\)[\s\S]{0,420}synthesizeCloudVoice\(config,/)
+  assert.match(main, /describeImage = async[\s\S]{0,220}localOnly \? null : cloudConfigForExplicitFeature\(\)/)
+  assert.match(main, /creativeTaskRoute[\s\S]{0,420}selectModelForTaskPlan\(\{ taskKind, requirements: \{ text: true, providerId: 'agnes' \}/)
+  // 对话走统一选择器；当前为本地时，智能模式不能静默越过云端边界。
+  assert.match(main, /llmComplete = async[\s\S]{0,200}selectConfiguredModel\(/)
+  assert.match(main, /effectiveCloudAllowed[\s\S]{0,240}preference === 'cloud' \|\| !isLocalModelConfig\(active\)/)
 })
 
 test('streaming chat() routes cli providers to subprocess, never to network stack', () => {

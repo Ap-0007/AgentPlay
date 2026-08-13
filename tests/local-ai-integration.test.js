@@ -101,7 +101,7 @@ test('model config schema v1 migrates to independent chat and computer-use roles
   try {
     const store = new ModelConfigStore(dir, createSafeStorage())
     assert.equal(store.resolved('chat').apiKey, 'chat-secret')
-    assert.equal(store.publicConfig('chat').schemaVersion, 2)
+    assert.equal(store.publicConfig('chat').schemaVersion, 3)
 
     store.save({
       role: 'computerUse',
@@ -111,7 +111,7 @@ test('model config schema v1 migrates to independent chat and computer-use roles
     })
 
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-    assert.equal(raw.schemaVersion, 2)
+    assert.equal(raw.schemaVersion, 3)
     assert.equal(raw.roles.chat.providerId, 'openai')
     assert.equal(raw.roles.computerUse.providerId, 'fara-local')
     assert.equal(store.resolved('chat').apiKey, 'chat-secret')

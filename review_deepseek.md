@@ -1,4 +1,4 @@
-# AI播放器 代码审核报告
+# AgentPlay 代码审核报告
 
 **审核对象**: git commit `75a843f` (MVP P0+V1 14 features)  
 **审核范围**: `electron/` 下全部 `.js` + `src/` 下全部 `.tsx/.ts`  

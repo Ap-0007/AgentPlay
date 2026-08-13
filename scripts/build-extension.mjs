@@ -66,22 +66,17 @@ const modelDir = modelSources.find((dir) => fs.existsSync(dir))
 if (!modelDir) throw new Error('找不到 OPUS-MT 模型（先运行应用下载离线翻译组件，或先构建 translate-pack）')
 copyRecursive(modelDir, path.join(outDir, 'models', 'Xenova', 'opus-mt-en-zh'))
 
-// 5. 图标（极简地球标，三种尺寸，PIL 现画）
+// 5. 图标（与桌面、Web、Android 共用 AgentPlay 飞鸽母版）
 const { execFileSync } = await import('node:child_process')
 fs.mkdirSync(path.join(outDir, 'icons'), { recursive: true })
 const pyCode = `
-from PIL import Image, ImageDraw
+from PIL import Image
 import sys
+source = Image.open(sys.argv[2]).convert('RGBA')
 for size in (16, 48, 128):
-    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([1, 1, size - 1, size - 1], fill=(37, 99, 235, 255))
-    w = max(1, size // 12)
-    d.arc([size // 5, size // 5, size - size // 5, size - size // 5], 200, 340, fill=(255, 255, 255, 255), width=w)
-    d.line([size // 2, size // 5, size // 2, size - size // 5], fill=(255, 255, 255, 255), width=w)
-    img.save(sys.argv[1] + f'/icons/{size}.png')
+    source.resize((size, size), Image.Resampling.LANCZOS).save(sys.argv[1] + f'/icons/{size}.png', optimize=True)
 `
-execFileSync('C:/Windows/py.exe', ['-3', '-X', 'utf8', '-c', pyCode, outDir])
+execFileSync('C:/Windows/py.exe', ['-3', '-X', 'utf8', '-c', pyCode, outDir, path.join(root, 'resources', 'icons', 'app-icon.png')])
 
 const totalBytes = (dir) => fs.readdirSync(dir, { recursive: true }).reduce((sum, f) => { try { return sum + fs.statSync(path.join(dir, f)).size } catch { return sum } }, 0)
 console.log(`OK extension/ 构建完成（${(totalBytes(outDir) / 1024 / 1024).toFixed(1)}MB，含模型与 wasm）`)

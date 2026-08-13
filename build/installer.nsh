@@ -1,11 +1,54 @@
 ; Keep the per-user "Open with" handler pointed at the executable installed by
-; this installer. We deliberately register as a supported viewer without
-; replacing the user's Windows default-video choices.
+; this installer. Applications\SupportedTypes alone is not sufficient on a
+; clean Windows 11 profile: Explorer also needs a real ProgID linked through
+; OpenWithProgids. We deliberately do not write the extension's default value,
+; so an existing Windows default-video choice is never replaced.
+!macro AgentPlayRegisterVideoExtension EXT
+  WriteRegStr HKCU "Software\Classes\${EXT}\OpenWithProgids" "AgentPlay.Video" ""
+  WriteRegStr HKCU "Software\AgentPlay\Capabilities\FileAssociations" "${EXT}" "AgentPlay.Video"
+!macroend
+
+!macro AgentPlayUnregisterVideoExtension EXT
+  DeleteRegValue HKCU "Software\Classes\${EXT}\OpenWithProgids" "AgentPlay.Video"
+!macroend
+
 !macro customInstall
+  ; One-time visible-brand migration. Internal appId/package/userData stay the
+  ; same, but the old executable, shortcut and Open-with entry must not remain.
+  Delete "$DESKTOP\AI播放器.lnk"
+  Delete "$SMPROGRAMS\AI播放器.lnk"
+  Delete "$INSTDIR\AI播放器.exe"
+  DeleteRegKey HKCU "Software\Classes\Applications\AI播放器.exe"
+
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}" "FriendlyAppName" "${PRODUCT_NAME}"
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\DefaultIcon" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\shell\open" "FriendlyAppName" "使用 ${PRODUCT_NAME} 播放"
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\shell\open\command" "" "$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\" $\"%1$\""
+
+  ; Modern per-user file association registration. This makes AgentPlay a valid
+  ; Open-with/default-app candidate even on a pristine Windows Sandbox image.
+  WriteRegStr HKCU "Software\Classes\AgentPlay.Video" "" "AgentPlay 视频"
+  WriteRegStr HKCU "Software\Classes\AgentPlay.Video" "FriendlyTypeName" "AgentPlay 视频"
+  WriteRegStr HKCU "Software\Classes\AgentPlay.Video\DefaultIcon" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"
+  WriteRegStr HKCU "Software\Classes\AgentPlay.Video\shell\open" "FriendlyAppName" "使用 ${PRODUCT_NAME} 播放"
+  WriteRegStr HKCU "Software\Classes\AgentPlay.Video\shell\open\command" "" "$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\" $\"%1$\""
+  WriteRegStr HKCU "Software\AgentPlay\Capabilities" "ApplicationName" "${PRODUCT_NAME}"
+  WriteRegStr HKCU "Software\AgentPlay\Capabilities" "ApplicationDescription" "本地优先的 AI 播放器与视频工作台"
+  WriteRegStr HKCU "Software\AgentPlay\Capabilities" "ApplicationIcon" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"
+  WriteRegStr HKCU "Software\RegisteredApplications" "${PRODUCT_NAME}" "Software\AgentPlay\Capabilities"
+
+  !insertmacro AgentPlayRegisterVideoExtension ".mp4"
+  !insertmacro AgentPlayRegisterVideoExtension ".mkv"
+  !insertmacro AgentPlayRegisterVideoExtension ".mov"
+  !insertmacro AgentPlayRegisterVideoExtension ".avi"
+  !insertmacro AgentPlayRegisterVideoExtension ".webm"
+  !insertmacro AgentPlayRegisterVideoExtension ".m4v"
+  !insertmacro AgentPlayRegisterVideoExtension ".wmv"
+  !insertmacro AgentPlayRegisterVideoExtension ".flv"
+  !insertmacro AgentPlayRegisterVideoExtension ".ts"
+  !insertmacro AgentPlayRegisterVideoExtension ".mpeg"
+  !insertmacro AgentPlayRegisterVideoExtension ".mpg"
+  !insertmacro AgentPlayRegisterVideoExtension ".3gp"
 
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\SupportedTypes" ".mp4" ""
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\SupportedTypes" ".mkv" ""
@@ -103,7 +146,25 @@
 !macroend
 
 !macro customUnInstall
+  Delete "$DESKTOP\AI播放器.lnk"
+  Delete "$SMPROGRAMS\AI播放器.lnk"
   DeleteRegKey HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}"
+  DeleteRegKey HKCU "Software\Classes\Applications\AI播放器.exe"
+  !insertmacro AgentPlayUnregisterVideoExtension ".mp4"
+  !insertmacro AgentPlayUnregisterVideoExtension ".mkv"
+  !insertmacro AgentPlayUnregisterVideoExtension ".mov"
+  !insertmacro AgentPlayUnregisterVideoExtension ".avi"
+  !insertmacro AgentPlayUnregisterVideoExtension ".webm"
+  !insertmacro AgentPlayUnregisterVideoExtension ".m4v"
+  !insertmacro AgentPlayUnregisterVideoExtension ".wmv"
+  !insertmacro AgentPlayUnregisterVideoExtension ".flv"
+  !insertmacro AgentPlayUnregisterVideoExtension ".ts"
+  !insertmacro AgentPlayUnregisterVideoExtension ".mpeg"
+  !insertmacro AgentPlayUnregisterVideoExtension ".mpg"
+  !insertmacro AgentPlayUnregisterVideoExtension ".3gp"
+  DeleteRegKey HKCU "Software\Classes\AgentPlay.Video"
+  DeleteRegValue HKCU "Software\RegisteredApplications" "${PRODUCT_NAME}"
+  DeleteRegKey HKCU "Software\AgentPlay\Capabilities"
   DeleteRegKey HKCU "Software\Classes\SystemFileAssociations\.txt\shell\AgentPlayDocuments"
   DeleteRegKey HKCU "Software\Classes\SystemFileAssociations\.md\shell\AgentPlayDocuments"
   DeleteRegKey HKCU "Software\Classes\SystemFileAssociations\.csv\shell\AgentPlayDocuments"

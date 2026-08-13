@@ -1,4 +1,4 @@
-# AI播放器 代码测试报告（DeepSeek V4 Pro）
+# AgentPlay 代码测试报告（DeepSeek V4 Pro）
 
 > 审查范围：`electron/*.js` (18文件) + `src/**/*.tsx` (14文件) + 配置文件  
 > 方法：逐文件阅读 + 逐逻辑验证 + 边界条件 + 安全漏洞 + 功能完整性  

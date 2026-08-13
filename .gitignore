@@ -1,9 +1,14 @@
 node_modules/
 dist/
 release/
+artifacts/
+release-*-preview*/
 *.log
 .DS_Store
 .vite
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
 resources/bin/
 resources/models/
 resources/ai-runtime/
@@ -25,3 +30,6 @@ scripts/_*
 
 # 浏览器扩展构建产物（177MB 含模型，源在 extension-src/）
 extension/
+
+# 本机项目实录只留在维护机，不进入公开仓库
+知识库档案-*.md

@@ -2,7 +2,7 @@
 const { spawn } = require('child_process')
 
 // 安装位统一为免管理员的 Local\Programs（ROADMAP 发布动作：清除 Program Files 旧位）
-const EXE = process.env.AIPLAYER_EXE || 'C:\\Users\\Administrator\\AppData\\Local\\Programs\\ai-player\\AI播放器.exe'
+const EXE = process.env.AIPLAYER_EXE || 'C:\\Users\\Administrator\\AppData\\Local\\Programs\\ai-player\\AgentPlay.exe'
 
 const MEDIA = 'D:\\Backup\\Documents\\My Videos\\AgentPlay 下载\\右键复验-test.mp4'
 const DOC = 'D:\\Backup\\Documents\\My Videos\\AgentPlay 下载\\右键复验-test.txt'

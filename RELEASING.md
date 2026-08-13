@@ -35,12 +35,17 @@ pnpm build:electron
 pnpm release:verify
 node scripts/smoke-packaged-ui.mjs
 node scripts/smoke-packaged-download.mjs
+node scripts/smoke-packaged-plugin-skill.mjs
 node scripts/verify-office-quality.cjs
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-office-com.ps1
 pnpm security:scan:packaged
 ```
 
 验收必须覆盖真实安装包或 `win-unpacked` 应用，不得只测开发服务器。下载功能至少验证一个无需登录的真实公开链接；Facebook 等需要登录态的平台必须使用维护者自己的有效 Cookies，证据中不得包含 Cookies 本身。
+
+正式公开前还必须在另一台 Windows 11 x64 电脑、Windows Sandbox 或全新本地用户中完成一次首次安装 → 首次启动 → 打开真实视频 → 卸载验收。使用临时 `--user-data-dir` 只能提前检查空白配置启动，不能替代安装器、快捷方式、注册表和卸载器的全新环境证据。
+
+0.8.0 当前候选已在两个独立 Windows Sandbox 实例中完成上述闭环。首轮发现 MP4 双击报“没有注册类”，修复为 ProgID + OpenWithProgids + Capabilities 后，第二轮已验证系统选择器显示 AgentPlay、参数启动后播放成功，卸载后候选项、快捷方式和安装目录均被清理。该证据只适用于当前哈希对应的安装包，重打包后必须重跑。
 
 ## 4. Release 资产
 
@@ -54,6 +59,17 @@ GitHub Release 只上传 ASCII 文件名，至少包含：
 - GitHub 自动生成的 Source code 归档
 
 校验 JSON 只能包含仓库相对路径或公开资产名，不能泄露维护者绝对路径。SPDX SBOM 应从已合并的默认分支通过 GitHub Dependency Graph SBOM API 获取，确保对应最终提交。
+
+### 4.1 数字签名与开源项目申请硬门
+
+本地候选、内部测试包和 Draft Release 可以在明确标注 `NotSigned` 的前提下继续验收；面向普通用户宣布“稳定公开版”前，必须同时满足：
+
+1. SignPath Foundation（或等价的可信开源代码签名计划）正式批准项目，而不是只有提交记录、试用组织或待审核状态；
+2. 候选安装包和安装后的主程序均带有效 Authenticode 签名，签名状态、证书主题、时间戳和 SHA-256 写入本轮验证证据；
+3. 从公开 Release 匿名下载后再次验证签名链和哈希，结果与本地候选一致；
+4. 若申请曾因公开采用证据不足被拒，先补齐可核验的 stars、forks、外部贡献者、独立文章或社区讨论证据，再重新申请，禁止把重复提交申请当作完成。
+
+未获批或未签名时只能发布为明确提示风险的预览/测试资产，不得宣称已解决 SmartScreen、可信发布或 winget 分发。
 
 ## 5. 合并、标签与发布
 
@@ -73,6 +89,8 @@ GitHub Release 只上传 ASCII 文件名，至少包含：
 - 安装包哈希、字节数、校验 JSON 或远端资产不一致；
 - 打包安全扫描发现密钥、凭据、个人路径或未授权内容；
 - “仅下载”或“下载并拉片”任一入口退化；
+- 第三方插件可执行任意代码、可映射非内置工具、未确认权限即启用，或打包应用中的默认禁用/撤销授权验收失败；
 - X 公开下载未通过，或 Facebook 在缺少有效登录态时伪报成功；
 - Office 输出无法被真实 Word、Excel、PowerPoint 打开，或遗留本轮新建进程；
 - 发布说明把未验证平台、未签名状态或不可复现构建写成已完成。
+- 稳定公开版候选未通过 SignPath/等价开源签名计划审批，或安装包、安装后 EXE、公开下载回读任一处 Authenticode 无效。

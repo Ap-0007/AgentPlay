@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { usePlayerStore } from '../stores/playerStore'
 import { useAgentStore } from '../stores/agentStore'
 import { useThemeStore, THEMES } from '../stores/themeStore'
+import UiIcon, { type UiIconName } from './UiIcon'
 
 interface Props {
   pinned: boolean
@@ -12,23 +13,29 @@ interface Props {
   onOpenSmartCast: () => void
 }
 
-// 左栏：功能按钮组（上）+ 播放记录（下）+ 主题切换与钉住（底）
-export default function Sidebar({ pinned, onTogglePin, onOpenModelCenter, onOpenOnlineMedia, onOpenSmartCast }: Props) {
+export default function Sidebar({ pinned, onTogglePin, onOpenLibrary, onOpenModelCenter, onOpenOnlineMedia, onOpenSmartCast }: Props) {
   const recentMedia = usePlayerStore((state) => state.recentMedia)
+  const tasks = useAgentStore((state) => state.tasks)
+  const selectTask = useAgentStore((state) => state.selectTask)
   const theme = useThemeStore((state) => state.theme)
   const setTheme = useThemeStore((state) => state.setTheme)
-  const [themeMenuOpen, setThemeMenuOpen] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [recentOpen, setRecentOpen] = useState(false)
 
-  // 一个「打开」：先问文件还是文件夹（Windows 组合对话框看不到文件，必须两段式）
+  const closePanels = () => {
+    setDrawerOpen(false)
+    setRecentOpen(false)
+  }
+
   const handleOpen = () => {
+    closePanels()
     window.dispatchEvent(new CustomEvent('ai-player-ask-open-mode'))
   }
 
-  // 拉片进对话流：粘贴链接即发全管道；本地视频打开后说「深度解剖」
   const openAnalysisChat = () => {
+    closePanels()
     const store = useAgentStore.getState()
     store.openPanel()
-    // 每次都给可见反馈：空对话给完整引导，有历史给短提示（此前只在空对话才给提示，点按钮像死了）
     if (store.messages.length === 0) {
       store.addMessage('agent', '把 B站/YouTube/抖音等视频链接粘贴发给我，就自动下载并开始拉片；也可以先用「打开」选一个本地视频，然后对我说“深度解剖这个视频”。')
     } else {
@@ -36,86 +43,106 @@ export default function Sidebar({ pinned, onTogglePin, onOpenModelCenter, onOpen
     }
   }
 
-  // 统一行高与图标规格：主入口只用渐变区分层级，不做体积差异
-  const actionButton = (icon: string, label: string, onClick: () => void, primary = false) => (
-    <button
-      key={label}
-      onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${
-        primary ? 'bg-player-accent text-white hover:opacity-90' : 'text-gray-400 hover:bg-white/5 hover:text-gray-100'
-      }`}
-    >
-      <span className="w-5 text-center text-sm leading-none">{icon}</span>
-      <span className="truncate">{label}</span>
+  const run = (action: () => void) => {
+    closePanels()
+    action()
+  }
+
+  const capabilities: Array<{ icon: UiIconName; label: string; description: string; action: () => void; accent?: boolean }> = [
+    { icon: 'open', label: '打开', description: '文件、文件夹或媒体', action: handleOpen, accent: true },
+    { icon: 'analysis', label: '拉片', description: '下载并深度剖析视频', action: openAnalysisChat },
+    { icon: 'cast', label: '投屏', description: '电视与 AgentPlay 设备', action: () => run(onOpenSmartCast) },
+    { icon: 'file', label: '本地媒体', description: '最近文件与文件夹', action: () => run(onOpenLibrary) },
+    { icon: 'globe', label: '在线媒体库', description: '合法公版媒体内容', action: () => run(onOpenOnlineMedia) },
+    { icon: 'model', label: '模型接入中心', description: '云端、本地与组件下载', action: () => run(onOpenModelCenter) }
+  ]
+
+  const railButton = (name: UiIconName, label: string, onClick: () => void, active = false) => (
+    <button type="button" aria-label={label} title={label} onClick={onClick} className={'workspace-rail-button' + (active ? ' workspace-rail-button-active' : '')}>
+      <UiIcon name={name} size={19} />
     </button>
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="px-3 pb-2 pt-4">
-        <p className="px-1 pb-2 text-[11px] font-medium tracking-widest text-gray-600">AGENTPLAY</p>
-        <div className="space-y-1">
-          {actionButton('📂', '打开', () => void handleOpen(), true)}
-          {actionButton('🎬', '拉片', openAnalysisChat)}
-          {actionButton('📺', '投屏', onOpenSmartCast)}
-          {actionButton('🌐', '在线媒体库', onOpenOnlineMedia)}
-          {actionButton('🧩', '模型接入中心', onOpenModelCenter)}
-        </div>
+    <div className="workspace-rail">
+      <button type="button" className="workspace-brand-mark" title="AgentPlay 首页" aria-label="AgentPlay 首页" onClick={closePanels}>
+        <UiIcon name="agent" size={28} />
+      </button>
+
+      <nav className="workspace-rail-nav" aria-label="主要导航">
+        {railButton('home', '首页', () => {
+          closePanels()
+          useAgentStore.getState().openPanel()
+        }, !recentOpen && !drawerOpen)}
+        {railButton('history', '最近任务', () => {
+          setRecentOpen((value) => !value)
+          setDrawerOpen(false)
+        }, recentOpen)}
+      </nav>
+
+      <div className="workspace-rail-footer">
+        {railButton('grid', '全部能力', () => {
+          setDrawerOpen((value) => !value)
+          setRecentOpen(false)
+        }, drawerOpen)}
       </div>
 
-      <div className="mx-3 border-t border-white/10" />
-
-      <div className="flex min-h-0 flex-1 flex-col px-3 py-2">
-        <p className="px-1 pb-1.5 text-xs text-gray-500">播放记录</p>
-        <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
-          {recentMedia.length === 0 && <p className="px-1 text-xs text-gray-600">还没有播放过文件</p>}
-          {recentMedia.map((item) => (
-            <button
-              key={item.src}
-              onClick={() => usePlayerStore.getState().setMedia(item.name, item.src)}
-              title={item.src}
-              className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-white/5"
-            >
-              <p className="truncate text-xs text-gray-200">{item.name}</p>
-              <p className="text-[10px] text-gray-500">
-                {new Date(item.openedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-              </p>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="relative flex items-center gap-1 border-t border-white/10 px-3 py-2">
-        <button
-          onClick={() => setThemeMenuOpen((value) => !value)}
-          title="切换界面主题"
-          className="flex flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-gray-400 hover:bg-white/5 hover:text-white"
-        >
-          🎨 {THEMES.find((item) => item.id === theme)?.name || '主题'}
-        </button>
-        <button
-          onClick={onTogglePin}
-          title={pinned ? '取消钉住（播放时自动收起本栏）' : '钉住本栏（播放时不收起）'}
-          className={`rounded-lg px-2 py-1.5 text-sm ${pinned ? 'text-player-accent' : 'text-gray-500 hover:text-white'}`}
-        >
-          📌
-        </button>
-        {themeMenuOpen && (
-          <div className="absolute bottom-full left-3 right-3 z-50 mb-1 rounded-xl theme-panel p-1 shadow-2xl">
-            {THEMES.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => { setTheme(item.id); setThemeMenuOpen(false) }}
-                className={`block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-white/5 ${
-                  item.id === theme ? 'text-player-accent' : 'text-gray-300'
-                }`}
-              >
-                {item.name}
+      {recentOpen && (
+        <section className="workspace-flyout workspace-recent-flyout" aria-label="最近任务">
+          <div className="workspace-flyout-heading">
+            <div><p className="workspace-eyebrow">后台队列</p><h2>继续任务或打开结果</h2></div>
+            <button type="button" onClick={() => setRecentOpen(false)} aria-label="关闭最近任务"><UiIcon name="close" size={17} /></button>
+          </div>
+          <div className="workspace-recent-list">
+            {tasks.length === 0 && recentMedia.length === 0 && <div className="workspace-empty-note"><UiIcon name="history" size={20} /><span>还没有任务或播放记录</span></div>}
+            {tasks.slice(0, 10).map((task) => (
+              <button type="button" key={task.id} onClick={() => { selectTask(task.id); useAgentStore.getState().openPanel(); window.dispatchEvent(new CustomEvent('agentplay-open-task-center')); closePanels() }} title={task.source || task.instruction} className={'workspace-recent-item workspace-task-item workspace-task-item-' + task.phase}>
+                <span className="workspace-recent-icon"><UiIcon name={task.kind === 'analysis' || task.kind === 'link-analysis' ? 'analysis' : task.kind === 'download' || task.kind === 'media' ? 'video' : 'report'} size={16} /></span>
+                <span className="min-w-0 flex-1">
+                  <strong>{task.label}</strong>
+                  <small>{task.phase === 'completed' ? `已完成 · ${task.outputs.length} 个结果` : task.phase === 'running' ? task.status || '执行中' : task.phase === 'waiting' ? '等你确认' : task.phase === 'interrupted' ? '已中断，可重试' : task.error || '等待处理'}</small>
+                </span>
+              </button>
+            ))}
+            {recentMedia.length > 0 && <p className="workspace-recent-divider">最近打开</p>}
+            {recentMedia.slice(0, tasks.length > 0 ? 4 : 10).map((item) => (
+              <button type="button" key={item.src} onClick={() => { usePlayerStore.getState().setMedia(item.name, item.src); closePanels() }} title={item.src} className="workspace-recent-item">
+                <span className="workspace-recent-icon"><UiIcon name="video" size={16} /></span>
+                <span className="min-w-0 flex-1"><strong>{item.name}</strong><small>{new Date(item.openedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small></span>
               </button>
             ))}
           </div>
-        )}
-      </div>
+        </section>
+      )}
+
+      {drawerOpen && (
+        <section className="workspace-flyout workspace-capability-flyout" aria-label="全部能力">
+          <div className="workspace-flyout-heading">
+            <div><p className="workspace-eyebrow">全部能力</p><h2>需要时再打开</h2></div>
+            <button type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭全部能力"><UiIcon name="close" size={17} /></button>
+          </div>
+          <div className="workspace-capability-grid">
+            {capabilities.map((item) => (
+              <button type="button" key={item.label} onClick={item.action} className={'workspace-capability-card' + (item.accent ? ' workspace-capability-card-accent' : '')}>
+                <span><UiIcon name={item.icon} size={20} /></span>
+                <strong>{item.label}</strong>
+                <small>{item.description}</small>
+              </button>
+            ))}
+          </div>
+          <div className="workspace-backstage">
+            <div className="workspace-backstage-title">
+              <span><UiIcon name="palette" size={16} /> 界面气质</span>
+              <button type="button" onClick={onTogglePin} title={pinned ? '播放时自动隐藏入口栏' : '播放时保留入口栏'}>
+                <UiIcon name="pin" size={15} /> {pinned ? '已固定' : '播放时隐藏'}
+              </button>
+            </div>
+            <div className="workspace-theme-row">
+              {THEMES.map((item) => <button type="button" key={item.id} onClick={() => setTheme(item.id)} className={item.id === theme ? 'is-active' : ''}>{item.name}</button>)}
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

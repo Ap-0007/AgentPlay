@@ -12,6 +12,7 @@ const { editPptx, parsePptxEditInstruction } = require('./pptx-editor')
 const { pdfToDocxLayout } = require('./pdf-to-docx-service')
 const { convertImage, parseImageEditInstruction } = require('./image-convert-service')
 const { insertImageIntoDocx } = require('./docx-image')
+const { writeProfessionalVideoAnalysisDocx } = require('./video-analysis-report-service')
 const { redactDocument } = require('./redact-service')
 const { bilingualReflow } = require('./bilingual-reflow-service')
 const { recoverTableInto } = require('./table-recovery-service')
@@ -29,6 +30,57 @@ const AUDIO_EXTS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma']
 const OUTPUT_FORMATS = new Set(['txt', 'md', 'docx', 'xlsx', 'pptx', 'pdf'])
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024
 const MAX_PROMPT_CHARS = 70000
+const DEFAULT_CONTEXT_WINDOW = 32768
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096
+const PROMPT_TOKEN_OVERHEAD = 160
+
+// 中英文混排用保守字符估算；目标不是计费，而是在请求发出前保证不撞模型上下文硬上限。
+function estimatePromptTokens(value) {
+  const text = String(value || '')
+  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff]/g) || []).length
+  const other = text.length - cjk
+  return Math.ceil(cjk / 1.35 + other / 3.6) + PROMPT_TOKEN_OVERHEAD
+}
+
+function uniquePaths(filePaths) {
+  const seen = new Set()
+  return (Array.isArray(filePaths) ? filePaths : []).filter((filePath) => {
+    const key = path.resolve(filePath).replace(/\\/g, '/').toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function splitTextByBudget(text, maxTokens) {
+  const maxChars = Math.max(500, Math.floor((maxTokens - PROMPT_TOKEN_OVERHEAD) * 1.45))
+  const paragraphs = String(text || '').split(/\n\s*\n/).filter(Boolean)
+  const chunks = []
+  let current = ''
+  for (const paragraph of paragraphs) {
+    const pieces = paragraph.length > maxChars
+      ? Array.from({ length: Math.ceil(paragraph.length / maxChars) }, (_, index) => paragraph.slice(index * maxChars, (index + 1) * maxChars))
+      : [paragraph]
+    for (const piece of pieces) {
+      const next = current ? `${current}\n\n${piece}` : piece
+      if (current && estimatePromptTokens(next) > maxTokens) {
+        chunks.push(current)
+        current = piece
+      } else current = next
+    }
+  }
+  if (current) chunks.push(current)
+  return chunks
+}
+
+function contextLimitError(error, options = {}) {
+  const message = String(error?.message || error || '')
+  if (!/exceed(?:s|ed)?\s+(?:the\s+)?available context|exceed_context_size|context (?:size|window)|上下文.{0,8}(?:超过|超限)/i.test(message)) return error
+  const counts = [...message.matchAll(/(\d+)\s*tokens?/gi)].map((match) => Number(match[1]))
+  const requested = counts[0] || estimatePromptTokens(options.prompt || '')
+  const limit = counts[1] || Number(options.contextWindow) || 0
+  return new Error(`当前模型一次最多处理约 ${limit || '有限'} tokens，本次请求约 ${requested} tokens。AgentPlay 已尝试分段处理；如仍失败，请选择大上下文云模型后重试。`)
+}
 
 function cleanFileName(value) {
   return String(value || 'AgentPlay文档')
@@ -79,6 +131,9 @@ function classifyTask(files, instruction, preferredOutput = 'auto') {
   }
   if (files.length === 1 && ['.pdf', ...IMAGE_EXTS].includes(exts[0]) && /表格恢复|恢复表格|提取表格|识别表格|表格转|转成?(Excel|xlsx|电子表格)/i.test(text)) {
     return { kind: 'table-recovery', outputFormat: 'xlsx', requiresAi: false, summary: '扫描表格恢复为 XLSX' }
+  }
+  if (files.length === 1 && exts[0] === '.pdf' && /(?:高级文档解析|OCR).*(?:提取|识别)|(?:提取|识别).*(?:扫描|文字|文本).*(?:PDF|文档)|扫描.*(?:PDF|文档).*(?:文字|文本)/i.test(text)) {
+    return { kind: 'text-extract', outputFormat: /(?:Markdown|\.md\b)/i.test(text) ? 'md' : 'txt', requiresAi: false, summary: '扫描文档文字提取' }
   }
   if (files.length === 1 && ['.docx', '.pptx'].includes(exts[0]) && /提取图片|导出图片|把.*图片.*拿|抠图/.test(text)) {
     return { kind: 'extract-images', outputFormat: 'files', requiresAi: false, summary: '提取文档内嵌图片' }
@@ -160,7 +215,7 @@ function commitBuffer(finalPath, buffer) {
   fs.renameSync(tempPath, finalPath)
 }
 
-async function extractText(filePath, ocr = null) {
+async function extractText(filePath, ocr = null, ocrOptions = {}) {
   const ext = path.extname(filePath).toLowerCase()
   const stat = fs.statSync(filePath)
   if (!stat.isFile()) throw new Error('所选路径不是文件')
@@ -211,7 +266,7 @@ async function extractText(filePath, ocr = null) {
     }
     return chunks.join('\n\n').slice(0, MAX_PROMPT_CHARS)
   }
-  if (ext === '.pdf') return extractPdfText(filePath, ocr)
+  if (ext === '.pdf') return extractPdfText(filePath, ocr, ocrOptions)
   throw new Error(`${ext || '该格式'} 暂不支持提取正文`)
 }
 
@@ -225,7 +280,7 @@ async function pdfPageCount(filePath) {
   }
 }
 
-async function extractPdfText(filePath, ocr = null) {
+async function extractPdfText(filePath, ocr = null, ocrOptions = {}) {
   // 懒加载 unpdf（内嵌 PDF.js）：只在真正处理 PDF 时才载入，避免拖慢应用启动。
   const { getDocumentProxy, extractText: extractPdfPages } = require('unpdf')
   const data = new Uint8Array(fs.readFileSync(filePath))
@@ -249,9 +304,15 @@ async function extractPdfText(filePath, ocr = null) {
     const joined = chunks.join('\n\n').trim()
     if (!joined) {
       if (ocr && typeof ocr.recognizePdf === 'function') {
-        const ocrText = await ocr.recognizePdf(filePath).catch(() => null)
-        if (ocrText && ocrText.trim()) {
-          return `${ocrText.trim()}\n\n（本 PDF 为扫描件，以上文字由系统 OCR 提取，可能有识别误差）`.slice(0, MAX_PROMPT_CHARS)
+        const ocrResult = await ocr.recognizePdf(filePath, ocrOptions).catch(() => null)
+        const ocrText = typeof ocrResult === 'string' ? ocrResult : String(ocrResult?.text || '')
+        if (ocrText.trim()) {
+          const engineNote = ocrResult?.engine === 'unlimited-ocr'
+            ? '高级文档 OCR'
+            : ocrResult?.engine === 'fallback'
+              ? '本机轻量 OCR（高级服务不可用，已自动回退）'
+              : '系统 OCR'
+          return `${ocrText.trim()}\n\n（本 PDF 为扫描件，以上文字由${engineNote}提取，可能有识别误差）`.slice(0, MAX_PROMPT_CHARS)
         }
       }
       throw new Error('这份 PDF 没有可提取的文字层（扫描件或图片型 PDF）；当前系统 OCR 不可用或未识别出文字')
@@ -810,7 +871,7 @@ class DocumentWorkspaceService {
 
   inspect(filePaths) {
     let totalBytes = 0
-    const files = filePaths.map((filePath) => {
+    const files = uniquePaths(filePaths).map((filePath) => {
       const resolved = path.resolve(filePath)
       const stat = fs.statSync(resolved)
       const ext = path.extname(resolved).toLowerCase()
@@ -840,27 +901,78 @@ class DocumentWorkspaceService {
     return { ...classifyTask(files, normalizedInstruction, preferredOutput), files, instruction: normalizedInstruction }
   }
 
+  async preflight(filePaths, instruction, preferredOutput = 'auto', options = {}) {
+    const plan = this.plan(filePaths, instruction, preferredOutput)
+    const contextWindow = Math.max(1024, Number(options.contextWindow) || DEFAULT_CONTEXT_WINDOW)
+    const maxOutputTokens = Math.max(256, Math.min(Number(options.maxOutputTokens) || DEFAULT_MAX_OUTPUT_TOKENS, Math.floor(contextWindow * 0.35)))
+    if (!plan.requiresAi) return { estimatedTokens: 0, contextWindow, maxOutputTokens, exceedsSingleCall: false }
+    const sources = []
+    for (const file of plan.files) sources.push(`===== ${file.name} =====\n${await extractText(file.path, this.ocr)}`)
+    const estimatedTokens = estimatePromptTokens(`${plan.instruction}\n${sources.join('\n\n')}`) + maxOutputTokens
+    return { estimatedTokens, contextWindow, maxOutputTokens, exceedsSingleCall: estimatedTokens > contextWindow }
+  }
+
   async buildAiPlan(plan, options = {}) {
     const sourceChunks = []
     for (const file of plan.files) {
       sourceChunks.push(`\n===== ${file.name} =====\n${await extractText(file.path, this.ocr)}`)
     }
-    const prompt = [
+    const fixedParts = [
       `用户要求：${plan.instruction}`,
       `目标格式：${plan.outputFormat}`,
-      this.truncateAtParagraph(sourceChunks.join('\n')),
       '只返回一个 JSON 对象，不要使用 Markdown 代码块。结构：',
       '{"title":"文件标题","summary":"完成说明","outputFormat":"docx|xlsx|pptx|pdf|txt|md","content":"用于Word/PDF/文本的完整正文，使用#标题和-列表","slides":[{"title":"页标题","bullets":["要点"],"notes":"备注"}],"sheets":[{"name":"工作表名","rows":[["表头"],["数据"]]}]}',
       '事实必须来自源文件；资料不足时明确标注，不得编造。Excel公式必须以=开头，PPT每页最多8个要点。'
-    ].join('\n')
+    ]
+    const sourceText = this.truncateAtParagraph(sourceChunks.join('\n'))
+    const prompt = [fixedParts[0], fixedParts[1], sourceText, ...fixedParts.slice(2)].join('\n')
+    const contextWindow = Math.max(1024, Number(options.contextWindow) || DEFAULT_CONTEXT_WINDOW)
+    const maxOutputTokens = Math.max(256, Math.min(Number(options.maxOutputTokens) || DEFAULT_MAX_OUTPUT_TOKENS, Math.floor(contextWindow * 0.35)))
+    const systemPrompt = '你是 AgentPlay 文档规划器。你只生成严格、可执行、符合指定 JSON 结构的文档数据。'
     options.onStatus?.('正在生成内容')
-    const response = await this.complete({
-      systemPrompt: '你是 AgentPlay 文档规划器。你只生成严格、可执行、符合指定 JSON 结构的文档数据。',
-      prompt,
-      signal: options.signal,
-      timeoutMs: 180000
-    })
-    return normalizeAiPlan(parseJsonObject(response.text), plan.outputFormat)
+    try {
+      if (estimatePromptTokens(`${systemPrompt}\n${prompt}`) + maxOutputTokens <= contextWindow) {
+        const response = await this.complete({ systemPrompt, prompt, signal: options.signal, timeoutMs: 180000, maxTokens: maxOutputTokens, modelConfig: options.modelConfig })
+        return normalizeAiPlan(parseJsonObject(response.text), plan.outputFormat)
+      }
+
+      const sectionSystem = '你是 AgentPlay 长文档分段整理器。只依据当前分段保留事实、条款、数字、主体和结论；使用清晰标题与列表，不输出 JSON，不引入外部事实。'
+      const sectionPrefix = `用户要求：${plan.instruction}\n目标格式：${plan.outputFormat}\n当前仅处理以下一个分段：\n`
+      const sectionBudget = Math.max(420, contextWindow - maxOutputTokens - estimatePromptTokens(`${sectionSystem}\n${sectionPrefix}`) - 80)
+      const chunks = splitTextByBudget(sourceText, sectionBudget)
+      const sections = []
+      for (let index = 0; index < chunks.length; index++) {
+        options.onStatus?.(`正文较长，正在分段理解 ${index + 1}/${chunks.length}`)
+        const response = await this.complete({
+          systemPrompt: sectionSystem,
+          prompt: `${sectionPrefix}${chunks[index]}`,
+          signal: options.signal,
+          timeoutMs: 180000,
+          maxTokens: maxOutputTokens,
+          responseMode: 'section',
+          modelConfig: options.modelConfig
+        })
+        sections.push(`## 第 ${index + 1} 段整理\n${String(response.text || '').trim()}`)
+      }
+      const merged = sections.join('\n\n')
+      const finalPrompt = [fixedParts[0], fixedParts[1], merged, ...fixedParts.slice(2)].join('\n')
+      if (estimatePromptTokens(`${systemPrompt}\n${finalPrompt}`) + maxOutputTokens <= contextWindow) {
+        options.onStatus?.('正在合并分段结果')
+        const response = await this.complete({ systemPrompt, prompt: finalPrompt, signal: options.signal, timeoutMs: 180000, maxTokens: maxOutputTokens, modelConfig: options.modelConfig })
+        const result = normalizeAiPlan(parseJsonObject(response.text), plan.outputFormat)
+        result.summary = `${result.summary}（已完成 ${chunks.length} 个分段处理）`
+        return result
+      }
+      return normalizeAiPlan({
+        title: path.parse(plan.files[0]?.name || 'AgentPlay智能文档').name,
+        summary: `已按 ${chunks.length} 个分段完成整理`,
+        content: merged,
+        slides: plan.outputFormat === 'pptx' ? slidesFromText('分段整理结果', merged) : [],
+        sheets: plan.outputFormat === 'xlsx' ? sheetsFromText(merged) : []
+      }, plan.outputFormat)
+    } catch (error) {
+      throw contextLimitError(error, { prompt, contextWindow })
+    }
   }
 
   async buildBundlePlan(plan, options = {}) {
@@ -880,7 +992,8 @@ class DocumentWorkspaceService {
     const response = await this.complete({
       systemPrompt: '你是 AgentPlay 成套文档规划器。你只生成严格、可执行、符合指定 JSON 结构的内容。',
       prompt,
-      signal: options.signal
+      signal: options.signal,
+      modelConfig: options.modelConfig
     })
     return normalizeBundlePlan(parseJsonObject(response.text), plan.bundleFormats)
   }
@@ -915,7 +1028,8 @@ class DocumentWorkspaceService {
       systemPrompt: '你是 AgentPlay 文档规划器。你只生成严格、可执行、符合指定 JSON 结构的文档数据。',
       prompt,
       signal: options.signal,
-      timeoutMs: 180000
+      timeoutMs: 180000,
+      modelConfig: options.modelConfig
     })
     const raw = { title: plan.files[0]?.name || 'AgentPlay文档', [format]: parseJsonObject(response.text) }
     return normalizeBundlePlan(raw, [format]).sections[format]
@@ -951,7 +1065,8 @@ class DocumentWorkspaceService {
     const response = await this.complete({
       systemPrompt: '你是 Excel 公式规划器，只返回 JSON。公式使用英文函数名和逗号分隔参数。',
       prompt: `用户要求：${plan.instruction}\n表格样例：\n${sourceText.slice(0, 12000)}\n只返回 {"column":"G","header":"毛利率","formula":"=(D{row}-E{row})/D{row}"}。column也可以是现有表头名。无法确定时不要猜测，返回 {"error":"具体缺少什么"}。`,
-      signal: options.signal
+      signal: options.signal,
+      modelConfig: options.modelConfig
     })
     const parsed = parseJsonObject(response.text)
     if (parsed.error) throw new Error(String(parsed.error))
@@ -971,7 +1086,13 @@ class DocumentWorkspaceService {
     const sourceBase = path.parse(plan.files[0]?.name || result.title).name
     const baseName = `${cleanFileName(sourceBase)}-AgentPlay处理版`
     const finalPath = uniqueOutputPath(outputDir, baseName, result.outputFormat)
-    if (result.outputFormat === 'docx') await writeDocx(finalPath, result.title, result.content)
+    if (result.outputFormat === 'docx' && plan.kind === 'video-analysis') {
+      await writeProfessionalVideoAnalysisDocx(finalPath, {
+        title: result.title,
+        content: result.content,
+        frames: result.reportAssets?.frames || []
+      })
+    } else if (result.outputFormat === 'docx') await writeDocx(finalPath, result.title, result.content)
     else if (result.outputFormat === 'xlsx') await writeWorkbook(finalPath, result.sheets.length ? result.sheets : sheetsFromText(result.content))
     else if (result.outputFormat === 'pptx') await writePresentation(finalPath, result.title, result.slides.length ? result.slides : slidesFromText(result.title, result.content))
     else if (result.outputFormat === 'pdf') {
@@ -1048,6 +1169,15 @@ class DocumentWorkspaceService {
       options.onStatus?.('正在理解图片内容')
       const answer = await this.describeImage(plan.files[0].path, plan.instruction, options)
       result = { outputs: [], summary: answer, chatOnly: true }
+    } else if (plan.kind === 'text-extract') {
+      options.onStatus?.('正在识别扫描文档文字')
+      const content = await extractText(plan.files[0].path, this.ocr, {
+        signal: options.signal,
+        cloudApproved: options.cloudApproved === true
+      })
+      const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay文字提取`, plan.outputFormat)
+      commitBuffer(finalPath, Buffer.from(content, 'utf8'))
+      result = { outputs: [finalPath], summary: `已提取扫描文档文字并保存为 ${plan.outputFormat.toUpperCase()}` }
     } else if (plan.kind === 'docx-insert-image') {
       const finalPath = uniqueOutputPath(outputDir, `${path.parse(plan.files[0].name).name}-AgentPlay处理版`, 'docx')
       const inserted = await insertImageIntoDocx(plan.files[0].path, plan.files[1].path, finalPath, { anchor: plan.anchor })
@@ -1131,7 +1261,9 @@ class DocumentWorkspaceService {
     } else {
       result = await this.writeGenerated(plan, plan.requiresAi ? await this.buildAiPlan(plan, options) : null)
     }
+    options.onCheckpoint?.({ stage: 'outputs-written', result })
     const historyId = this.recordHistory(plan, result)
+    options.onCheckpoint?.({ stage: 'history-written', result: { ...result, historyId } })
     return { success: true, plan: { kind: plan.kind, requiresAi: plan.requiresAi, outputFormat: plan.outputFormat }, ...result, historyId }
   }
 }
@@ -1147,5 +1279,7 @@ module.exports = {
   parseExcelEnrichIntent,
   parseExplicitFormula,
   pdfPageCount,
-  validateFormula
+  validateFormula,
+  estimatePromptTokens,
+  splitTextByBudget
 }

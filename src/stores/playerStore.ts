@@ -10,6 +10,7 @@ interface PlayerState {
   // 影院模式：播放区占满整个窗口（左栏/中栏收起），双击或全屏按钮进出
   theater: boolean
   subtitleVisible: boolean
+  subtitlePosition: 'high' | 'middle' | 'low'
   mediaName: string | null
   videoSrc: string | null
   controlsVisible: boolean
@@ -27,6 +28,7 @@ interface PlayerState {
   setDuration: (d: number) => void
   toggleFullscreen: () => void
   toggleSubtitle: () => void
+  setSubtitlePosition: (v: PlayerState['subtitlePosition']) => void
   setMedia: (name: string, src: string) => void
   setTheater: (v: boolean) => void
   clearMedia: () => void
@@ -47,6 +49,7 @@ export const usePlayerStore = create<PlayerState>()(
       isFullscreen: false,
       theater: false,
       subtitleVisible: true,
+      subtitlePosition: 'low',
       mediaName: null,
       videoSrc: null,
       controlsVisible: true,
@@ -74,6 +77,7 @@ export const usePlayerStore = create<PlayerState>()(
       toggleFullscreen: () => set((s) => ({ isFullscreen: !s.isFullscreen })),
       setTheater: (v) => set({ theater: v }),
       toggleSubtitle: () => set((s) => ({ subtitleVisible: !s.subtitleVisible })),
+      setSubtitlePosition: (v) => set({ subtitlePosition: ['high', 'middle', 'low'].includes(v) ? v : 'low' }),
       setMedia: (name, src) => set((s) => ({
         mediaName: name,
         videoSrc: src,
@@ -105,9 +109,9 @@ export const usePlayerStore = create<PlayerState>()(
       partialize: (s) => ({
         volume: s.volume,
         subtitleVisible: s.subtitleVisible,
+        subtitlePosition: s.subtitlePosition,
         positions: s.positions,
         playbackRate: s.playbackRate,
-        pictureMode: s.pictureMode,
         lastAudibleVolume: s.lastAudibleVolume,
         recentMedia: s.recentMedia,
         favorites: s.favorites

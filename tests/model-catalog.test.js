@@ -3,20 +3,23 @@ const fs = require('node:fs')
 const os = require('os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
 const providers = fs.readFileSync(path.join(__dirname, '..', 'electron', 'model-providers.js'), 'utf8')
 const modelCenter = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'ModelCenter.tsx'), 'utf8')
-const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+const panel = agentPanelSource()
 const catalog = fs.readFileSync(path.join(__dirname, '..', 'electron', 'model-catalog.js'), 'utf8')
 
 const { ModelCatalog } = require('../electron/model-catalog.js')
 
-test('spark included in codex lineup; only cloud/bundled two modes remain', () => {
+test('spark remains in the catalog while daily model choice is centralized behind the three human modes', () => {
   assert.match(providers, /gpt-5\.3-codex-spark/)
-  assert.doesNotMatch(panel, /'cloud' \| 'cli' \| 'bundled'/)
-  assert.match(panel, /'cloud' \| 'bundled'/)
+  assert.match(panel, /ModelRoutingStatus/)
+  assert.match(panel, /更改 AI 使用方式/)
+  assert.doesNotMatch(panel, /modelMode/)
+  assert.doesNotMatch(panel, /switchModelMode/)
 })
 
 test('model catalog: weekly auto refresh, codex-cli cache source, endpoint source, graceful failure keeps old list', () => {

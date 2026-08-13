@@ -3,6 +3,7 @@ import PlayerControls from './PlayerControls'
 import { usePlayerStore } from '../stores/playerStore'
 import { useAgentStore } from '../stores/agentStore'
 import { PLAYER_CHROME_HIDE_DELAY_MS, isRealMouseActivity, shouldAutoHideControls } from '../player-ui-policy.mjs'
+import { subtitleCueSettings, subtitleLinePercent } from '../subtitle-display-policy.mjs'
 
 interface Props {
   onBack: () => void
@@ -12,7 +13,7 @@ const VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm', '.ts', '.m4
 const AUDIO_EXTS = ['.mp3', '.flac', '.wav', '.aac', '.m4a', '.ogg', '.wma']
 const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg', '.ico', '.tif', '.tiff']
 const TEXT_EXTS = ['.txt', '.md', '.json', '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.tsx', '.jsx', '.py', '.java', '.c', '.cpp', '.h', '.sh', '.yml', '.yaml', '.ini', '.conf', '.log', '.bat', '.ps1', '.sql', '.toml', '.env']
-const OFFICE_EXTS = ['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']
+const OFFICE_EXTS = ['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp', '.rtf']
 const SUBTITLE_EXTS = ['.srt', '.ass', '.ssa', '.vtt']
 
 function buildSecureOfficeDocument(html: string) {
@@ -32,9 +33,18 @@ function getFileType(name?: string | null): string {
   return 'other'
 }
 
-function subtitleToVtt(content: string, ext: string) {
-  if (ext === 'vtt') return content.startsWith('WEBVTT') ? content : `WEBVTT\n\n${content}`
-  if (ext === 'srt') return `WEBVTT\n\n${content.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')}`
+function applyVttPosition(content: string, position: 'high' | 'middle' | 'low') {
+  const settings = subtitleCueSettings(position)
+  return content.replace(/^(\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3})(?:\s+.*)?$/gm, `$1 ${settings}`)
+}
+
+function subtitleToVtt(content: string, ext: string, position: 'high' | 'middle' | 'low') {
+  const format = ext.trim().replace(/^\./, '').toLowerCase()
+  if (format === 'vtt') return applyVttPosition(content.startsWith('WEBVTT') ? content : `WEBVTT\n\n${content}`, position)
+  if (format === 'srt') {
+    const timestamps = content.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
+    return applyVttPosition(`WEBVTT\n\n${timestamps}`, position)
+  }
   const cues = content
     .split(/\r?\n/)
     .filter((line) => /^Dialogue:/i.test(line))
@@ -44,7 +54,7 @@ function subtitleToVtt(content: string, ext: string) {
       const start = parts[1].padStart(10, '0') + '0'
       const end = parts[2].padStart(10, '0') + '0'
       const text = parts.slice(9).join(',').replace(/\{[^}]*\}/g, '').replace(/\\N/g, '\n')
-      return `${index + 1}\n${start} --> ${end}\n${text}\n`
+      return `${index + 1}\n${start} --> ${end} ${subtitleCueSettings(position)}\n${text}\n`
     })
     .filter(Boolean)
   return `WEBVTT\n\n${cues.join('\n')}`
@@ -66,11 +76,17 @@ export default function PlayerView({ onBack }: Props) {
   const updateTime = usePlayerStore((s) => s.updateTime)
   const rememberPosition = usePlayerStore((s) => s.rememberPosition)
   const subtitleVisible = usePlayerStore((s) => s.subtitleVisible)
+  const subtitlePosition = usePlayerStore((s) => s.subtitlePosition)
   const playbackRate = usePlayerStore((s) => s.playbackRate)
   const pictureMode = usePlayerStore((s) => s.pictureMode)
+  const setPictureMode = usePlayerStore((s) => s.setPictureMode)
+  const isFullscreen = usePlayerStore((s) => s.isFullscreen)
+  const theater = usePlayerStore((s) => s.theater)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [officeHtml, setOfficeHtml] = useState<string | null>(null)
+  const [officeText, setOfficeText] = useState<string | null>(null)
   const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null)
+  const [subtitleTrackLang, setSubtitleTrackLang] = useState<'zh' | 'en'>('zh')
   const [textContent, setTextContent] = useState<string | null>(null)
   const [dataUrl, setDataUrl] = useState<string | null>(null)
   const [mpvEmbedded, setMpvEmbedded] = useState(false)
@@ -78,13 +94,20 @@ export default function PlayerView({ onBack }: Props) {
   const [playbackNotice, setPlaybackNotice] = useState('')
   const [subtitleResults, setSubtitleResults] = useState<Array<{ fileId: number; fileName: string; language: string; release: string }>>([])
   const [subtitleStatus, setSubtitleStatus] = useState('')
+  const [subtitleRecovery, setSubtitleRecovery] = useState<SubtitleRecovery | null>(null)
+  const [subtitleRecoveryBusy, setSubtitleRecoveryBusy] = useState(false)
+  const [subtitleRecoveryProgress, setSubtitleRecoveryProgress] = useState<LocalAiDownloadProgress | null>(null)
+  const [subtitleRecoveryError, setSubtitleRecoveryError] = useState('')
   const [bilingualBusy, setBilingualBusy] = useState(false)
+  const bilingualInFlightRef = useRef(false)
+  const bilingualSourceRef = useRef(videoSrc)
   const [subtitlePanelOpen, setSubtitlePanelOpen] = useState(false)
-  const [liveSub, setLiveSub] = useState<{ requestId: string; cues: Array<{ index: number; start: number; end: number; text: string }> } | null>(null)
-  const liveTranslationsRef = useRef(new Map<number, string>())
+  const [liveSub, setLiveSub] = useState<{ requestId: string; targetLang?: string; cues: Array<{ index: number; start: number; end: number; text: string }> } | null>(null)
+  const [liveTranslations, setLiveTranslations] = useState(new Map<number, string>())
   const liveSeekSentRef = useRef(0)
   const subtitleFileRef = useRef('')
-  const [langPrompt, setLangPrompt] = useState<{ lang: string } | null>(null)
+  const [langPrompt, setLangPrompt] = useState<{ lang: string; targetLang: '中文' | '英文' } | null>(null)
+  const [detectedLang, setDetectedLang] = useState<'zh' | 'en' | null>(null)
   const langPromptOffRef = useRef(false)
 
   const isDesktop = window.aiPlayer?.isElectron === true
@@ -124,6 +147,35 @@ export default function PlayerView({ onBack }: Props) {
     if (useMpv) void window.aiPlayer?.player?.setPictureMode(pictureMode)
   }, [pictureMode, useMpv])
 
+  // 每个新媒体先以“完整显示”打开。裁切铺满仍可由用户显式选择，但不会被上个视频或旧持久化状态继承。
+  useEffect(() => {
+    if (videoSrc) setPictureMode('fit')
+  }, [setPictureMode, videoSrc])
+
+  useEffect(() => {
+    if (useMpv) {
+      void window.aiPlayer?.player?.setSubtitlePosition(subtitlePosition)
+      return
+    }
+    const trackElement = trackRef.current
+    if (!trackElement) return
+    const applyPosition = () => {
+      const cues = trackElement.track?.cues
+      if (!cues) return
+      for (let index = 0; index < cues.length; index += 1) {
+        const cue = cues[index] as VTTCue
+        cue.snapToLines = false
+        cue.line = subtitleLinePercent(subtitlePosition)
+        cue.position = 50
+        cue.size = 72
+        cue.align = 'center'
+      }
+    }
+    applyPosition()
+    trackElement.addEventListener('load', applyPosition)
+    return () => trackElement.removeEventListener('load', applyPosition)
+  }, [subtitlePosition, subtitleUrl, useMpv])
+
   useEffect(() => {
     if (useMpv) return
     const el = fileType === 'video' ? videoRef.current : fileType === 'audio' ? audioRef.current : null
@@ -155,6 +207,10 @@ export default function PlayerView({ onBack }: Props) {
     if (!player) return
     void player.loadFile(videoSrc).then((loaded) => {
       if (!loaded) return
+      // mpv keeps process-level properties between files. Reassert the new
+      // media's fit policy even when Zustand was already `fit` and no effect
+      // transition was emitted.
+      void player.setPictureMode(usePlayerStore.getState().pictureMode)
       void player.setVolume(volume)
       if (currentTime > 0) void player.seek(currentTime)
       if (isPlaying) void player.play()
@@ -263,10 +319,10 @@ export default function PlayerView({ onBack }: Props) {
   // 若离开时又重新显示，就会形成 显示→3秒隐藏→再显示 的循环（窗口随菜单栏显隐抖动）。
   const scheduleAutoHide = useCallback(() => {
     clearHideTimer()
-    if (shouldAutoHideControls({ hasMedia: isMedia, playing: isPlaying, blocked: subtitlePanelOpen })) {
+    if (shouldAutoHideControls({ hasMedia: isMedia, playing: isPlaying, immersive: theater || isFullscreen, blocked: subtitlePanelOpen })) {
       hideTimer.current = setTimeout(hideControlsIfIdle, PLAYER_CHROME_HIDE_DELAY_MS)
     }
-  }, [clearHideTimer, hideControlsIfIdle, isMedia, isPlaying, subtitlePanelOpen])
+  }, [clearHideTimer, hideControlsIfIdle, isFullscreen, isMedia, isPlaying, subtitlePanelOpen, theater])
 
   const handleUserActivity = useCallback(() => {
     holdControlsVisible()
@@ -300,12 +356,12 @@ export default function PlayerView({ onBack }: Props) {
   }, [clearHideTimer, handleUserActivity])
 
   useEffect(() => {
-    // 播放期间菜单栏全程隐藏（Alt 唤出），不随控制栏显隐：避免客户区高度变化把按钮挪到静止光标下
-    void window.aiPlayer?.windowControls?.setPlaybackChromeVisible(!isMedia)
+    // AI-native 工作区默认隐藏旧菜单栏；Alt、快捷键与右键仍可访问对应功能。
+    void window.aiPlayer?.windowControls?.setPlaybackChromeVisible(false)
   }, [isMedia])
 
   useEffect(() => () => {
-    void window.aiPlayer?.windowControls?.setPlaybackChromeVisible(true)
+    void window.aiPlayer?.windowControls?.setPlaybackChromeVisible(false)
   }, [])
 
   const handlePrint = async () => {
@@ -420,8 +476,8 @@ export default function PlayerView({ onBack }: Props) {
     ;(window as unknown as Record<string, unknown>).__playerActionMounted = true
     const menuHandler = (event: Event) => runPlayerAction((event as CustomEvent<string>).detail)
     const keyboardHandler = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+      const target = event.target
+      if (target instanceof Element && target.matches('input, textarea, select, [contenteditable="true"]')) return
       const keys: Record<string, string> = {
         ' ': 'play-toggle', ArrowLeft: 'seek-backward', ArrowRight: 'seek-forward',
         ArrowUp: 'volume-up', ArrowDown: 'volume-down', m: 'mute-toggle', M: 'mute-toggle',
@@ -449,34 +505,148 @@ export default function PlayerView({ onBack }: Props) {
     return off
   }, [])
 
-  const generateBilingual = async () => {
+  const generateBilingual = async (preferredTarget?: '中文' | '英文') => {
     const api = window.aiPlayer?.subtitleBilingual
-    if (!api) return
+    if (!api || bilingualInFlightRef.current) return
     if (!videoSrc || videoSrc.startsWith('blob:') || /^https?:/i.test(videoSrc)) {
       setSubtitlePanelOpen(true)
-      setSubtitleStatus('双语字幕只支持本地文件；请先打开本地视频或音频。')
+      setSubtitleStatus('字幕翻译只支持本地文件；请先打开本地视频或音频。')
       return
     }
+    const targetLang = preferredTarget || (detectedLang === 'zh' ? '英文' : '中文')
+    const requestId = `bilingual-${Date.now()}`
+    bilingualInFlightRef.current = true
     setBilingualBusy(true)
-    setSubtitlePanelOpen(true)
-    setSubtitleStatus('正在准备双语字幕…')
+    setSubtitlePanelOpen(false)
+    setSubtitleRecovery(null)
+    setSubtitleRecoveryError('')
+    setSubtitleRecoveryProgress(null)
+    setSubtitleStatus(`正在准备${targetLang}字幕…`)
     try {
-      const requestId = `bilingual-${Date.now()}`
       bilingualRequestId.current = requestId
-      const result = await api.generate({ path: videoSrc, requestId })
+      const result = await api.generate({ path: videoSrc, requestId, engine: 'auto', targetLang, durationSeconds: usePlayerStore.getState().duration })
+      if (bilingualRequestId.current !== requestId) return
       if (!result.success) {
-        setSubtitleStatus(result.needDownload ? `${result.error}（模型接入中心可一键下载）` : result.error || '生成失败')
+        if (result.recovery) {
+          setSubtitleRecovery(result.recovery)
+          setSubtitleStatus('')
+        } else {
+          setSubtitleStatus(result.cancelled ? '字幕翻译已停止' : result.error || '生成失败')
+        }
         return
       }
-      await applySubtitle(result.srtPath!, '.srt')
-      setSubtitleStatus(`双语字幕已生成（${result.count} 句${result.failed ? `，${result.failed} 句未译` : ''}）：${result.srtPath}`)
+      setSubtitleRecovery(null)
+      await applySubtitle(result.srtPath!, '.srt', result.targetLang === '英文' ? 'en' : 'zh')
+      const displayedLanguage = result.targetLang || targetLang
+      setSubtitleStatus(result.cached
+        ? `${displayedLanguage}字幕已显示（使用上次生成结果）`
+        : `${displayedLanguage}字幕已显示（${result.count} 条${result.engine ? ` · ${result.engine}` : ''}${result.failed ? ` · ${result.failed} 段未译` : ''}）`)
       setSubtitlePanelOpen(false)
     } catch (error) {
-      setSubtitleStatus(error instanceof Error ? error.message : String(error))
+      if (bilingualRequestId.current === requestId) setSubtitleStatus(error instanceof Error ? error.message : String(error))
     } finally {
-      setBilingualBusy(false)
+      if (bilingualRequestId.current === requestId) {
+        bilingualRequestId.current = ''
+        bilingualInFlightRef.current = false
+        setBilingualBusy(false)
+      }
     }
   }
+
+  const runSubtitleRecovery = async () => {
+    const recovery = subtitleRecovery
+    if (!recovery || subtitleRecoveryBusy) return
+    if (recovery.kind === 'configure-cloud') {
+      window.dispatchEvent(new CustomEvent('ai-player-open-model-center', {
+        detail: {
+          providerId: recovery.providerId || 'agnes',
+          model: recovery.model || 'agnes-2.5-flash',
+          reason: '为字幕翻译接入 Agnes；字幕翻译只发送字幕原文，不上传视频。'
+        }
+      }))
+      return
+    }
+
+    setSubtitleRecoveryBusy(true)
+    setSubtitleRecoveryError('')
+    setSubtitleRecoveryProgress(null)
+    let unsubscribe: (() => void) | undefined
+    try {
+      const api = recovery.kind === 'install-whisper' ? window.aiPlayer?.transcribe : window.aiPlayer?.translatePack
+      if (!api) throw new Error('组件下载接口不可用，请重启 AgentPlay 后重试')
+      unsubscribe = api.onProgress?.((progress) => setSubtitleRecoveryProgress(progress))
+      const result = await api.download()
+      if (!result?.success) throw new Error(result?.error || '组件下载失败')
+      setSubtitleRecovery(null)
+      setSubtitleRecoveryProgress(null)
+      setSubtitleStatus('组件已安装，正在自动继续字幕任务…')
+      void generateBilingual(recovery.targetLang)
+    } catch (error) {
+      setSubtitleRecoveryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      unsubscribe?.()
+      setSubtitleRecoveryBusy(false)
+    }
+  }
+
+  const cancelSubtitleRecoveryDownload = async () => {
+    const recovery = subtitleRecovery
+    if (!recovery || !subtitleRecoveryBusy) return
+    if (recovery.kind === 'install-whisper') await window.aiPlayer?.transcribe?.cancelDownload()
+    if (recovery.kind === 'install-translate') await window.aiPlayer?.translatePack?.cancelDownload()
+    setSubtitleRecoveryError('组件下载已停止，可以稍后继续')
+  }
+
+  useEffect(() => {
+    const handleModelsChanged = () => {
+      const recovery = subtitleRecovery
+      if (recovery?.kind !== 'configure-cloud') return
+      void window.aiPlayer?.models?.config('chat').then((config) => {
+        if (!config?.configured || config.localOnly) return
+        setSubtitleRecovery(null)
+        setSubtitleStatus('云端模型已接入，正在自动继续字幕任务…')
+        void generateBilingual(recovery.targetLang)
+      })
+    }
+    window.addEventListener('ai-player-models-changed', handleModelsChanged)
+    return () => window.removeEventListener('ai-player-models-changed', handleModelsChanged)
+  }, [subtitleRecovery, videoSrc, detectedLang])
+
+  const cancelBilingual = async () => {
+    const requestId = bilingualRequestId.current
+    const api = window.aiPlayer?.subtitleBilingual
+    if (!requestId || !api?.cancel) return
+    setSubtitleStatus('正在停止字幕翻译…')
+    const handled = await api.cancel(requestId)
+    if (!handled && bilingualRequestId.current === requestId) {
+      bilingualRequestId.current = ''
+      bilingualInFlightRef.current = false
+      setBilingualBusy(false)
+      setSubtitleStatus('字幕任务已经结束')
+    }
+  }
+
+  useEffect(() => {
+    if (bilingualSourceRef.current === videoSrc) return
+    bilingualSourceRef.current = videoSrc
+    const requestId = bilingualRequestId.current
+    if (requestId) void window.aiPlayer?.subtitleBilingual?.cancel?.(requestId)
+    bilingualRequestId.current = ''
+    bilingualInFlightRef.current = false
+    setBilingualBusy(false)
+    setSubtitleStatus('')
+    setSubtitleRecovery(null)
+    setSubtitleRecoveryError('')
+    setSubtitleRecoveryProgress(null)
+  }, [videoSrc])
+
+  useEffect(() => {
+    if (bilingualBusy || !/(字幕已显示|字幕翻译已停止|字幕任务已经结束)/.test(subtitleStatus)) return
+    const timer = window.setTimeout(() => {
+      setSubtitleStatus((current) => current === subtitleStatus ? '' : current)
+    }, 5000)
+    return () => window.clearTimeout(timer)
+  }, [bilingualBusy, subtitleStatus])
 
   const liveRequestIdRef = useRef('')
   useEffect(() => {
@@ -489,12 +659,16 @@ export default function PlayerView({ onBack }: Props) {
           : current)
         setSubtitleStatus('实时识别中（边播边转写）')
       } else if (event.type === 'progress' && event.batch) {
-        for (const item of event.batch) liveTranslationsRef.current.set(item.index, item.text)
+        setLiveTranslations((current) => {
+          const next = new Map(current)
+          for (const item of event.batch || []) next.set(item.index, item.text)
+          return next
+        })
         setSubtitleStatus(`实时翻译中 ${event.done}/${event.total}${event.failed ? `（${event.failed} 句未译）` : ''}`)
       } else if (event.type === 'finish') {
         setSubtitleStatus(event.cancelled ? '实时翻译已停止' : `实时翻译完成（${event.done}/${event.total} 句${event.failed ? `，${event.failed} 句未译` : ''}）`)
         if (useMpv) {
-          if (event.srtPath) void applySubtitle(event.srtPath, 'srt')
+          if (event.srtPath) void applySubtitle(event.srtPath, 'srt', event.targetLang === '英文' ? 'en' : 'zh')
           setLiveSub(null)
           liveRequestIdRef.current = ''
         }
@@ -516,17 +690,20 @@ export default function PlayerView({ onBack }: Props) {
     return off
   }, [useMpv])
 
-  // 语言探测：音频语言与系统语言(中文)不同才自动弹提示；会话内可点 ✕ 永久免打扰
+  // 语言探测：中文内容翻成英文、英文内容翻成中文；主字幕只显示目标语言。
   useEffect(() => {
     setLangPrompt(null)
+    setDetectedLang(null)
     if (!isDesktop || fileType !== 'video' || !videoSrc || /^(https?|blob):/i.test(videoSrc)) return
     if (langPromptOffRef.current || liveSub) return
     let cancelled = false
     const timer = setTimeout(async () => {
       try {
         const result = await window.aiPlayer?.detectLanguage?.(videoSrc)
-        if (cancelled || !result || result.lang !== 'en') return
-        setLangPrompt({ lang: result.lang })
+        if (cancelled || !result || (result.lang !== 'en' && result.lang !== 'zh')) return
+        const targetLang = result.lang === 'zh' ? '英文' : '中文'
+        setDetectedLang(result.lang)
+        setLangPrompt({ lang: result.lang, targetLang })
       } catch { /* 探测失败静默 */ }
     }, 1800)
     return () => { cancelled = true; clearTimeout(timer) }
@@ -539,7 +716,7 @@ export default function PlayerView({ onBack }: Props) {
       await api.stop(liveSub.requestId)
       liveRequestIdRef.current = ''
       setLiveSub(null)
-      liveTranslationsRef.current = new Map()
+      setLiveTranslations(new Map())
       setSubtitleStatus('实时翻译已关闭')
       return
     }
@@ -549,18 +726,19 @@ export default function PlayerView({ onBack }: Props) {
       return
     }
     const requestId = `live-sub-${Date.now()}`
+    const resolvedTarget = targetLang || (detectedLang === 'zh' ? '英文' : '中文')
     liveRequestIdRef.current = requestId
-    liveTranslationsRef.current = new Map()
+    setLiveTranslations(new Map())
     setSubtitlePanelOpen(true)
     setSubtitleStatus('正在准备实时翻译…')
-    const result = await api.start({ mediaPath: videoSrc, subtitlePath: subtitleFileRef.current, currentTime: usePlayerStore.getState().currentTime, targetLang, requestId })
+    const result = await api.start({ mediaPath: videoSrc, subtitlePath: subtitleFileRef.current, currentTime: usePlayerStore.getState().currentTime, targetLang: resolvedTarget, requestId })
     if (!result.success || !result.cues) {
       liveRequestIdRef.current = ''
       setSubtitleStatus(result.error || '实时翻译启动失败')
       return
     }
-    setLiveSub({ requestId: result.requestId || requestId, cues: result.cues })
-    setSubtitleStatus(`实时翻译已开启（译成${targetLang || '中文'}，${result.total} 句，从当前位置向前翻译）`)
+    setLiveSub({ requestId: result.requestId || requestId, targetLang: result.targetLang || resolvedTarget, cues: result.cues })
+    setSubtitleStatus(`实时翻译已开启（只显示${result.targetLang || resolvedTarget}，${result.total} 段）`)
     setSubtitlePanelOpen(false)
   }
 
@@ -572,7 +750,7 @@ export default function PlayerView({ onBack }: Props) {
       await api.stop(liveSub.requestId)
       liveRequestIdRef.current = ''
       setLiveSub(null)
-      liveTranslationsRef.current = new Map()
+      setLiveTranslations(new Map())
       setSubtitleStatus('实时识别已关闭')
       return
     }
@@ -583,7 +761,7 @@ export default function PlayerView({ onBack }: Props) {
     }
     const requestId = `live-tr-${Date.now()}`
     liveRequestIdRef.current = requestId
-    liveTranslationsRef.current = new Map()
+    setLiveTranslations(new Map())
     setSubtitleStatus('正在启动实时识别（首次需加载转写组件）…')
     const result = await api.startTranscribe({
       mediaPath: videoSrc,
@@ -619,15 +797,20 @@ export default function PlayerView({ onBack }: Props) {
     }
   }, [videoSrc])
 
-  const applySubtitle = async (subtitlePath: string, ext: string) => {    subtitleFileRef.current = subtitlePath
+  const applySubtitle = async (subtitlePath: string, ext: string, language?: 'zh' | 'en') => {
+    subtitleFileRef.current = subtitlePath
+    if (language) setSubtitleTrackLang(language)
     if (useMpv) {
       const loaded = await window.aiPlayer?.player?.loadSubtitle(subtitlePath)
       if (!loaded) throw new Error('mpv 未能加载字幕')
     } else {
       const result = await window.aiPlayer?.files?.readText(subtitlePath)
       if (!result?.success || result.content === undefined) throw new Error(result?.error || '字幕读取失败')
-      if (subtitleUrl?.startsWith('blob:')) URL.revokeObjectURL(subtitleUrl)
-      setSubtitleUrl(URL.createObjectURL(new Blob([subtitleToVtt(result.content, ext)], { type: 'text/vtt' })))
+      const nextUrl = URL.createObjectURL(new Blob([subtitleToVtt(result.content, ext, subtitlePosition)], { type: 'text/vtt' }))
+      setSubtitleUrl((current) => {
+        if (current?.startsWith('blob:')) URL.revokeObjectURL(current)
+        return nextUrl
+      })
     }
     usePlayerStore.setState({ subtitleVisible: true })
     void window.aiPlayer?.player?.setSubtitleVisible(true)
@@ -635,12 +818,16 @@ export default function PlayerView({ onBack }: Props) {
 
   const searchOnlineSubtitle = async () => {
     if (!mediaName || !window.aiPlayer?.subtitle) return
-    const apiKey = localStorage.getItem('aiplayer_subtitle_key') || undefined
     setSubtitlePanelOpen(true)
-    setSubtitleStatus('正在搜索字幕…')
     setSubtitleResults([])
+    const credentials = await window.aiPlayer.serviceCredentials?.status()
+    if (credentials && !credentials.services.opensubtitles.hasKey) {
+      setSubtitleStatus('在线字幕库需要 OpenSubtitles API Key（不是 AI 模型）。可到“运行与隐私”填写，或直接使用自动翻译字幕。')
+      return
+    }
+    setSubtitleStatus('正在搜索字幕…')
     const query = mediaName.replace(/\.[^.]+$/, '')
-    const result = await window.aiPlayer.subtitle.search(query, apiKey)
+    const result = await window.aiPlayer.subtitle.search(query)
     if (!result.success) {
       setSubtitleStatus(result.error || '字幕搜索失败')
       return
@@ -649,16 +836,15 @@ export default function PlayerView({ onBack }: Props) {
     setSubtitleStatus(result.data?.length ? '' : '没有找到匹配字幕')
   }
 
-  const downloadOnlineSubtitle = async (item: { fileId: number; fileName: string }) => {
-    const apiKey = localStorage.getItem('aiplayer_subtitle_key') || undefined
+  const downloadOnlineSubtitle = async (item: { fileId: number; fileName: string; language?: string }) => {
     setSubtitleStatus('正在下载字幕…')
-    const result = await window.aiPlayer?.subtitle?.download(item.fileId, apiKey)
+    const result = await window.aiPlayer?.subtitle?.download(item.fileId)
     if (!result?.success || !result.path) {
       setSubtitleStatus(result?.error || '字幕下载失败')
       return
     }
     try {
-      await applySubtitle(result.path, (result.fileName || item.fileName).split('.').pop()?.toLowerCase() || 'srt')
+      await applySubtitle(result.path, (result.fileName || item.fileName).split('.').pop()?.toLowerCase() || 'srt', /^en/i.test(item.language || '') ? 'en' : 'zh')
       setSubtitleStatus('字幕已加载')
       setSubtitlePanelOpen(false)
     } catch (e) {
@@ -690,15 +876,23 @@ export default function PlayerView({ onBack }: Props) {
   useEffect(() => {
     if (fileType === 'office' && videoSrc) {
       const ext = ('.' + (mediaName?.split('.').pop() || '')).toLowerCase()
+      setOfficeHtml(null)
+      setOfficeText(null)
       if (['.docx', '.doc'].includes(ext)) {
         window.aiPlayer?.docx?.preview(videoSrc).then((r) => setOfficeHtml(r?.success ? r.html || null : null))
       } else if (['.xls', '.xlsx'].includes(ext)) {
         window.aiPlayer?.xlsx?.preview(videoSrc).then((r) => setOfficeHtml(r?.success ? r.html || null : null))
+      } else if (['.pptx', '.odt', '.ods', '.odp', '.rtf'].includes(ext)) {
+        setOfficeText('正在安全提取内容…')
+        window.aiPlayer?.documents?.previewText(videoSrc).then((r) => {
+          setOfficeText(r?.success ? r.content || '（没有可显示的文字内容）' : null)
+        })
       } else {
         setOfficeHtml(null)
       }
     } else {
       setOfficeHtml(null)
+      setOfficeText(null)
     }
   }, [fileType, videoSrc, mediaName])
 
@@ -754,7 +948,13 @@ export default function PlayerView({ onBack }: Props) {
     }
     document.addEventListener('fullscreenchange', handler)
     const offNative = window.aiPlayer?.windowControls?.onFullscreenChanged((fullscreen) => {
-      usePlayerStore.setState({ isFullscreen: fullscreen, controlsVisible: true })
+      usePlayerStore.setState((state) => ({
+        isFullscreen: fullscreen,
+        controlsVisible: true,
+        // Windows can consume Escape before the renderer sees keydown. The
+        // native leave-full-screen event is the authoritative recovery edge.
+        theater: fullscreen ? state.theater : false
+      }))
     })
     return () => {
       document.removeEventListener('fullscreenchange', handler)
@@ -765,8 +965,9 @@ export default function PlayerView({ onBack }: Props) {
   return (
     <div
       ref={playerRootRef}
-      className={`flex-1 min-h-0 relative overflow-hidden bg-black flex items-center justify-center ${isMedia && !controlsVisible ? 'cursor-none' : ''}`}
+      className={`w-full h-full min-w-0 min-h-0 flex-1 relative overflow-hidden bg-black flex items-center justify-center ${isMedia && !controlsVisible ? 'cursor-none' : ''}`}
       onMouseMove={handleMouseMove}
+      onPointerEnter={handleUserActivity}
       onClickCapture={releaseChromeFocus}
       onPointerUpCapture={releaseChromeFocus}
       onPointerDown={handleUserActivity}
@@ -795,6 +996,7 @@ export default function PlayerView({ onBack }: Props) {
         <video
           ref={videoRef}
           data-ai-player-video="true"
+          data-picture-mode={pictureMode}
           src={fileUrl}
           className={pictureMode === 'fill'
             ? 'w-full h-full object-cover'
@@ -825,18 +1027,66 @@ export default function PlayerView({ onBack }: Props) {
           }}
           playsInline
         >
-          {subtitleUrl && <track ref={trackRef} src={subtitleUrl} kind="subtitles" default />}
+          {subtitleUrl && <track ref={trackRef} src={subtitleUrl} kind="subtitles" srcLang={subtitleTrackLang} label={subtitleTrackLang === 'en' ? 'English' : '中文字幕'} default onError={() => setSubtitleStatus('翻译字幕轨加载失败，请重试')} />}
         </video>
       )}
       {langPrompt && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-lg bg-player-surface/95 border border-white/15 px-3 py-2 text-xs shadow-lg" data-player-chrome="true" onPointerEnter={holdControlsVisible} onPointerLeave={scheduleAutoHide}>
-          <span className="text-gray-200">检测到{langPrompt.lang === 'en' ? '英语' : '其他语种'}音频，需要翻译字幕吗？</span>
-          <button onClick={() => { setLangPrompt(null); void toggleLiveTranslate('中文') }} className="rounded bg-player-accent px-2.5 py-1 text-white hover:opacity-90">译成中文</button>
-          <button onClick={() => { setLangPrompt(null); void toggleLiveTranslate('英语') }} className="rounded bg-white/10 px-2.5 py-1 text-gray-200 hover:bg-white/20">译成英文</button>
-          <button onClick={() => setLangPrompt(null)} className="px-2 py-1 text-gray-400 hover:text-white">不用了</button>
+          <span className="text-gray-200">检测到{langPrompt.lang === 'en' ? '英语' : '中文'}内容，是否显示{langPrompt.targetLang}字幕？</span>
+          <button onClick={() => { const target = langPrompt.targetLang; setLangPrompt(null); void generateBilingual(target) }} className="rounded bg-player-accent px-2.5 py-1 text-white hover:opacity-90">显示{langPrompt.targetLang}字幕</button>
+          <button onClick={() => setLangPrompt(null)} className="px-2 py-1 text-gray-400 hover:text-white">暂不</button>
           <button onClick={() => { langPromptOffRef.current = true; setLangPrompt(null) }} className="px-1 py-1 text-gray-500 hover:text-white" title="本会话不再提示">✕</button>
         </div>
-      )}
+      )}
+
+      {subtitleRecovery && !subtitlePanelOpen && (
+        <div
+          data-subtitle-recovery="true"
+          data-recovery-kind={subtitleRecovery.kind}
+          className="absolute top-16 left-1/2 z-30 w-[min(92%,520px)] -translate-x-1/2 overflow-hidden rounded-2xl border border-cyan-300/20 bg-[#101722]/95 shadow-2xl backdrop-blur-xl"
+          data-player-chrome="true"
+          onPointerEnter={holdControlsVisible}
+          onPointerLeave={scheduleAutoHide}
+        >
+          <div className="flex items-start gap-3 px-4 py-3.5">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-cyan-300/10 text-cyan-200">✦</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-white">{subtitleRecovery.title}</div>
+              <div className="mt-1 text-xs leading-5 text-gray-300">{subtitleRecovery.detail}</div>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-400">
+                <span>{subtitleRecovery.timeLabel}</span>
+                <span>{subtitleRecovery.costLabel}</span>
+              </div>
+              {subtitleRecoveryBusy && subtitleRecoveryProgress && (() => {
+                const total = Math.max(1, subtitleRecoveryProgress.totalBytes || subtitleRecovery.downloadBytes || 1)
+                const percent = Math.min(100, Math.round(((subtitleRecoveryProgress.receivedBytes || 0) / total) * 100))
+                return <div className="mt-3">
+                  <div className="mb-1 flex justify-between text-[11px] text-cyan-100"><span>正在安装组件</span><span>{percent}%</span></div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-cyan-300 transition-all" style={{ width: `${percent}%` }} /></div>
+                </div>
+              })()}
+              {subtitleRecoveryError && <div className="mt-2 text-xs text-rose-300">{subtitleRecoveryError}</div>}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button disabled={subtitleRecoveryBusy} onClick={() => void runSubtitleRecovery()} className="rounded-xl bg-player-accent px-3.5 py-2 text-xs font-medium text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-50">
+                  {subtitleRecoveryBusy ? '正在安装…' : subtitleRecovery.actionLabel}
+                </button>
+                {subtitleRecoveryBusy && <button onClick={() => void cancelSubtitleRecoveryDownload()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-gray-200 hover:bg-white/15">停止下载</button>}
+                {!subtitleRecoveryBusy && <button onClick={() => setSubtitleRecovery(null)} className="px-2 py-2 text-xs text-gray-400 hover:text-white">稍后处理</button>}
+              </div>
+            </div>
+            {!subtitleRecoveryBusy && <button onClick={() => setSubtitleRecovery(null)} className="shrink-0 text-gray-500 hover:text-white" aria-label="关闭字幕修复建议">✕</button>}
+          </div>
+        </div>
+      )}
+
+      {subtitleStatus && !subtitleRecovery && !subtitlePanelOpen && (
+        <div data-subtitle-progress="true" className="absolute top-16 left-1/2 z-30 flex max-w-[80%] -translate-x-1/2 items-center gap-2 rounded-full border border-white/15 bg-black/80 px-4 py-2 text-xs text-gray-100 shadow-xl" data-player-chrome="true">
+          {bilingualBusy && <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-cyan-300" />}
+          <span className="truncate">{subtitleStatus}</span>
+          {bilingualBusy && <button data-cancel-subtitle-translation="true" onClick={() => void cancelBilingual()} className="shrink-0 rounded-full bg-white/10 px-2.5 py-1 text-white hover:bg-white/20">停止</button>}
+          {!bilingualBusy && <button onClick={() => setSubtitleStatus('')} className="shrink-0 text-gray-400 hover:text-white" aria-label="关闭字幕状态">✕</button>}
+        </div>
+      )}
       {playbackNotice && !useMpv && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 rounded bg-black/80 px-4 py-2 text-sm text-amber-300">
           {playbackNotice}
@@ -845,11 +1095,11 @@ export default function PlayerView({ onBack }: Props) {
       {liveSub && !useMpv && (() => {
         const cue = liveSub.cues.find((item) => currentTime >= item.start && currentTime <= item.end)
         if (!cue) return null
-        const translated = liveTranslationsRef.current.get(cue.index)
+        const translated = liveTranslations.get(cue.index)
+        if (!translated) return null
         return (
-          <div className="absolute bottom-28 left-1/2 -translate-x-1/2 max-w-3xl text-center pointer-events-none">
-            <span className="inline-block rounded bg-black/70 px-3 py-1 text-lg text-white" style={{ textShadow: '0 1px 3px #000' }}>{cue.text}</span>
-            {translated && <span className="mt-1 inline-block rounded bg-black/70 px-3 py-1 text-base text-cyan-200" style={{ textShadow: '0 1px 3px #000' }}>{translated}</span>}
+          <div className="absolute bottom-[12%] left-1/2 z-20 w-[86%] -translate-x-1/2 text-center pointer-events-none" aria-live="polite">
+            <span data-live-translated-caption="true" className="inline-block max-w-full whitespace-pre-line rounded-xl bg-black/75 px-4 py-2 text-[clamp(16px,2.1vw,28px)] font-medium leading-[1.38] text-white shadow-2xl" style={{ textShadow: '0 2px 5px #000' }}>{translated}</span>
           </div>
         )
       })()}
@@ -898,6 +1148,8 @@ export default function PlayerView({ onBack }: Props) {
             srcDoc={buildSecureOfficeDocument(officeHtml)}
             className="w-full h-full border-0 bg-white"
           />
+        ) : officeText !== null ? (
+          <pre className="w-full h-full overflow-auto bg-white px-8 py-7 text-[15px] leading-7 text-gray-900 whitespace-pre-wrap break-words">{officeText}</pre>
         ) : (
           <div className="text-gray-400 text-center">
             <p className="text-2xl mb-2">{mediaName}</p>
@@ -911,7 +1163,7 @@ export default function PlayerView({ onBack }: Props) {
           </div>
         )
       )}
-      {isDesktop && videoSrc && ['image', 'pdf', 'text', 'office'].includes(fileType) && (fileType !== 'office' || officeHtml) && (
+      {isDesktop && videoSrc && ['image', 'pdf', 'text', 'office'].includes(fileType) && (fileType !== 'office' || officeHtml || officeText !== null) && (
         <button
           onClick={() => void handlePrint()}
           title="打印当前文件"
@@ -966,15 +1218,17 @@ export default function PlayerView({ onBack }: Props) {
 
       {isMedia && isDesktop && (
         <button
-          onClick={searchOnlineSubtitle}
+          onClick={() => void generateBilingual()}
+          disabled={bilingualBusy}
+          data-smart-translate-subtitle="true"
           data-player-chrome="true"
           onPointerEnter={holdControlsVisible}
           onPointerLeave={scheduleAutoHide}
-          className={`absolute top-4 right-4 px-3 py-1 bg-player-surface/80 rounded text-sm hover:bg-player-surface transition-opacity duration-300 ${
+          className={`absolute top-4 right-4 px-3 py-1 bg-player-surface/80 rounded text-sm hover:bg-player-surface disabled:cursor-wait disabled:opacity-70 transition-opacity duration-300 ${
             controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
           }`}
         >
-          在线字幕
+          {bilingualBusy ? '正在处理字幕…' : '翻译字幕'}
         </button>
       )}
 
@@ -982,10 +1236,15 @@ export default function PlayerView({ onBack }: Props) {
         <div className="absolute inset-0 z-40 bg-black/75 flex items-center justify-center" onClick={() => setSubtitlePanelOpen(false)}>
           <div className="w-full max-w-lg max-h-[70vh] overflow-auto bg-player-surface rounded-xl p-5" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
-              <p className="text-sm">选择在线字幕</p>
+              <p className="text-sm">更多字幕来源</p>
               <button onClick={() => setSubtitlePanelOpen(false)}>✕</button>
             </div>
             {subtitleStatus && <p className="text-sm text-gray-400 mb-2">{bilingualBusy && <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />}{subtitleStatus}</p>}
+            {subtitleStatus.includes('OpenSubtitles API Key') && <div className="mb-3 flex flex-wrap gap-2">
+              <button onClick={() => { setSubtitlePanelOpen(false); window.dispatchEvent(new CustomEvent('ai-player-open-backstage')) }} className="rounded-lg bg-white/10 px-3 py-2 text-xs text-gray-200 hover:bg-white/15">填写字幕库 Key</button>
+              <button onClick={() => void generateBilingual()} className="rounded-lg bg-player-accent px-3 py-2 text-xs text-white hover:opacity-90">自动翻译字幕</button>
+            </div>}
+            {/模型接入中心|云端模型|转写组件/.test(subtitleStatus) && <button onClick={() => { setSubtitlePanelOpen(false); window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'model-center' })) }} className="mb-3 rounded-lg bg-player-accent px-3 py-2 text-xs text-white hover:opacity-90">打开模型与字幕组件</button>}
             {subtitleResults.map((item) => (
               <button
                 key={item.fileId}

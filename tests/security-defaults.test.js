@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const ExcelJS = require('exceljs')
 const { buildSpreadsheetHtml, previewXlsx } = require('../electron/office-preview')
@@ -34,7 +35,7 @@ test('LAN-facing services stay stopped until an explicit renderer request', () =
 test('voice wake is removed because Electron lacks the Web Speech API', () => {
   // 该功能依赖 webkitSpeechRecognition（Electron 没有），此前只能装死；已按审计结论下线
   const app = source('src/App.tsx')
-  const panel = source('src/components/AgentPanel.tsx')
+  const panel = agentPanelSource()
   assert.doesNotMatch(app, /VoiceWake|aiplayer_voice_wake_enabled/)
   assert.doesNotMatch(panel, /webkitSpeechRecognition|SpeechRecognitionInstance/)
   assert.match(panel, /MediaRecorder/)

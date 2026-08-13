@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { readdir } from 'node:fs/promises'
+import { readdir, realpath } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(scriptDirectory, '..')
@@ -34,5 +34,15 @@ export async function main() {
   process.exitCode = exitCode
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : ''
-if (invokedPath === import.meta.url) await main()
+export async function isInvokedAsMain(argvPath = process.argv[1], moduleUrl = import.meta.url) {
+  if (!argvPath) return false
+  const [invokedPath, modulePath] = await Promise.all([
+    realpath(path.resolve(argvPath)),
+    realpath(fileURLToPath(moduleUrl))
+  ])
+  return process.platform === 'win32'
+    ? invokedPath.toLowerCase() === modulePath.toLowerCase()
+    : invokedPath === modulePath
+}
+
+if (await isInvokedAsMain()) await main()

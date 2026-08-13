@@ -55,7 +55,7 @@ class DlnaServer {
       'HTTP/1.1 200 OK',
       'CACHE-CONTROL: max-age=1800',
       `LOCATION: http://${getLanIp()}:${this.port}/server.xml`,
-      'SERVER: AIPlayer/1.0 UPnP/1.1',
+      'SERVER: AgentPlay/1.0 UPnP/1.1',
       'ST: urn:schemas-upnp-org:device:MediaServer:1',
       `USN: ${this.udn}::urn:schemas-upnp-org:device:MediaServer:1`,
       '', ''
@@ -189,7 +189,7 @@ class DlnaServer {
   }
 
   deviceXml() {
-    return `<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><device><deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType><friendlyName>AI播放器媒体库</friendlyName><manufacturer>AIPlayer</manufacturer><modelName>AIPlayer Media Server</modelName><UDN>${this.udn}</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId><SCPDURL>/cd/scpd.xml</SCPDURL><controlURL>/cd/control</controlURL><eventSubURL>/cd/event</eventSubURL></service></serviceList></device></root>`
+    return `<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion><device><deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType><friendlyName>AgentPlay 媒体库</friendlyName><manufacturer>AgentPlay</manufacturer><modelName>AgentPlay Media Server</modelName><UDN>${this.udn}</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId><SCPDURL>/cd/scpd.xml</SCPDURL><controlURL>/cd/control</controlURL><eventSubURL>/cd/event</eventSubURL></service></serviceList></device></root>`
   }
 
   scpdXml() {

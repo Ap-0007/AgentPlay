@@ -1,8 +1,28 @@
 declare module '*.mjs' {
+  export interface WorkspaceJourneyTask {
+    kind?: string
+    phase?: string
+    running?: boolean
+    status?: string
+    progress?: number | null
+    outputs?: string[]
+  }
+  export function workspaceJourneyForTask(task?: WorkspaceJourneyTask): {
+    eyebrow: string
+    stages: string[]
+    activeStage: number
+  }
+  export function dedupeAttachments<T>(files: T[]): T[]
   export const PLAYER_CHROME_HIDE_DELAY_MS: number
   export const PLAYER_MOUSE_WAKE_THRESHOLD_PX: number
-  export function shouldAutoHideControls(input: { hasMedia?: boolean; playing: boolean; blocked?: boolean }): boolean
+  export function shouldAutoHideControls(input: { hasMedia?: boolean; playing: boolean; immersive?: boolean; blocked?: boolean }): boolean
   export function isRealMouseActivity(last: { x: number; y: number } | null, next: { x: number; y: number } | null, threshold?: number): boolean
+  export type SubtitlePosition = 'high' | 'middle' | 'low'
+  export const SUBTITLE_POSITIONS: SubtitlePosition[]
+  export function normalizeSubtitlePosition(value: unknown): SubtitlePosition
+  export function subtitleLinePercent(value: unknown): number
+  export function shiftSubtitlePosition(value: unknown, direction: 'up' | 'down'): SubtitlePosition
+  export function subtitleCueSettings(value: unknown): string
   export interface LinkChoice {
     url: string
     text: string
@@ -13,6 +33,22 @@ declare module '*.mjs' {
     detection: { matched?: boolean; url?: string; direct?: boolean; mode?: string | null } | null | undefined,
     text: string
   ): LinkChoice | null
+  export type AgentMode = 'ask' | 'plan' | 'work' | 'auto'
+  export const AGENT_MODES: Record<AgentMode, {
+    id: AgentMode
+    label: string
+    description: string
+    canDispatchTasks: boolean
+    maxToolTurns: number
+  }>
+  export function normalizeAgentMode(value: unknown): AgentMode
+  export function canDispatchAgentTask(value: unknown): boolean
+  export function buildAgentSystemPrompt(taskPrompt?: string, mode?: AgentMode): string
+  export function selectDocumentPreviewPath(documents: Array<{ previewPath?: string }> | null | undefined): string | null
+  export function selectPrimaryPreviewPath(
+    media: string[] | null | undefined,
+    documents: Array<{ previewPath?: string }> | null | undefined
+  ): string | null
 }
 
 // 桌面端 Electron 注入的全局 API 类型声明
@@ -27,6 +63,7 @@ interface AiPlayerPlayerAPI {
   setPictureMode: (mode: 'original' | 'fit' | 'fill' | 'stretch') => Promise<boolean>
   loadSubtitle: (p: string) => Promise<boolean>
   setSubtitleVisible: (v: boolean) => Promise<boolean>
+  setSubtitlePosition: (position: 'high' | 'middle' | 'low') => Promise<boolean>
   stop: () => Promise<boolean>
   screenshot: (suggestedName: string) => Promise<boolean>
   setPlayerArea: (rect: { x: number; y: number; width: number; height: number }) => void
@@ -34,6 +71,81 @@ interface AiPlayerPlayerAPI {
   hideContainer: () => void
   onEvent: (cb: (data: MpvEvent) => void) => () => void
   onRemeasure: (cb: () => void) => () => void
+}
+
+interface SubtitleRecovery {
+  kind: 'install-whisper' | 'install-translate' | 'configure-cloud'
+  title: string
+  detail: string
+  actionLabel: string
+  canAutoFix: boolean
+  downloadBytes: number
+  estimatedRequests: number
+  timeLabel: string
+  costLabel: string
+  targetLang: '中文' | '英文'
+  providerId?: string
+  model?: string
+  pricingUrl?: string
+  pricingVerifiedAt?: string
+}
+
+interface PersistentRuntimeTask {
+  id: string
+  workspaceTaskId: string
+  type: string
+  state: 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
+  status: string
+  error: string
+  spec: {
+    url?: string
+    instruction?: string
+    outputFormat?: string
+    sources?: Array<{ path?: string; size?: number; mtimeMs?: number; sha256?: string }>
+    [key: string]: unknown
+  }
+  checkpoint: Record<string, unknown>
+  result: { outputPath?: string; outputs?: string[]; summary?: string; historyId?: string; [key: string]: unknown } | null
+  quality?: {
+    version: number; profile: string; score: number; threshold: number; passed: boolean; level: 'pass' | 'warning' | 'fail'
+    reasons: Array<{ code: string; message: string; repairable: boolean; detail?: string }>
+    checks: Array<{ id: string; label: string; passed: boolean; weight: number; score: number; detail?: string }>
+  } | null
+  repairHistory?: Array<{ attempt: number; action: string; fromScore: number; toScore: number; passed: boolean; reasons: string[]; completedAt: number }>
+  failure?: { code: string; message: string; retryable: boolean } | null
+  resumeToken: string
+  approval?: {
+    id: string
+    action: 'cloud' | 'paid' | 'publish' | 'delete' | 'credential'
+    summary: string
+    status: string
+    expiresAt: number
+    token?: string
+  } | null
+}
+
+interface PluginSkillInfo {
+  id: string
+  name: string
+  version: string
+  description: string
+  publisher: string
+  permissions: string[]
+  enabled: boolean
+  valid: boolean
+  kind: 'declarative' | 'legacy-js'
+  file: string
+  skillCount: number
+  toolCount: number
+  error: string
+  needsPermissionApproval?: boolean
+}
+
+interface PluginMutationResult {
+  success?: boolean
+  cancelled?: boolean
+  error?: string
+  plugins: PluginSkillInfo[]
 }
 
 interface AiPlayerAPI {
@@ -49,8 +161,9 @@ interface AiPlayerAPI {
       model: string
       defaultOutputDir: string
     }>
-    selectFiles: () => Promise<Array<{ token: string; name: string; ext: string; size: number }>>
-    attachPaths: (filePaths: string[]) => Promise<Array<{ token: string; name: string; ext: string; size: number }> | { error: string }>
+    selectFiles: () => Promise<Array<{ token: string; name: string; ext: string; size: number; previewPath?: string }>>
+    attachPaths: (filePaths: string[]) => Promise<Array<{ token: string; name: string; ext: string; size: number; previewPath?: string }> | { error: string }>
+    previewText: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>
     history: () => Promise<Array<{ id: string; createdAt: string; instruction: string; kind: string; outputs: string[]; summary: string }>>
     plan: (input: {
       tokens: string[]
@@ -61,6 +174,11 @@ interface AiPlayerAPI {
       requiresAi: boolean
       outputFormat: string
       summary: string
+      estimatedTokens?: number
+      contextWindow?: number
+      processingMode?: 'single' | 'local-chunked' | 'cloud-fallback'
+      requiresCloudApproval?: boolean
+      fallbackModel?: string
       files: Array<{ name: string; ext: string; size: number }>
     }>
     run: (input: {
@@ -68,10 +186,21 @@ interface AiPlayerAPI {
       instruction: string
       outputFormat: string
       cloudApproved: boolean
+      preferLocal?: boolean
       requestId: string
+      workspaceTaskId?: string
     }) => Promise<{
       success: boolean
       requestId: string
+      requiresApproval?: boolean
+      approval?: {
+        id: string
+        action: 'cloud' | 'paid' | 'publish' | 'delete' | 'credential'
+        summary: string
+        status: string
+        expiresAt: number
+        token?: string
+      }
       outputs?: string[]
       summary?: string
       historyId?: string
@@ -80,7 +209,7 @@ interface AiPlayerAPI {
     }>
     cancel: (requestId: string) => Promise<boolean>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
-    onOpenExternal: (cb: (files: Array<{ token: string; name: string; ext: string; size: number }>) => void) => () => void
+    onOpenExternal: (cb: (files: Array<{ token: string; name: string; ext: string; size: number; previewPath?: string }>) => void) => () => void
   }
   analysis?: {
     detect: (text: string) => Promise<{ matched: boolean; outputFormat: string }>
@@ -92,10 +221,19 @@ interface AiPlayerAPI {
       outputFormat: string
       cloudApproved: boolean
       requestId: string
+      workspaceTaskId?: string
     }) => Promise<{
       success: boolean
       requestId: string
       requiresApproval?: boolean
+      approval?: {
+        id: string
+        action: 'cloud' | 'paid' | 'publish' | 'delete' | 'credential'
+        summary: string
+        status: string
+        expiresAt: number
+        token?: string
+      }
       outputs?: string[]
       summary?: string
       historyId?: string
@@ -114,12 +252,12 @@ interface AiPlayerAPI {
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
   home?: {
-    open: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number }>; folders: string[] }>
+    open: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number; previewPath?: string }>; folders: string[] }>
     openFolder: () => Promise<{ folders: string[] }>
   }
   chat?: {
-    openAny: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number }> }>
-    attachPaths: (filePaths: string[]) => Promise<{ documents: Array<{ token: string; name: string; ext: string; size: number }>; skipped: number }>
+    openAny: () => Promise<{ media: string[]; documents: Array<{ token: string; name: string; ext: string; size: number; previewPath?: string }> }>
+    attachPaths: (filePaths: string[]) => Promise<{ documents: Array<{ token: string; name: string; ext: string; size: number; previewPath?: string }>; skipped: number }>
   }
   transcribe?: {
     status: () => Promise<{ available: boolean; engineOk: boolean; modelOk: boolean; reason: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
@@ -134,7 +272,7 @@ interface AiPlayerAPI {
     status: () => Promise<{ available: boolean; reason: string; enginePath: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
     downloadComponent: () => Promise<{ success: boolean; error?: string; availability?: unknown }>
     cancelComponent: () => Promise<boolean>
-    download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; info?: { title: string; duration: number; uploader: string; extractor: string } }>
+    download: (input: { url: string; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; info?: { title: string; duration: number; uploader: string; extractor: string } }>
     importCookies: () => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; count?: number }>
     cookiesStatus: () => Promise<Array<{ domain: string; updatedAt: number }>>
     login: (input: { url: string }) => Promise<{ success: boolean; canceled?: boolean; error?: string; domain?: string; file?: string }>
@@ -150,10 +288,17 @@ interface AiPlayerAPI {
   }
   mediaDownload?: {
     detect: (text: string) => Promise<{ matched: boolean; url: string; direct?: boolean; mode?: 'analyze' | 'download' | null }>
-    download: (input: { url: string; requestId: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; finalUrl?: string }>
+    download: (input: { url: string; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; error?: string; requestId?: string; outputPath?: string; bytes?: number; finalUrl?: string }>
     linkAnalysis: (input: { url?: string; videoPath?: string; instruction?: string; outputFormat?: string; cloudApproved?: boolean; requestId: string }) => Promise<{ success: boolean; error?: string; requiresApproval?: boolean; requestId?: string; videoPath?: string; info?: { title: string; duration: number; uploader: string }; outputs?: string[]; summary?: string; usedAi?: boolean; excerpt?: string; cueCount?: number; whispered?: boolean }>
     cancel: (requestId: string) => Promise<boolean>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
+  }
+  taskRuntime?: {
+    list: () => Promise<PersistentRuntimeTask[]>
+    approve: (input: { approvalId: string; token: string }) => Promise<PersistentRuntimeTask>
+    resume: (input: { id: string; token: string }) => Promise<PersistentRuntimeTask>
+    cancel: (id: string) => Promise<boolean>
+    onEvent: (cb: (task: PersistentRuntimeTask) => void) => () => void
   }
   translatePack?: {
     status: () => Promise<{ available: boolean; missing: string[]; reason: string; modelDir: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
@@ -173,6 +318,10 @@ interface AiPlayerAPI {
     cancelDownload: () => Promise<boolean>
     onProgress: (cb: (progress: LocalAiDownloadProgress) => void) => () => void
   }
+  unlimitedOcr?: {
+    status: (input?: { probe?: boolean }) => Promise<{ enabled: boolean; ready: boolean; reason: string; baseUrl: string; model: string; local: boolean; hasApiKey: boolean; models?: string[] }>
+    save: (input: { enabled?: boolean; baseUrl?: string; model?: string; apiKey?: string; clearApiKey?: boolean }) => Promise<{ success: boolean; cancelled?: boolean; error?: string; status: { enabled: boolean; ready?: boolean; reason?: string; baseUrl: string; model: string; local: boolean; hasApiKey: boolean; models?: string[] } }>
+  }
   onlineMedia?: {
     search: (input: { query: string; kind?: 'movie' | 'audio' | 'book'; page?: number }) => Promise<{ success: boolean; error?: string; items: Array<{ identifier: string; title: string; year: string; creator: string; downloads: number }>; total: number }>
     files: (input: { identifier: string; kind?: 'movie' | 'audio' }) => Promise<{ success: boolean; error?: string; identifier: string; title: string; files: Array<{ name: string; size: number; url: string; format: string }> }>
@@ -182,17 +331,20 @@ interface AiPlayerAPI {
     onProgress: (cb: (progress: { requestId: string; received: number; total: number }) => void) => () => void
   }
   subtitleBilingual?: {
-    generate: (input: { path: string; requestId: string }) => Promise<{ success: boolean; error?: string; needDownload?: boolean; srtPath?: string; count?: number; failed?: number }>
+    generate: (input: { path: string; requestId: string; workspaceTaskId?: string; cloudApproved?: boolean; engine?: 'auto' | 'cloud' | 'local'; targetLang?: '中文' | '英文'; durationSeconds?: number }) => Promise<{ success: boolean; error?: string; cancelled?: boolean; busy?: boolean; needDownload?: boolean; recovery?: SubtitleRecovery; srtPath?: string; outputs?: string[]; count?: number; sourceCount?: number; failed?: number; cached?: boolean; engine?: string; sourceLang?: 'zh' | 'en'; targetLang?: '中文' | '英文' }>
+    cancel: (requestId: string) => Promise<boolean>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
   }
   detectLanguage?: (filePath: string) => Promise<{ lang: string; reason?: string; sample?: string }>
   subtitleLive?: {
-    start: (input: { mediaPath: string; subtitlePath?: string; currentTime?: number; targetLang?: string; requestId: string }) => Promise<{
+    start: (input: { mediaPath: string; subtitlePath?: string; currentTime?: number; targetLang?: string; requestId: string; engine?: 'auto' | 'cloud' | 'local' }) => Promise<{
       success: boolean
       error?: string
       requestId?: string
       total?: number
       subtitlePath?: string
+      engine?: string
+      targetLang?: string
       cues?: Array<{ index: number; start: number; end: number; text: string }>
     }>
     startTranscribe: (input: { mediaPath: string; currentTime: number; duration?: number; requestId?: string }) => Promise<{
@@ -213,6 +365,7 @@ interface AiPlayerAPI {
       cueCount?: number
       cues?: Array<{ index: number; start: number; end: number; text: string }>
       srtPath?: string | null
+      targetLang?: string
       cancelled?: boolean
       error?: string
     }) => void) => () => void
@@ -240,7 +393,19 @@ interface AiPlayerAPI {
     smartScan: () => Promise<Array<{ id: string; name: string; kind: 'tv' | 'agentplay'; host?: string; port?: number; lastSuccess?: boolean }>>
   }
   tmdb?: {
-    search: (name: string, apiKey?: string) => Promise<{ success: boolean; data?: { title: string; poster: string | null; overview: string; year: string | null }; error?: string }>
+    search: (name: string) => Promise<{ success: boolean; data?: { title: string; poster: string | null; overview: string; year: string | null }; error?: string }>
+  }
+  serviceCredentials?: {
+    status: () => Promise<{
+      schemaVersion: number
+      keyStorage: string
+      services: Record<'tmdb' | 'opensubtitles', { hasKey: boolean; updatedAt: string | null; source: 'system' | 'environment' | 'none' }>
+    }>
+    save: (input: { service: 'tmdb' | 'opensubtitles'; key?: string; clear?: boolean }) => Promise<{
+      schemaVersion: number
+      keyStorage: string
+      services: Record<'tmdb' | 'opensubtitles', { hasKey: boolean; updatedAt: string | null; source: 'system' | 'environment' | 'none' }>
+    }>
   }
   wifi?: {
     url: () => Promise<string | null>
@@ -252,7 +417,11 @@ interface AiPlayerAPI {
     stopServer: () => Promise<boolean>
   }
   plugin?: {
-    list: () => Promise<Array<{ name: string; version?: string; description?: string; tools?: unknown[]; error?: string; file: string }>>
+    list: () => Promise<PluginSkillInfo[]>
+    refresh: () => Promise<PluginSkillInfo[]>
+    install: () => Promise<PluginMutationResult>
+    setEnabled: (input: { id: string; enabled: boolean; permissions: string[] }) => Promise<PluginMutationResult>
+    remove: (input: { id: string; confirmed: boolean }) => Promise<PluginMutationResult>
     openFolder: () => Promise<{ success: boolean; error?: string }>
   }
   media?: {
@@ -260,7 +429,27 @@ interface AiPlayerAPI {
       files: Array<{ name: string; path: string; ext: string; type: string; size: number; tags: string[]; group: string }>
       clusters: Record<string, unknown[]>
     }>
-    dedup: (dir?: string) => Promise<Array<{ original: string; duplicate: string; name: string }>>
+    dedup: (input: { requestId: string; dir?: string; directoryPath?: string; workspaceTaskId?: string }) => Promise<{
+      success: boolean
+      requestId: string
+      cancelled?: boolean
+      error?: string
+      duplicates: Array<{ original: string; duplicate: string; name: string }>
+      filesScanned: number
+    }>
+    cancel: (requestId: string) => Promise<boolean>
+    onDedupProgress: (cb: (progress: {
+      requestId: string
+      phase: 'scanning' | 'hashing' | 'complete'
+      filesScanned?: number
+      directoriesScanned?: number
+      processedFiles?: number
+      totalFiles?: number
+      bytesRead?: number
+      totalBytes?: number
+      currentFile?: string
+      duplicateCount?: number
+    }) => void) => () => void
     suggest: (dir?: string) => Promise<Array<{ tag: string; count: number; files: string[]; suggestion: string }>>
   }
   studio?: {
@@ -319,8 +508,9 @@ interface AiPlayerAPI {
       }>
     }>
     generateImage: (input: { id: string; prompt: string; model?: string; size?: string }) => Promise<{ success: boolean; outputPath: string; bytes: number }>
-    generateVideo: (input: { id?: string; prompt: string; model?: string; duration?: number; fps?: number; size?: string; imageBase64?: string }) => Promise<{ success: boolean; outputPath?: string; bytes?: number; videoId?: string; numFrames?: number; error?: string }>
-    recutShort: (input: { reportText?: string; mediaName: string; count?: number; seconds?: number; requestId?: string }) => Promise<{ success: boolean; outputPath?: string; shots?: string[]; clips?: number; error?: string }>
+    generateVideo: (input: { id?: string; prompt: string; instruction?: string; model?: string; duration?: number; fps?: number; size?: string; imageBase64?: string; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; bytes?: number; videoId?: string; numFrames?: number; error?: string }>
+    recutShort: (input: { reportText?: string; mediaName: string; count?: number; seconds?: number; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; shots?: string[]; clips?: number; error?: string }>
+    cancelTask: (requestId: string) => Promise<boolean>
     onRecutProgress: (cb: (event: { requestId?: string; stage: string }) => void) => () => void
     generateVoice: (input: { text: string; engine: 'system' | 'cloud'; model?: string; voice?: string; rate?: number }) => Promise<{ success: boolean; outputPath: string; bytes: number; engine: string }>
     selectAsset: (kind: 'image' | 'audio') => Promise<string | null>
@@ -359,26 +549,36 @@ interface AiPlayerAPI {
       bundled?: boolean;
       roles: Array<'chat' | 'computerUse'>;
       capabilities: { streaming?: boolean; tools?: boolean; vision?: boolean; computerUse?: boolean }
+      contextWindow?: number; maxOutputTokens?: number;
+      thinkingMode?: 'enabled' | 'disabled';
+      pricing?: { cachedInputUsdPerMillion?: number; inputUsdPerMillion: number; outputUsdPerMillion: number };
+      modelProfiles?: Record<string, { contextWindow?: number; maxOutputTokens?: number; thinkingMode?: 'enabled' | 'disabled'; pricing?: { cachedInputUsdPerMillion?: number; inputUsdPerMillion: number; outputUsdPerMillion: number } }>;
+      pricingUrl?: string; pricingVerifiedAt?: string;
     }>>
-    config: (role?: 'chat' | 'computerUse') => Promise<{ schemaVersion: number; role: 'chat' | 'computerUse'; providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean; keyStorage: string; capabilities: Record<string, boolean | number> }>
-    save: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; baseUrl: string; apiKey?: string; clearApiKey?: boolean }) => Promise<{ providerId: string; model: string; baseUrl: string; hasApiKey: boolean }>
-    list: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; baseUrl: string; apiKey?: string; useSavedKey?: boolean }) => Promise<{ success: boolean; models: string[]; error?: string }>
-    test: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; baseUrl: string; apiKey?: string; useSavedKey?: boolean }) => Promise<{ success: boolean; message: string; planDetected?: boolean; upgrade?: { providerId: string; baseUrl: string; model: string; models: string[] } }>
+    config: (role?: 'chat' | 'computerUse') => Promise<{ schemaVersion: number; role: 'chat' | 'computerUse'; providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean; requiresKey: boolean; localOnly: boolean; configured: boolean; keyStorage: string; capabilities: Record<string, boolean | number>; contextWindow?: number; maxOutputTokens?: number; thinkingMode?: 'enabled' | 'disabled'; pricing?: { cachedInputUsdPerMillion?: number; inputUsdPerMillion: number; outputUsdPerMillion: number }; pricingUrl?: string; pricingVerifiedAt?: string }>
+    routingStatus: () => Promise<ModelRoutingStatus>
+    routingSettings: (input: { preference?: 'smart' | 'local' | 'cloud'; objective?: 'balanced' | 'quality' | 'speed' | 'economy' }) => Promise<ModelRoutingStatus>
+    disconnect: (input: { role?: 'chat' | 'computerUse'; providerId: string; baseUrl: string }) => Promise<{ disconnected: boolean; candidates: Array<{ providerId: string; providerName: string; model: string; baseUrl: string; localOnly: boolean; configured: boolean; hasApiKey: boolean }> }>
+    save: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; thinkingMode?: 'enabled' | 'disabled'; baseUrl: string; apiKey?: string; clearApiKey?: boolean }) => Promise<{ providerId: string; model: string; thinkingMode?: 'enabled' | 'disabled'; baseUrl: string; hasApiKey: boolean }>
+    list: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; thinkingMode?: 'enabled' | 'disabled'; baseUrl: string; apiKey?: string; useSavedKey?: boolean }) => Promise<{ success: boolean; models: string[]; error?: string }>
+    test: (config: { role?: 'chat' | 'computerUse'; providerId: string; model: string; thinkingMode?: 'enabled' | 'disabled'; baseUrl: string; apiKey?: string; useSavedKey?: boolean }) => Promise<{ success: boolean; message: string; planDetected?: boolean; upgrade?: { providerId: string; baseUrl: string; model: string; models: string[] } }>
     discoverLocal: (role?: 'chat' | 'computerUse') => Promise<Array<{ id: string; role: 'chat' | 'computerUse'; name: string; providerId: string; baseUrl: string; status: 'ready'; models: string[] }>>
-    autoDetect: (input: { apiKey: string }) => Promise<{ success: boolean; matches?: Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>; error?: string }>
+    autoDetect: (input: { apiKey: string; providerId: string }) => Promise<{ success: boolean; needsProvider?: boolean; matches?: Array<{ providerId: string; providerName: string; models: string[]; latencyMs: number }>; error?: string }>
     cliStatus: () => Promise<{ codex: { installed: boolean; loggedIn: boolean; note: string }; claude: { installed: boolean; loggedIn: boolean; note: string } }>
     refreshCatalog: () => Promise<{ updated: number; providers?: string[]; error?: string }>
     bundledStatus: () => Promise<BundledModelStatus>
     startBundled: () => Promise<BundledModelStatus>
     stopBundled: () => Promise<BundledModelStatus>
-    quickSwitch: (input: { role?: 'chat' | 'computerUse'; target: 'cloud' | 'bundled' }) => Promise<{ switched: boolean; needDownload?: boolean; reason?: string; config?: { providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean } }>
+    quickSwitch: (input: { role?: 'chat' | 'computerUse'; target: 'cloud' | 'bundled' }) => Promise<{ switched: boolean; needDownload?: boolean; reason?: string; config?: { providerId: string; providerName: string; model: string; baseUrl: string; hasApiKey: boolean; configured?: boolean } }>
   }
   mediaBatch?: {
-    run: (input: { tokens: string[]; kind?: 'compress' | 'transcribe'; targetMb?: number; requestId?: string }) => Promise<{ success: boolean; kind?: string; results?: Array<{ token: string; success: boolean; outputPath?: string; error?: string }> }>
+    run: (input: { tokens: string[]; kind?: 'compress' | 'transcribe'; targetMb?: number; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; error?: string; kind?: string; results?: Array<{ token: string; success: boolean; outputPath?: string; error?: string }> }>
+    cancel: (requestId: string) => Promise<boolean>
     onProgress: (cb: (event: { requestId?: string; done: number; total: number; name: string }) => void) => () => void
   }
   mediaTools?: {
-    compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress' }) => Promise<{ success: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
+    compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
+    cancel: (requestId: string) => Promise<boolean>
   }
   guide?: {
     annotate: (question: string) => Promise<{ success: boolean; steps?: Array<{ text: string; mark: unknown }>; annotated?: boolean; error?: string }>
@@ -395,8 +595,8 @@ interface AiPlayerAPI {
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
   }
   subtitle?: {
-    search: (name: string, apiKey?: string) => Promise<{ success: boolean; data?: Array<{ id: string; fileId: number; fileName: string; language: string; release: string }>; error?: string }>
-    download: (fileId: number, apiKey?: string) => Promise<{ success: boolean; path?: string; fileName?: string; error?: string }>
+    search: (name: string) => Promise<{ success: boolean; data?: Array<{ id: string; fileId: number; fileName: string; language: string; release: string }>; error?: string }>
+    download: (fileId: number) => Promise<{ success: boolean; path?: string; fileName?: string; error?: string }>
   }
   xlsx?: {
     preview: (filePath: string) => Promise<{ success: boolean; html?: string; error?: string }>
@@ -411,6 +611,7 @@ interface AiPlayerAPI {
   system?: {
     openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>
     showInFolder: (filePath: string) => Promise<boolean>
+    verifyPaths: (filePaths: string[]) => Promise<Array<{ path: string; exists: boolean; bytes?: number; error?: string }>>
   }
   print?: {
     file: (filePath: string) => Promise<{ success: boolean; action?: string; error?: string }>
@@ -422,6 +623,7 @@ interface AiPlayerAPI {
     defaultDir: () => Promise<string>
     readText: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>
     readDataUrl: (filePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>
+    getPathForFile: (file: File) => string
   }
   ai?: {
     chat: (messages: Array<{ role: string; content: string }>, context?: {
@@ -435,15 +637,35 @@ interface AiPlayerAPI {
       pictureMode: 'original' | 'fit' | 'fill' | 'stretch'
       subtitleVisible: boolean
       isFullscreen: boolean
-    }, requestId?: string) => Promise<{
+    }, requestId?: string, agentOptions?: { mode?: AgentMode }) => Promise<{
       requestId: string
       text: string
       cancelled?: boolean
+      mode?: AgentMode
       toolResults: Array<{
         tool: string
         args: Record<string, unknown>
         result: unknown
       }>
+      run?: {
+        id: string
+        mode: AgentMode
+        status: 'running' | 'completed' | 'partial' | 'blocked' | 'failed' | 'cancelled'
+        startedAt: number
+        completedAt: number | null
+        budget: { turns: number; maxTurns: number; toolCalls: number; maxToolCalls: number; elapsedMs: number; maxElapsedMs: number }
+        steps: Array<{
+          id: string
+          tool: string
+          label: string
+          status: 'running' | 'completed' | 'failed' | 'blocked'
+          detail: string
+          args: Record<string, unknown>
+          startedAt: number
+          completedAt: number | null
+          evidence: { kind: string; value: string; verified: boolean } | null
+        }>
+      }
     }>
     cancel: (requestId: string) => Promise<boolean>
     onStream: (cb: (event: { requestId: string; status?: string; delta?: string }) => void) => () => void
@@ -493,6 +715,27 @@ interface LocalAiDownloadProgress {
   fileCount: number
   receivedBytes: number
   totalBytes: number
+}
+
+interface ModelRoutingStatus {
+  schemaVersion: number
+  settings: { mode: 'observe' | 'auto'; objective: 'balanced' | 'quality' | 'speed' | 'economy'; preference: 'smart' | 'local' | 'cloud' }
+  totalCalls: number
+  totalQualityChecks: number
+  models: Array<{
+    key: string
+    providerId: string
+    providerName?: string
+    model: string
+    localOnly: boolean
+    samples: number
+    qualitySamples: number
+    successRate: number | null
+    qualityScore: number | null
+    latencyMs: number | null
+    cost: { status: string; estimatedUsd: number | null; referenceUsdPer1k: number | null; label: string }
+  }>
+  candidates: Array<{ providerId: string; providerName: string; model: string; baseUrl: string; localOnly: boolean; configured: boolean; hasApiKey: boolean }>
 }
 
 interface LocalAiComponentStatus extends BundledModelStatus {

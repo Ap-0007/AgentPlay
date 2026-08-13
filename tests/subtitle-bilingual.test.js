@@ -6,6 +6,8 @@ const path = require('path')
 const {
   parseSrt,
   buildBilingualSrt,
+  buildTranslationOnlySrt,
+  chooseOppositeTarget,
   parseTranslationsJson,
   translateEntries
 } = require('../electron/subtitle-bilingual-service')
@@ -35,6 +37,38 @@ test('buildBilingualSrt 原文在上译文在下，缺译保留原文', () => {
   assert.ok(output.includes('Hello world\n你好，世界'))
   const secondBlock = output.split('\n\n')[1]
   assert.equal(secondBlock, '2\n00:00:04,000 --> 00:00:06,000\nThis is a test\nwith two lines\n')
+})
+
+test('主字幕只输出目标语言，长中文按时间拆成每屏最多两行', () => {
+  const entries = [{
+    index: 1,
+    start: '00:00:01,000',
+    end: '00:00:13,000',
+    text: "Building the most comprehensive profile of your company that you've ever seen."
+  }]
+  const translated = '建立你见过的最全面的公司形象。林迪就像一个队友，会加入你的会议并不断学习；但与普通队友不同，林迪可以同时参加数百场会议。'
+  const output = buildTranslationOnlySrt(entries, new Map([[1, translated]]), { targetLang: '中文' })
+  const cues = parseSrt(output)
+  assert.ok(cues.length >= 2, '长段必须拆成多个随时间推进的字幕 cue')
+  assert.doesNotMatch(output, /Building the most comprehensive/)
+  assert.equal(cues[0].start, entries[0].start)
+  assert.equal(cues.at(-1).end, entries[0].end)
+  for (const cue of cues) {
+    const lines = cue.text.split('\n')
+    assert.ok(lines.length <= 2, `单个字幕不应超过两行：${cue.text}`)
+    assert.ok(lines.every((line) => Array.from(line).length <= 16), `中文每行不应超过 16 字：${cue.text}`)
+  }
+
+  const naturalOutput = buildTranslationOnlySrt(entries, new Map([[1, '欢迎来到Play探员。这是英语字幕测试。人工智能帮助人们理解视频。']]), { targetLang: '中文' })
+  const naturalLines = parseSrt(naturalOutput).flatMap((cue) => cue.text.split('\n'))
+  assert.ok(naturalLines.includes('这是英语字幕测试。'), '应优先在句号处分行，不应为了填满 16 字截断下一短句')
+  assert.ok(naturalLines.includes('人工智能帮助人们理解视频。'), '完整短句应留在同一行')
+})
+
+test('字幕翻译方向与原内容相反：中文转英文，英文转中文', () => {
+  assert.equal(chooseOppositeTarget([{ text: '大家好，今天我们介绍公司的新产品和使用方法。' }]), '英文')
+  assert.equal(chooseOppositeTarget([{ text: 'Welcome to the product launch. Today we will introduce the new workflow.' }]), '中文')
+  assert.equal(chooseOppositeTarget([{ text: '12345' }]), '中文')
 })
 
 test('parseTranslationsJson 兼容围栏、字段别名与垃圾条目', () => {
@@ -68,6 +102,36 @@ test('translateEntries 按批对齐序号，批失败如实计数不中断', asy
   assert.equal(translations.has(21), false)
 })
 
+test('translateEntries reports progress and stops before the next batch when cancelled', async () => {
+  const entries = Array.from({ length: 25 }, (_, index) => ({
+    index: index + 1,
+    start: `00:00:${String(index).padStart(2, '0')},000`,
+    end: `00:00:${String(index + 1).padStart(2, '0')},000`,
+    text: `line ${index + 1}`
+  }))
+  const controller = new AbortController()
+  const progress = []
+  let calls = 0
+  const complete = async ({ prompt }) => {
+    calls += 1
+    const items = JSON.parse(prompt.split('\n').pop()).items
+    return { text: JSON.stringify({ translations: items.map((item) => ({ i: item.i, text: `translated ${item.i}` })) }) }
+  }
+  await assert.rejects(
+    translateEntries(entries, complete, {
+      batchSize: 10,
+      signal: controller.signal,
+      onProgress: ({ done, total }) => {
+        progress.push([done, total])
+        controller.abort()
+      }
+    }),
+    (error) => error?.name === 'AbortError'
+  )
+  assert.equal(calls, 1)
+  assert.deepEqual(progress, [[10, 25]])
+})
+
 test('转写组件清单与托管资产哈希锁定', () => {
   const model = WHISPER_MANIFEST.assets.find((asset) => asset.role === 'model')
   const engine = WHISPER_MANIFEST.assets.find((asset) => asset.kind === 'zip')
@@ -88,7 +152,10 @@ test('双语字幕与转写下载的主进程、菜单、渲染层装配', () =>
   const playerView = fs.readFileSync(path.join(root, 'src', 'components', 'PlayerView.tsx'), 'utf8')
   const modelCenter = fs.readFileSync(path.join(root, 'src', 'components', 'ModelCenter.tsx'), 'utf8')
   assert.match(main, /subtitle:bilingual-generate/)
-  assert.match(main, /生成双语字幕（离线识别\+云端翻译）/)
+  assert.match(main, /自动翻译字幕/)
+  assert.match(main, /buildTranslationOnlySrt/)
+  assert.match(main, /chooseOppositeTarget/)
+  assert.doesNotMatch(main, /AgentPlay双语/)
   assert.match(main, /transcribe:status/)
   assert.match(main, /transcribe:download/)
   assert.match(main, /transcribe:cancel-download/)
@@ -96,7 +163,7 @@ test('双语字幕与转写下载的主进程、菜单、渲染层装配', () =>
   assert.match(preload, /transcribe: \{/)
   assert.match(playerView, /bilingual-subtitle/)
   assert.match(playerView, /generateBilingual/)
-  assert.match(playerView, /双语字幕只支持本地文件/)
+  assert.match(playerView, /字幕翻译只支持本地文件/)
   assert.match(modelCenter, /录音转写组件/)
   assert.match(modelCenter, /下载转写组件/)
 })

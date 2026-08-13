@@ -15,17 +15,21 @@ interface MediaFile {
 interface Props {
   onPlay: (name: string, path: string) => void
   rootDir?: string
+  actionRequest?: { id: number; action: string } | null
 }
 
 
-export default function MediaLibrary({ onPlay, rootDir }: Props) {
+export default function MediaLibrary({ onPlay, rootDir, actionRequest }: Props) {
   const openPanel = useAgentStore((s) => s.openPanel)
   const [menu, setMenu] = useState<{ x: number; y: number; file: MediaFile } | null>(null)
   const [files, setFiles] = useState<MediaFile[]>([])
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [dedupResults, setDedupResults] = useState<Array<{ original: string; duplicate: string; name: string }> | null>(null)
+  const [dedupRequestId, setDedupRequestId] = useState('')
+  const [dedupStatus, setDedupStatus] = useState('')
   const [suggestResults, setSuggestResults] = useState<Array<{ tag: string; count: number; suggestion: string }> | null>(null)
-  const [plugins, setPlugins] = useState<Array<{ name: string; version?: string; description?: string }> | null>(null)
+  const [plugins, setPlugins] = useState<PluginSkillInfo[] | null>(null)
+  const [pluginStatus, setPluginStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [networkSources, setNetworkSources] = useState<string[]>(() => {
@@ -106,9 +110,34 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   }
 
   const handleDedup = async () => {
-    const r = await window.aiPlayer?.media?.dedup()
-    setDedupResults(r || [])
+    if (!window.aiPlayer?.media || dedupRequestId) return
+    const requestId = crypto.randomUUID()
+    setDedupRequestId(requestId)
+    setDedupStatus('正在扫描媒体库…')
+    setDedupResults(null)
     setShowMore(true)
+    try {
+      const result = await window.aiPlayer.media.dedup({ requestId, dir: rootDir })
+      if (result.cancelled) {
+        setDedupStatus('扫描已取消，后台已停止读盘')
+        return
+      }
+      if (!result.success) throw new Error(result.error || '重复文件扫描失败')
+      setDedupResults(result.duplicates)
+      setDedupStatus(result.duplicates.length
+        ? `已扫描 ${result.filesScanned} 个媒体文件，发现 ${result.duplicates.length} 组重复`
+        : `已扫描 ${result.filesScanned} 个媒体文件，没有发现重复`)
+    } catch (error) {
+      setDedupStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDedupRequestId('')
+    }
+  }
+
+  const cancelDedup = async () => {
+    if (!dedupRequestId) return
+    const cancelled = await window.aiPlayer?.media?.cancel(dedupRequestId)
+    if (!cancelled) setDedupStatus('后台没有确认取消，扫描状态保持不变')
   }
 
   const handleSuggest = async () => {
@@ -119,13 +148,39 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   const handlePlugins = async () => {
     const r = await window.aiPlayer?.plugin?.list()
     setPlugins(r || [])
+    setPluginStatus('')
     setShowMore(true)
   }
 
+  const installPlugin = async () => {
+    setPluginStatus('正在校验插件包…')
+    const result = await window.aiPlayer?.plugin?.install()
+    if (result?.plugins) setPlugins(result.plugins)
+    setPluginStatus(result?.cancelled ? '' : result?.success ? '插件已安装，默认保持禁用' : result?.error || '插件安装失败')
+  }
+
+  const togglePlugin = async (plugin: PluginSkillInfo) => {
+    const enabled = !plugin.enabled
+    if (enabled) {
+      const permissions = plugin.permissions.length ? plugin.permissions.join('、') : '无额外权限'
+      if (!window.confirm(`启用“${plugin.name}”？\n\n本次确认权限：${permissions}\n\n插件只能调用 AgentPlay 已有受控工具，不能执行第三方代码。`)) return
+    }
+    const result = await window.aiPlayer?.plugin?.setEnabled({ id: plugin.id, enabled, permissions: plugin.permissions })
+    if (result?.plugins) setPlugins(result.plugins)
+    setPluginStatus(result?.success ? (enabled ? '插件已启用' : '插件已禁用') : result?.error || '状态更新失败')
+  }
+
+  const removePlugin = async (plugin: PluginSkillInfo) => {
+    if (!window.confirm(`移除“${plugin.name}”？\n\n插件会移入本机可恢复回收目录，不会直接永久删除。`)) return
+    const result = await window.aiPlayer?.plugin?.remove({ id: plugin.id, confirmed: true })
+    if (result?.plugins) setPlugins(result.plugins)
+    setPluginStatus(result?.success ? '插件已移入可恢复回收目录' : result?.error || '插件移除失败')
+  }
+
   const handleMetadata = async () => {
-    const apiKey = localStorage.getItem('aiplayer_tmdb_key') || ''
-    if (!apiKey) {
-      setMetadataStatus('请先在 Agent 配置里填写 TMDB key')
+    const credentials = await window.aiPlayer?.serviceCredentials?.status()
+    if (credentials && !credentials.services.tmdb.hasKey) {
+      setMetadataStatus('请先在“运行与隐私”里填写 TMDB Key')
       return
     }
     const videos = files.filter((f) => ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v', '.wmv'].includes(f.ext)).slice(0, 30)
@@ -145,7 +200,7 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
           .replace(/\b(19|20)\d{2}\b.*$/, '')
           .replace(/\[[^\]]+\]|\([^)]*\)/g, '')
           .trim()
-        const result = await window.aiPlayer?.tmdb?.search(query, apiKey)
+        const result = await window.aiPlayer?.tmdb?.search(query)
         if (result?.success && result.data) next[file.path] = result.data
         completed += 1
         setMetadataStatus(`正在刮削 ${completed}/${videos.length}…`)
@@ -282,6 +337,20 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
   }, [isDesktop, rootDir])
 
   useEffect(() => {
+    if (!dedupRequestId) return
+    return window.aiPlayer?.media?.onDedupProgress((progress) => {
+      if (progress.requestId !== dedupRequestId) return
+      if (progress.phase === 'scanning') {
+        setDedupStatus(`正在扫描媒体库 · 已发现 ${progress.filesScanned || 0} 个媒体文件`)
+      } else if (progress.phase === 'hashing') {
+        const total = progress.totalFiles || 0
+        const done = progress.processedFiles || 0
+        setDedupStatus(total > 0 ? `正在核对文件内容 ${done}/${total}` : '正在筛选可能重复的文件')
+      }
+    })
+  }, [dedupRequestId])
+
+  useEffect(() => {
     const handler = (event: Event) => {
       const action = (event as CustomEvent<string>).detail
       if (action === 'network-source') setShowAddUrl(true)
@@ -295,6 +364,17 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
     window.addEventListener('ai-player-action', handler)
     return () => window.removeEventListener('ai-player-action', handler)
   })
+
+  useEffect(() => {
+    const action = actionRequest?.action
+    if (action === 'network-source') setShowAddUrl(true)
+    else if (action === 'record') setRecordTrigger((value) => value + 1)
+    else if (action === 'dedup') void handleDedup()
+    else if (action === 'organize') void handleSuggest()
+    else if (action === 'plugins') void handlePlugins()
+    else if (action === 'poster') void handleMetadata()
+    else if (action === 'devices') setShowMore(true)
+  }, [actionRequest?.id])
 
   const allTags = [...new Set(files.flatMap((f) => f.tags || []))]
   const filtered = (activeTag ? files.filter((f) => f.tags?.includes(activeTag)) : files).filter(
@@ -364,6 +444,12 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
 
       <div className="flex-1 overflow-y-auto px-6 pb-6">
         {metadataStatus && <p className="text-xs text-gray-400 mb-3">{metadataStatus}</p>}
+        {dedupStatus && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg bg-player-surface px-4 py-3 text-xs text-gray-400">
+            <span>{dedupStatus}</span>
+            {dedupRequestId && <button type="button" onClick={() => void cancelDedup()} className="rounded-lg bg-red-500/15 px-3 py-1.5 text-red-300 hover:bg-red-500/25">停止扫描</button>}
+          </div>
+        )}
         {dedupResults && dedupResults.length > 0 && (
           <div className="mb-6 bg-player-surface rounded-lg p-4">
             <p className="text-sm">🔍 去重结果（{dedupResults.length} 组重复）</p>
@@ -382,14 +468,34 @@ export default function MediaLibrary({ onPlay, rootDir }: Props) {
         )}
         {plugins && (
           <div className="mb-6 bg-player-surface rounded-lg p-4">
-            <p className="text-sm">🧩 插件（{plugins.length}）</p>
-            <button onClick={() => void window.aiPlayer?.plugin?.openFolder()} className="text-xs text-player-accent mt-1">打开插件目录</button>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="mr-auto text-sm">🧩 插件与 Skill（{plugins.length}）</p>
+              <button onClick={() => void installPlugin()} className="rounded bg-player-accent px-2 py-1 text-xs text-white">安装插件包</button>
+              <button onClick={() => void window.aiPlayer?.plugin?.openFolder()} className="text-xs text-player-accent">打开插件目录</button>
+            </div>
+            <p className="mt-2 text-[11px] leading-5 text-gray-500">只加载声明式清单和 SKILL.md；不执行第三方 JavaScript、Python 或 DLL。新插件默认禁用，权限变化后自动撤销启用。</p>
+            {pluginStatus && <p className="mt-2 text-xs text-amber-300">{pluginStatus}</p>}
             {plugins.length === 0 ? (
-              <p className="text-xs text-gray-500 mt-1">将插件放入 ~/.ai-player/plugins/</p>
+              <p className="mt-2 text-xs text-gray-500">还没有插件。选择含 agentplay-plugin.json 的文件夹安装。</p>
             ) : (
-              plugins.map((p, i) => (
-                <p key={i} className="text-xs text-gray-500 mt-1">{p.name} {p.version}</p>
-              ))
+              <div className="mt-3 space-y-2">{plugins.map((plugin) => (
+                <div key={plugin.id} className="rounded-lg border border-white/10 bg-black/10 p-3">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-gray-200">{plugin.name} <span className="text-gray-500">{plugin.version}</span></p>
+                      <p className="mt-1 text-[11px] text-gray-500">{plugin.description || plugin.file}</p>
+                      <p className="mt-1 text-[10px] text-gray-600">Skill {plugin.skillCount} · 工具 {plugin.toolCount} · 权限 {plugin.permissions.join('、') || '无'}</p>
+                    </div>
+                    {plugin.kind === 'legacy-js' || !plugin.valid ? (
+                      <span className="rounded bg-red-500/10 px-2 py-1 text-[10px] text-red-300">已隔离停用</span>
+                    ) : (
+                      <button onClick={() => void togglePlugin(plugin)} className={`rounded px-2 py-1 text-[10px] ${plugin.enabled ? 'bg-emerald-500/15 text-emerald-200' : 'bg-white/10 text-gray-300'}`}>{plugin.enabled ? '已启用' : '启用'}</button>
+                    )}
+                  </div>
+                  {plugin.error && <p className="mt-2 text-[10px] leading-4 text-red-300">{plugin.error}</p>}
+                  {plugin.kind === 'declarative' && <button onClick={() => void removePlugin(plugin)} className="mt-2 text-[10px] text-gray-500 hover:text-red-300">移入回收目录</button>}
+                </div>
+              ))}</div>
             )}
           </div>
         )}

@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const { ModelConfigStore } = require('../electron/model-config-store')
 
@@ -57,16 +58,36 @@ test('quick switch to cloud without stash reports honestly', () => {
   assert.throws(() => store.quickSwitchRole('chat', 'mars'), /未知切换目标/)
 })
 
-test('quick switch wiring: IPC, preload and agent panel segmented control', () => {
+test('public cloud config does not pretend the default provider is connected before a key is saved', () => {
+  const store = makeStore()
+  const empty = store.publicConfig('chat')
+  assert.equal(empty.providerId, 'deepseek')
+  assert.equal(empty.requiresKey, true)
+  assert.equal(empty.configured, false)
+
+  const connected = store.save({
+    role: 'chat',
+    providerId: 'deepseek',
+    model: 'deepseek-chat',
+    baseUrl: 'https://api.deepseek.com/v1',
+    apiKey: 'secret-key'
+  })
+  assert.equal(connected.configured, true)
+  assert.equal(connected.hasApiKey, true)
+  assert.equal(Object.hasOwn(connected, 'apiKey'), false)
+})
+
+test('quick switch remains available to the unified model center but is not duplicated in the runtime drawer', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   assert.match(main, /ipcMain\.handle\('models:quick-switch'/)
   assert.match(main, /needDownload: true, reason: '本地 AI 组件未下载'/)
   assert.match(preload, /quickSwitch: \(input\) => ipcRenderer\.invoke\('models:quick-switch', input\)/)
-  assert.match(panel, /switchModelMode\('cloud'\)/)
-  assert.match(panel, /switchModelMode\('bundled'\)/)
-  assert.match(panel, /已切到本地模型：离线运行、内容不出机/)
+  assert.match(panel, /models\?\.routingStatus\?\.\(\)/)
+  assert.match(panel, /更改 AI 使用方式/)
+  assert.doesNotMatch(panel, /models\?\.quickSwitch/)
+  assert.doesNotMatch(panel, /switchModelMode/)
 })
 
 test('cli subscription config must never overwrite cloud stash (pollution regression)', () => {
@@ -88,4 +109,11 @@ test('cloud restore rejects polluted non-cloud stash honestly', () => {
   const result = store.quickSwitchRole('chat', 'cloud')
   assert.equal(result.switched, false)
   assert.match(result.reason, /没有可恢复的云端配置/)
+})
+
+test('quick switch never treats a loopback model service as cloud', () => {
+  const store = makeStore()
+  store.save({ role: 'chat', providerId: 'ollama', model: 'qwen3:8b', baseUrl: 'http://127.0.0.1:11434/v1' })
+  store.quickSwitchRole('chat', 'bundled')
+  assert.equal(store.quickSwitchRole('chat', 'cloud').switched, false)
 })

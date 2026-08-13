@@ -42,7 +42,7 @@ const artifacts = [modelRelativePath, ...runtimeFiles].map((relativePath) => {
 const manifest = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
-  product: 'AI播放器本地AI版',
+  product: 'AgentPlay 本地 AI 组件',
   model: {
     id: 'ai-player-qwen2.5-0.5b',
     upstream: 'Qwen/Qwen2.5-0.5B-Instruct-GGUF',

@@ -156,7 +156,7 @@ test('full Windows installer explicitly ships the pinned model, runtime, manifes
 
 test('standard Windows installer stays lean while preserving external and cloud model support', () => {
   const config = fs.readFileSync(path.join(__dirname, '..', 'electron-builder.lean.yml'), 'utf8')
-  assert.match(config, /AI播放器标准版安装包-\$\{version\}/)
+  assert.match(config, /AgentPlay-标准版安装包-\$\{version\}/)
   assert.match(config, /resources\/bin\/win/)
   assert.match(config, /compression: normal/)
   assert.match(config, /mpv\.com/)

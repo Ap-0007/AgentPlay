@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 const ExcelJS = require('exceljs')
 const { PDFDocument } = require('pdf-lib')
 const {
@@ -127,7 +128,7 @@ test('desktop menu, preload bridge and unified chat expose the document pipeline
   const main = fs.readFileSync(path.join(root, 'electron', 'main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(root, 'electron', 'preload.js'), 'utf8')
   const app = fs.readFileSync(path.join(root, 'src', 'App.tsx'), 'utf8')
-  const panel = fs.readFileSync(path.join(root, 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   assert.match(main, /AI 对话窗/)
   assert.match(main, /ipcMain\.handle\('documents:select-files'/)
   assert.match(main, /ipcMain\.handle\('documents:run'/)
@@ -135,7 +136,9 @@ test('desktop menu, preload bridge and unified chat expose the document pipeline
   assert.match(preload, /ipcRenderer\.invoke\('documents:run'/)
   assert.doesNotMatch(app, /<DocumentWorkspace/)
   assert.match(panel, /api\.run\(\{ tokens, instruction, outputFormat/)
-  assert.match(panel, /允许把本次任务的内容（文件正文、字幕或视频关键画面截图）发送给当前云端模型/)
+  assert.match(panel, /允许把本次任务内容发送给云端大上下文模型/)
+  assert.match(panel, /本地分段/)
+  assert.match(panel, /允许云端并继续/)
 })
 
 test('PDF text extraction reads embedded text and rejects image-only PDFs honestly', async () => {

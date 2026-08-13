@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "video-notes",
+  "name": "视频笔记助手",
+  "version": "1.0.0",
+  "description": "把当前视频的字幕证据整理成结构化笔记",
+  "publisher": "AgentPlay 示例",
+  "permissions": ["app.read"],
+  "skills": ["skills/video-notes/SKILL.md"],
+  "tools": [{
+    "name": "summarize-current-video",
+    "description": "读取当前视频的同名字幕并生成结构化摘要",
+    "target": "summarize_video",
+    "parameters": { "type": "object", "properties": {} }
+  }]
+}

@@ -2,23 +2,35 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
 const modelCenter = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'ModelCenter.tsx'), 'utf8')
 
-test('models:auto-detect probes all OpenAI-compatible providers concurrently, sorts by latency', () => {
+test('models:auto-detect sends a key only to the one provider explicitly selected by the user', () => {
   assert.match(main, /ipcMain\.handle\('models:auto-detect'/)
-  assert.match(main, /PROVIDERS\.filter\(\(provider\) => provider\.protocol === 'openai' && provider\.baseUrl/)
-  assert.match(main, /Promise\.all\(probes\)/)
-  assert.match(main, /matches\.sort\(\(a, b\) => a\.latencyMs - b\.latencyMs\)/)
+  assert.match(main, /const providerId = String\(input\.providerId/)
+  assert.match(main, /先选择这个 Key 是从哪家复制的/)
+  assert.doesNotMatch(main, /Promise\.all\(probes\)/)
   assert.match(main, /timeoutMs: 8000/)
   assert.match(preload, /autoDetect: \(input\) => ipcRenderer\.invoke\('models:auto-detect', input\)/)
 })
 
+test('models:auto-detect has one selected-provider probe and never persists the key itself', () => {
+  const start = main.indexOf("ipcMain.handle('models:auto-detect'")
+  const end = main.indexOf("ipcMain.handle('media:batch'", start)
+  assert.ok(start >= 0 && end > start, 'auto-detect IPC handler must be independently inspectable')
+  const handler = main.slice(start, end)
+  assert.match(handler, /PROVIDERS\.find\(\(item\) => item\.id === providerId/)
+  assert.equal((handler.match(/await listModels\(/g) || []).length, 1, 'the selected Key may reach exactly one model-list endpoint')
+  assert.doesNotMatch(handler, /Promise\.all|for\s*\(|\.map\s*\(/, 'provider probing must not fan out')
+  assert.doesNotMatch(handler, /modelConfigStore\.(?:save|write)/, 'detection must not persist an unconfirmed Key')
+})
+
 test('model center has one-key connect zone', () => {
-  assert.match(modelCenter, /一键接入（推荐）/)
-  assert.match(modelCenter, /自动识别厂商并列出可用模型/)
+  assert.match(modelCenter, /接入一个云端服务/)
+  assert.match(modelCenter, /Key 只会发给这一家/)
   assert.match(modelCenter, /autoDetect/)
   assert.match(modelCenter, /接入/)
   // 匹配卡片带模型下拉，用户可自选
@@ -36,14 +48,13 @@ test('model form: key visibility toggle, cli providers hide key/url steps, save 
 })
 
 
-test('model center layout: core config always visible, local packs folded by default; cli refresh uses local catalog', () => {
+test('model center layout: advanced config is available but hidden from daily use; local packs stay folded', () => {
   assert.match(modelCenter, /1\. 模型公司 \/ 服务/)
   assert.match(modelCenter, /读取可用型号/)
   assert.match(modelCenter, /测试连接/)
   assert.match(modelCenter, /保存并启用/)
-  // 核心操作区不得再被折叠藏住
-  assert.ok(!/showManual/.test(modelCenter), 'showManual 折叠已移除')
-  assert.match(modelCenter, /本地组件与下载（离线模型 · 精修 · 翻译 · OCR · 站点视频）/)
+  assert.match(modelCenter, /showAdvancedModelSetup/)
+  assert.match(modelCenter, /本地组件与下载（可选 · 离线模型 · 精修 · 翻译 · OCR · 站点视频）/)
   assert.match(modelCenter, /showLocalPacks/)
   // cli 厂商读取型号不再走空 URL
   assert.match(modelCenter, /来自官方 CLI 缓存，随周更自动最新/)
@@ -52,7 +63,7 @@ test('model center layout: core config always visible, local packs folded by def
 })
 
 test('model label syncs across components on models-changed event', () => {
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   assert.match(panel, /ai-player-models-changed/)
   assert.match(modelCenter, /ai-player-models-changed/)
 })

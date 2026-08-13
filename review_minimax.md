@@ -1,4 +1,4 @@
-# AI播放器 75a843f 代码审核报告
+# AgentPlay 75a843f 代码审核报告
 
 > **审核范围**：`electron/*.js` (10 个文件，884 行) + `src/**/*.{ts,tsx}` (12 个文件，893 行)
 > **审核维度**：功能 / 质量 / 安全 / 规范
@@ -451,7 +451,7 @@
 - **修复**：加 vitest + `electron/__tests__/` 测核心服务（mpv 协议、sync merge、llm tools）
 
 ### N-P2-#41 中文注释 + 英文 log 混用，无统一规范
-- **建议**：在 AGENTS.md 立"日志规范：英文 prefix + 中文 message"，如 `[MpvService] mpv 启动失败` 已 OK，但 `console.log('[preload] AI播放器 desktop API 已注入（含 mpv player）')`（preload.js:49）太口语
+- **建议**：在 AGENTS.md 立"日志规范：英文 prefix + 中文 message"，如 `[MpvService] mpv 启动失败` 已 OK，但 preload 注入日志不宜过度口语化。
 
 ### N-P2-#42 TODO 散落
 - **文件:行**：

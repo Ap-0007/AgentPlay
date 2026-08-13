@@ -47,6 +47,65 @@ function analyzeDir(dir, depth = 0) {
   return results
 }
 
+function abortError() {
+  const error = new Error('已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError()
+}
+
+// 去重专用异步枚举：同步递归会在超大媒体库里冻结主进程，也无法响应取消。
+async function analyzeDirAsync(dir, { signal, onProgress, maxDepth = 20 } = {}) {
+  const results = []
+  const pending = [{ dir, depth: 0 }]
+  let directoriesScanned = 0
+  while (pending.length > 0) {
+    throwIfAborted(signal)
+    const current = pending.pop()
+    if (!current || current.depth > maxDepth) continue
+    let entries
+    try {
+      entries = await fs.promises.readdir(current.dir, { withFileTypes: true })
+    } catch (error) {
+      if (signal?.aborted) throw abortError()
+      continue
+    }
+    directoriesScanned += 1
+    for (const entry of entries) {
+      throwIfAborted(signal)
+      const full = path.join(current.dir, entry.name)
+      if (entry.isDirectory()) {
+        pending.push({ dir: full, depth: current.depth + 1 })
+        continue
+      }
+      if (!entry.isFile()) continue
+      const ext = path.extname(entry.name).toLowerCase()
+      const type = getType(ext)
+      if (type === 'other') continue
+      let stat
+      try { stat = await fs.promises.stat(full) } catch { continue }
+      const size = stat.size
+      const tags = extractTags(entry.name, type)
+      results.push({
+        name: entry.name,
+        path: full,
+        ext,
+        type,
+        size,
+        mtimeMs: stat.mtimeMs,
+        tags,
+        group: tags[0] || type
+      })
+      onProgress?.({ phase: 'scanning', filesScanned: results.length, directoriesScanned, currentFile: entry.name })
+    }
+  }
+  throwIfAborted(signal)
+  return results
+}
+
 function clusterByTag(files) {
   const groups = {}
   for (const f of files) {
@@ -57,18 +116,47 @@ function clusterByTag(files) {
   return groups
 }
 
-// 异步流式哈希：同步 readSync 全文件会把主事件循环冻结数分钟（两组 4GB 视频的教训）
-function hashFile(filePath) {
+// 异步流式哈希：abort 会 destroy 当前流，停止继续读盘，而不只是丢弃最终结果。
+function hashFile(filePath, { signal, onProgress, createReadStream = fs.createReadStream } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
     const hash = crypto.createHash('sha256')
-    const stream = fs.createReadStream(filePath)
-    stream.on('error', reject)
-    stream.on('data', (chunk) => hash.update(chunk))
-    stream.on('end', () => resolve(hash.digest('hex')))
+    let bytesRead = 0
+    let settled = false
+    let stream
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      callback(value)
+    }
+    const onAbort = () => {
+      const error = abortError()
+      if (stream && !stream.destroyed) stream.destroy(error)
+      else finish(reject, error)
+    }
+    try {
+      stream = createReadStream(filePath)
+    } catch (error) {
+      finish(reject, error)
+      return
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    stream.once('error', (error) => finish(reject, signal?.aborted ? abortError() : error))
+    stream.on('data', (chunk) => {
+      if (signal?.aborted) return onAbort()
+      hash.update(chunk)
+      bytesRead += chunk.length
+      onProgress?.({ bytesRead })
+    })
+    stream.once('end', () => finish(resolve, hash.digest('hex')))
   })
 }
 
-async function findDuplicates(files) {
+async function findDuplicates(files, { signal, onProgress, hashFileImpl = hashFile, hashCache = {}, onFileHashed } = {}) {
   const bySize = new Map()
   const dupes = []
   for (const file of files) {
@@ -78,14 +166,45 @@ async function findDuplicates(files) {
     bySize.set(file.size, group)
   }
 
-  for (const group of bySize.values()) {
-    if (group.length < 2) continue
+  const candidateGroups = [...bySize.values()].filter((group) => group.length >= 2)
+  const totalFiles = candidateGroups.reduce((sum, group) => sum + group.length, 0)
+  const totalBytes = candidateGroups.reduce((sum, group) => sum + group.reduce((groupSum, file) => groupSum + file.size, 0), 0)
+  let processedFiles = 0
+  let processedBytes = 0
+  onProgress?.({ phase: 'hashing', processedFiles, totalFiles, bytesRead: processedBytes, totalBytes, currentFile: '' })
+
+  for (const group of candidateGroups) {
     const seen = new Map()
     for (const file of group) {
+      throwIfAborted(signal)
       let hash
+      let currentBytes = 0
       try {
-        hash = await hashFile(file.path)
-      } catch {
+        const cached = hashCache?.[file.path]
+        if (cached?.hash && Number(cached.size) === Number(file.size) && Number(cached.mtimeMs) === Number(file.mtimeMs)) {
+          hash = cached.hash
+        } else {
+          hash = await hashFileImpl(file.path, {
+            signal,
+            onProgress: ({ bytesRead }) => {
+              currentBytes = bytesRead
+              onProgress?.({
+                phase: 'hashing',
+                processedFiles,
+                totalFiles,
+                bytesRead: processedBytes + bytesRead,
+                totalBytes,
+                currentFile: file.name
+              })
+            }
+          })
+          onFileHashed?.(file, hash)
+        }
+      } catch (error) {
+        if (signal?.aborted) throw abortError()
+        processedFiles += 1
+        processedBytes += currentBytes
+        onProgress?.({ phase: 'hashing', processedFiles, totalFiles, bytesRead: processedBytes, totalBytes, currentFile: file.name })
         continue
       }
       const original = seen.get(hash)
@@ -94,8 +213,12 @@ async function findDuplicates(files) {
       } else {
         seen.set(hash, file)
       }
+      processedFiles += 1
+      processedBytes += file.size
+      onProgress?.({ phase: 'hashing', processedFiles, totalFiles, bytesRead: processedBytes, totalBytes, currentFile: file.name })
     }
   }
+  throwIfAborted(signal)
   return dupes
 }
 
@@ -115,4 +238,4 @@ function suggestClip(files) {
   return suggestions
 }
 
-module.exports = { analyzeDir, extractTags, clusterByTag, findDuplicates, suggestClip }
+module.exports = { analyzeDir, analyzeDirAsync, extractTags, clusterByTag, hashFile, findDuplicates, suggestClip }
