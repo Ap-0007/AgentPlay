@@ -21,13 +21,28 @@ test('main process owns planning, frozen execution, recovery and cancellation fo
   assert.match(main, /plannedMediaOutput\(sourcePath, decision\.output\.suffix, '\.mp4', requestId\)/)
 })
 
-test('preload exposes planning, trim execution and the shared persistent cancel route', () => {
+test('main process persists an edit capsule before checkpointing and owns undo or redo navigation', () => {
+  const main = read('electron/main.js')
+  assert.match(main, /new MediaEditProjectStore\(\{ rootDir: path\.join\(app\.getPath\('userData'\), 'media-edit-projects'\) \}\)/)
+  const executor = main.slice(main.indexOf("persistentTaskRuntime.register('media.edit-trim'"), main.indexOf("persistentTaskRuntime.register('media.dedup'"))
+  assert.match(executor, /mediaEditProjects\.recordTrim\(\{[\s\S]{0,260}taskId: task\.id[\s\S]{0,260}sourcePath[\s\S]{0,260}outputPath/)
+  assert.ok(executor.indexOf('mediaEditProjects.recordTrim') < executor.indexOf("checkpoint({ stage: 'artifact-written'"), '项目版本必须先持久化再收口任务检查点')
+  assert.match(main, /ipcMain\.handle\('media:edit-history-plan'/)
+  assert.match(main, /ipcMain\.handle\('media:edit-history'/)
+  assert.match(main, /mediaEditProjects\.navigate\(\{ currentPath, direction: action\.action \}\)/)
+})
+
+test('preload exposes planning, trim execution, project navigation and the shared persistent cancel route', () => {
   const preload = read('electron/preload.js')
   const types = read('src/types/global.d.ts')
   assert.match(preload, /planEdit: \(input\) => ipcRenderer\.invoke\('media:edit-plan', input\)/)
+  assert.match(preload, /planHistory: \(input\) => ipcRenderer\.invoke\('media:edit-history-plan', input\)/)
+  assert.match(preload, /navigateHistory: \(input\) => ipcRenderer\.invoke\('media:edit-history', input\)/)
   assert.match(preload, /trim: \(input\) => ipcRenderer\.invoke\('media:trim', input\)/)
-  assert.match(preload, /mediaTools:[\s\S]{0,360}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
+  assert.match(preload, /mediaTools:[\s\S]{0,600}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
   assert.match(types, /planEdit: \(input: \{ instruction: string; sourcePath: string \}/)
+  assert.match(types, /planHistory: \(input: \{ instruction: string; currentPath: string \}/)
+  assert.match(types, /navigateHistory: \(input: \{ instruction: string; currentPath: string \}/)
   assert.match(types, /trim: \(input: \{ instruction: string; sourcePath: string; requestId: string;/)
 })
 
@@ -43,6 +58,8 @@ test('renderer routes only a main-process-confirmed edit plan into a visible rec
   assert.match(tasks, /mediaTools\.planEdit\(\{ instruction: text, sourcePath \}\)/)
   assert.match(tasks, /mediaTools\.trim\(\{ sourcePath, instruction: text, requestId, workspaceTaskId:/)
   assert.match(tasks, /timelineReceipt/)
+  assert.match(tasks, /result\.projectCapsule/)
+  assert.match(tasks, /可直接说“撤销刚才的剪辑”/)
   assert.match(tasks, /ai-player-play-file/)
   assert.match(tasks, /case 'trim':/)
   assert.match(panel, /runTrimTask/)
@@ -50,4 +67,17 @@ test('renderer routes only a main-process-confirmed edit plan into a visible rec
   assert.match(recovery, /isDownload \|\| isCreative \|\| isTrim/)
   assert.match(dispatcher, /case 'trim':[\s\S]{0,180}mediaTools\?\.cancel\(requestId\)/)
   assert.match(lifecycle, /'trim'/)
+})
+
+test('renderer routes a confirmed undo or redo action back to the project version and player', () => {
+  const router = read('src/components/agent-panel/intentRouter.ts')
+  const tasks = read('src/components/agent-panel/useMediaCreativeTasks.ts')
+  const panel = read('src/components/AgentPanel.tsx')
+  assert.match(router, /await runEditHistoryTask\(text\)/)
+  assert.ok(router.indexOf('await runEditHistoryTask(text)') < router.indexOf('await runTrimTask(text)'))
+  assert.match(tasks, /mediaTools\.planHistory\(\{ instruction: text, currentPath \}\)/)
+  assert.match(tasks, /mediaTools\.navigateHistory\(\{ instruction: text, currentPath \}\)/)
+  assert.match(tasks, /result\.versionCount/)
+  assert.match(tasks, /ai-player-play-file/)
+  assert.match(panel, /runEditHistoryTask/)
 })

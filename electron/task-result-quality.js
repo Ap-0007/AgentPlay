@@ -119,11 +119,20 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const durationOk = expectedDuration > 0 && actualDuration > 0 && Math.abs(actualDuration - expectedDuration) <= tolerance
     const timelineReceipt = Array.isArray(result.timelineReceipt) ? result.timelineReceipt : []
     const hasTimelineReceipt = timelineReceipt.some((item) => String(item?.sourceRange || '').includes('→') && String(item?.outputRange || '').includes('→'))
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1
+      && String(projectCapsule.projectId || '').startsWith('edit-')
+      && String(projectCapsule.versionId || '').startsWith('version-')
+      && Number(projectCapsule.versionCount) >= 2
+      && Number(projectCapsule.cursor) >= 1
+      && projectCapsule.canUndo === true
+      && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '剪辑视频', artifactRatio, 35, artifactFailure)
-    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 20, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
-    add('duration-receipt', '成品时长', durationOk ? 1 : 0, 25, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
+    add('artifacts', '剪辑视频', artifactRatio, 25, artifactFailure)
+    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
+    add('duration-receipt', '成品时长', durationOk ? 1 : 0, 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
     add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, 10, reason('TIMELINE_RECEIPT_MISSING', '缺少可核对的源片段与成品时间线回执', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.compress') {
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('artifacts', '视频成果', artifactRatio, 50, artifactFailure)

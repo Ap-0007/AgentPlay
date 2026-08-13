@@ -118,6 +118,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   mediaTools: {
     planEdit: (input) => ipcRenderer.invoke('media:edit-plan', input),
+    planHistory: (input) => ipcRenderer.invoke('media:edit-history-plan', input),
+    navigateHistory: (input) => ipcRenderer.invoke('media:edit-history', input),
     trim: (input) => ipcRenderer.invoke('media:trim', input),
     compress: (input) => ipcRenderer.invoke('media:compress', input),
     cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId)

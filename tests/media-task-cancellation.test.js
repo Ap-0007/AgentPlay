@@ -131,7 +131,7 @@ test('preload, renderer and types bind cancellation to the active task id', () =
   const dispatcher = source('src/components/agent-panel/taskCommandDispatcher.ts')
   const types = source('src/types/global.d.ts')
   assert.match(preload, /mediaBatch:[\s\S]{0,260}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
-  assert.match(preload, /mediaTools:[\s\S]{0,360}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
+  assert.match(preload, /mediaTools:[\s\S]{0,600}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
   assert.match(preload, /cancelTask: \(requestId\) => ipcRenderer\.invoke\('studio:task-cancel', requestId\)/)
   for (const kind of ['batch', 'compress', 'trim', 'video-gen', 'recut']) {
     assert.ok(panel.includes(`pendingTaskRef.current = '${kind}'`), `${kind} 必须登记取消路由`)

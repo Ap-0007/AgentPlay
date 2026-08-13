@@ -13,6 +13,8 @@ const SEGMENT_REQUEST_PATTERN = /(?:我(?:只)?想要|我要|给我|替我)[\s\S
 const CONSULTATION_PATTERN = /(?:能不能|可不可以|是否|怎么|如何|支不支持|能做到|可以吗|行吗|\?|？)/
 const NEGATION_PATTERN = /(?:不要|别把|别剪|无需|不用|取消|不想)/
 const EXAMPLE_PATTERN = /(?:比如|例如|举例|假如|如果|假设|我说[“\"])/
+const UNDO_EDIT_PATTERN = /^(?:(?:请|帮我|麻烦你?)\s*)?(?:撤销(?:刚才的剪辑|这次剪辑|上一步(?:剪辑)?|上一个(?:剪辑)?版本)|撤回(?:刚才的剪辑|上一步(?:剪辑)?)|回到剪辑前|退回上一个(?:剪辑)?版本)\s*[吧。！!]*$/
+const REDO_EDIT_PATTERN = /^(?:(?:请|帮我|麻烦你?)\s*)?(?:重做(?:刚才撤销的剪辑|刚才的剪辑|下一步(?:剪辑)?)|恢复(?:刚才撤销的剪辑|下一个(?:剪辑)?版本)|回到下一个(?:剪辑)?版本)\s*[吧。！!]*$/
 
 function chineseInteger(value) {
   const text = String(value || '')
@@ -91,4 +93,12 @@ function compileEditDecisionList({ instruction, sourcePath } = {}) {
   }
 }
 
-module.exports = { compileEditDecisionList, parseTimeSeconds, chineseInteger }
+function compileEditHistoryAction(instruction) {
+  const text = String(instruction || '').trim()
+  if (!text || CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return null
+  if (UNDO_EDIT_PATTERN.test(text)) return { action: 'undo', instruction: text }
+  if (REDO_EDIT_PATTERN.test(text)) return { action: 'redo', instruction: text }
+  return null
+}
+
+module.exports = { compileEditDecisionList, compileEditHistoryAction, parseTimeSeconds, chineseInteger }

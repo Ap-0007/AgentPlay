@@ -1,0 +1,108 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+
+const { MediaEditProjectStore } = require('../electron/media-edit-project-store')
+
+function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-edit-project-'))
+  const sourcePath = path.join(root, 'source.mp4')
+  const outputPath = path.join(root, 'source-trimmed.mp4')
+  fs.writeFileSync(sourcePath, Buffer.concat([Buffer.from('source'), Buffer.alloc(2048)]))
+  fs.writeFileSync(outputPath, Buffer.concat([Buffer.from('trimmed'), Buffer.alloc(2048)]))
+  return { root, sourcePath, outputPath }
+}
+
+test('a completed trim becomes a non-destructive project version that can undo to the source', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const store = new MediaEditProjectStore({ rootDir: path.join(root, 'state') })
+    const capsule = store.recordTrim({
+      taskId: 'trim-1',
+      sourcePath,
+      outputPath,
+      decision: { schemaVersion: 1, kind: 'media.trim', timeline: { startSeconds: 4, endSeconds: 20, durationSeconds: 16 } }
+    })
+
+    assert.equal(capsule.currentPath, outputPath)
+    assert.equal(capsule.versionCount, 2)
+    assert.equal(capsule.canUndo, true)
+    assert.equal(capsule.canRedo, false)
+
+    const undone = store.navigate({ currentPath: outputPath, direction: 'undo' })
+    assert.equal(undone.success, true)
+    assert.equal(undone.currentPath, sourcePath)
+    assert.equal(undone.canUndo, false)
+    assert.equal(undone.canRedo, true)
+    assert.equal(fs.existsSync(sourcePath), true)
+    assert.equal(fs.existsSync(outputPath), true, 'undo must not delete the generated version')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('corrupt project history fails closed and is never silently overwritten', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const stateDir = path.join(root, 'state')
+    fs.mkdirSync(stateDir, { recursive: true })
+    const statePath = path.join(stateDir, 'media-edit-projects-v1.json')
+    fs.writeFileSync(statePath, '{ broken history', 'utf8')
+    const store = new MediaEditProjectStore({ rootDir: stateDir })
+
+    assert.throws(() => store.recordTrim({
+      taskId: 'trim-corrupt', sourcePath, outputPath,
+      decision: { schemaVersion: 1, kind: 'media.trim', timeline: { startSeconds: 4, endSeconds: 20, durationSeconds: 16 } }
+    }), /编辑项目历史损坏/)
+    assert.equal(fs.readFileSync(statePath, 'utf8'), '{ broken history')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a new edit cannot branch from a historical version changed by another program', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const store = new MediaEditProjectStore({ rootDir: path.join(root, 'state') })
+    const decision = { schemaVersion: 1, kind: 'media.trim', timeline: { startSeconds: 4, endSeconds: 20, durationSeconds: 16 } }
+    store.recordTrim({ taskId: 'trim-1', sourcePath, outputPath, decision })
+    store.navigate({ currentPath: outputPath, direction: 'undo' })
+    fs.appendFileSync(sourcePath, Buffer.from('changed-outside-agentplay'))
+    const nextOutput = path.join(root, 'source-second-trim.mp4')
+    fs.writeFileSync(nextOutput, Buffer.concat([Buffer.from('second'), Buffer.alloc(2048)]))
+
+    assert.throws(
+      () => store.recordTrim({ taskId: 'trim-2', sourcePath, outputPath: nextOutput, decision }),
+      /编辑版本文件已发生变化/
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('redo survives an app restart and an alternate edit replaces the abandoned redo branch', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const stateDir = path.join(root, 'state')
+    const decision = { schemaVersion: 1, kind: 'media.trim', timeline: { startSeconds: 4, endSeconds: 20, durationSeconds: 16 } }
+    const first = new MediaEditProjectStore({ rootDir: stateDir })
+    first.recordTrim({ taskId: 'trim-1', sourcePath, outputPath, decision })
+    first.navigate({ currentPath: outputPath, direction: 'undo' })
+
+    const afterRestart = new MediaEditProjectStore({ rootDir: stateDir })
+    assert.equal(afterRestart.navigate({ currentPath: sourcePath, direction: 'redo' }).currentPath, outputPath)
+    afterRestart.navigate({ currentPath: outputPath, direction: 'undo' })
+    const alternatePath = path.join(root, 'source-alternate.mp4')
+    fs.writeFileSync(alternatePath, Buffer.concat([Buffer.from('alternate'), Buffer.alloc(2048)]))
+    afterRestart.recordTrim({ taskId: 'trim-2', sourcePath, outputPath: alternatePath, decision })
+    afterRestart.navigate({ currentPath: alternatePath, direction: 'undo' })
+
+    const redone = afterRestart.navigate({ currentPath: sourcePath, direction: 'redo' })
+    assert.equal(redone.currentPath, alternatePath)
+    assert.notEqual(redone.currentPath, outputPath)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -15,6 +15,7 @@ type IntentRouterOptions = {
   isVideoGenerationIntent: (text: string) => boolean
   runBatchTask: (text: string) => Promise<void>
   runVideoGenTask: (text: string) => Promise<void>
+  runEditHistoryTask: (text: string) => Promise<boolean>
   runTrimTask: (text: string) => Promise<boolean>
   runCompressTask: (text: string) => Promise<void>
   runDedupTask: (text: string) => Promise<void>
@@ -38,7 +39,7 @@ const LIBRARY_INTENTS: Array<[RegExp, string, string]> = [
 export function createIntentRouter(options: IntentRouterOptions) {
   const {
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
-    isVideoGenerationIntent, runBatchTask, runVideoGenTask, runTrimTask,
+    isVideoGenerationIntent, runBatchTask, runVideoGenTask, runEditHistoryTask, runTrimTask,
     runCompressTask, runDedupTask, runDocumentTask, setAnalysisFormat,
     runAnalysisTask, send
   } = options
@@ -65,6 +66,9 @@ export function createIntentRouter(options: IntentRouterOptions) {
     if (isVideoGenerationIntent(text)) {
       await runVideoGenTask(text)
       return
+    }
+    if (videoSrc && !/^(https?|blob):/i.test(videoSrc) && window.aiPlayer?.mediaTools?.planHistory) {
+      if (await runEditHistoryTask(text)) return
     }
     if (videoSrc && !/^(https?|blob):/i.test(videoSrc) && window.aiPlayer?.mediaTools?.planEdit) {
       if (await runTrimTask(text)) return

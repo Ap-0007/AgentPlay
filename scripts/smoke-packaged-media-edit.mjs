@@ -142,22 +142,25 @@ try {
       throw new Error('等待超时：' + label)
     }
     await waitFor(() => document.readyState === 'complete' && window.aiPlayer?.mediaTools?.trim, '桌面桥接就绪', 60000)
-    await waitFor(() => {
+    const initial = await waitFor(() => {
       const input = document.querySelector('.agent-composer input[type="text"]')
       const video = document.querySelector('video[data-ai-player-video="true"]')
-      return input && video && video.readyState >= 1 ? { input, video } : null
+      return input && video && video.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 20 ? { duration: video.duration } : null
     }, '本地视频与对话框就绪', 60000)
     const explicitPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(instruction)}, sourcePath: ${JSON.stringify(sourcePath)} })
     const consultationPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: '能不能截取第4秒到第20秒？', sourcePath: ${JSON.stringify(sourcePath)} })
     if (!explicitPlan.matched || consultationPlan.matched) throw new Error('安装态意图边界不合格')
-    const input = document.querySelector('.agent-composer input[type="text"]')
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
-    setter.call(input, ${JSON.stringify(instruction)})
-    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(instruction)} }))
-    await wait(120)
-    const send = document.querySelector('button[aria-label="发送"]')
-    if (!send) throw new Error('没有找到发送按钮')
-    send.click()
+    const sendText = async (text) => {
+      const input = document.querySelector('.agent-composer input[type="text"]')
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setter.call(input, text)
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+      await wait(120)
+      const send = document.querySelector('button[aria-label="发送"]')
+      if (!send) throw new Error('没有找到发送按钮')
+      send.click()
+    }
+    await sendText(${JSON.stringify(instruction)})
     const task = await waitFor(async () => {
       const tasks = await window.aiPlayer.taskRuntime.list()
       const candidate = [...tasks].reverse().find((item) => item.type === 'media.edit-trim')
@@ -170,14 +173,41 @@ try {
         ? { duration: video.duration, currentSrc: video.currentSrc }
         : null
     }, '自动预览剪辑成片', 30000)
+    if (task.result?.projectCapsule?.versionCount !== 2 || task.result?.projectCapsule?.canUndo !== true) throw new Error('安装态任务没有生成可撤销项目胶囊')
+    await waitFor(() => document.body.innerText.includes('可直接说“撤销刚才的剪辑”'), '项目胶囊提示', 10000)
+    const undoInstruction = '撤销刚才的剪辑'
+    const undoPlan = await window.aiPlayer.mediaTools.planHistory({ instruction: undoInstruction, currentPath: task.result.outputPath })
+    if (!undoPlan.matched || undoPlan.action?.action !== 'undo') throw new Error('安装态撤销计划不合格')
+    await sendText(undoInstruction)
+    const undoPreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - initial.duration) <= 0.2 && document.body.innerText.includes('项目版本：1/2')
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '对话撤销并打开原片', 30000)
+    const redoInstruction = '重做刚才撤销的剪辑'
+    const redoPlan = await window.aiPlayer.mediaTools.planHistory({ instruction: redoInstruction, currentPath: ${JSON.stringify(sourcePath)} })
+    if (!redoPlan.matched || redoPlan.action?.action !== 'redo') throw new Error('安装态重做计划不合格')
+    await sendText(redoInstruction)
+    const redoPreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 16) <= 0.2 && document.body.innerText.includes('项目版本：2/2')
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '对话重做并打开成片', 30000)
     const bodyText = document.body.innerText
     return {
       version: window.aiPlayer.version,
+      originalDuration: initial.duration,
       explicitPlan,
       consultationMatched: consultationPlan.matched,
       task,
       preview,
-      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：源片')
+      undoPlan,
+      undoPreview,
+      redoPlan,
+      redoPreview,
+      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：源片') && bodyText.includes('项目版本：1/2') && bodyText.includes('项目版本：2/2')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -190,12 +220,18 @@ try {
   if (Math.abs(Number(pageResult.task.result.durationSeconds) - 16) > 0.2) throw new Error('安装态成品时长不合格')
   if (pageResult.task.quality?.passed !== true) throw new Error('安装态任务质量门未通过')
   if (!pageResult.uiReceiptVisible) throw new Error('对话框没有显示时间线与原文件回执')
+  if (Math.abs(Number(pageResult.undoPreview?.duration) - Number(pageResult.originalDuration)) > 0.2) throw new Error('安装态撤销没有回到原片')
+  if (Math.abs(Number(pageResult.redoPreview?.duration) - 16) > 0.2) throw new Error('安装态重做没有回到成片')
   const persistedOutputPath = path.join(evidenceDir, 'packaged-trim-4s-20s.mp4')
   fs.copyFileSync(outputPath, persistedOutputPath)
-  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, persistedOutputPath, screenshotPath, pageResult }
+  const projectStatePath = path.join(profileDir, 'media-edit-projects', 'media-edit-projects-v1.json')
+  if (!fs.existsSync(projectStatePath)) throw new Error('安装态没有持久化编辑项目状态')
+  const persistedProjectStatePath = path.join(evidenceDir, 'media-edit-projects-v1.json')
+  fs.copyFileSync(projectStatePath, persistedProjectStatePath)
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, persistedOutputPath, persistedProjectStatePath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, qualityScore: pageResult.task.quality.score }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, qualityScore: pageResult.task.quality.score, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

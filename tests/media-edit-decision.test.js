@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const { compileEditDecisionList } = require('../electron/media-edit-decision')
+const { compileEditDecisionList, compileEditHistoryAction } = require('../electron/media-edit-decision')
 
 test('explicit Chinese trim instruction compiles to a frozen 16-second timeline', () => {
   const decision = compileEditDecisionList({
@@ -47,5 +47,13 @@ test('ambiguous or invalid ranges stay in conversation instead of guessing', () 
     '保留第4秒到第4秒'
   ]) {
     assert.equal(compileEditDecisionList({ instruction, sourcePath: 'D:\\Videos\\source.mp4' }), null, instruction)
+  }
+})
+
+test('only an explicit undo or redo command becomes an edit-history action', () => {
+  assert.deepEqual(compileEditHistoryAction('撤销刚才的剪辑'), { action: 'undo', instruction: '撤销刚才的剪辑' })
+  assert.deepEqual(compileEditHistoryAction('重做刚才撤销的剪辑'), { action: 'redo', instruction: '重做刚才撤销的剪辑' })
+  for (const instruction of ['能不能撤销刚才的剪辑？', '不要撤销', '比如说撤销上一步', '撤销下载任务', '重新剪辑第4秒到第20秒']) {
+    assert.equal(compileEditHistoryAction(instruction), null, instruction)
   }
 })

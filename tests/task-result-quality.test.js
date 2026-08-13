@@ -71,7 +71,8 @@ test('media trim quality requires a verified timeline and duration receipt', () 
       outputs: [output],
       durationSeconds: 16.04,
       expectedDurationSeconds: 16,
-      timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }]
+      timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
     }, spec)
     assert.equal(passed.passed, true)
     assert.ok(passed.checks.some((item) => item.id === 'duration-receipt' && item.passed))
@@ -82,6 +83,13 @@ test('media trim quality requires a verified timeline and duration receipt', () 
     assert.equal(failed.passed, false)
     assert.ok(failed.reasons.some((item) => item.code === 'DURATION_MISMATCH'))
     assert.ok(failed.reasons.some((item) => item.code === 'TIMELINE_RECEIPT_MISSING'))
+
+    const missingProject = evaluateTaskResult('media.edit-trim', {
+      success: true, outputs: [output], durationSeconds: 16.04, expectedDurationSeconds: 16,
+      timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }]
+    }, spec)
+    assert.equal(missingProject.passed, false)
+    assert.ok(missingProject.reasons.some((item) => item.code === 'PROJECT_CAPSULE_MISSING'))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

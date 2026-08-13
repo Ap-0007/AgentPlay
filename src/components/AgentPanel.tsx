@@ -269,6 +269,7 @@ export default function AgentPanel() {
     runRecutShort,
     runVideoGenTask,
     runBatchTask,
+    runEditHistoryTask,
     runTrimTask,
     runCompressTask,
     runDedupTask,
@@ -296,7 +297,7 @@ export default function AgentPanel() {
 
   const routeTextSend = createIntentRouter({
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
-    isVideoGenerationIntent, runBatchTask, runVideoGenTask, runTrimTask,
+    isVideoGenerationIntent, runBatchTask, runVideoGenTask, runEditHistoryTask, runTrimTask,
     runCompressTask, runDedupTask, runDocumentTask: runDocTask, setAnalysisFormat,
     runAnalysisTask, send
   })

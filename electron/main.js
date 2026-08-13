@@ -67,8 +67,9 @@ const { LocalAiDownloadService } = require('./local-ai-download-service')
 const { PersistentTaskRuntime } = require('./persistent-task-runtime')
 const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = require('./persistent-document-task')
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
-const { compileEditDecisionList } = require('./media-edit-decision')
+const { compileEditDecisionList, compileEditHistoryAction } = require('./media-edit-decision')
 const { MediaEditService } = require('./media-edit-service')
+const { MediaEditProjectStore } = require('./media-edit-project-store')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -637,6 +638,7 @@ const videoFrames = new VideoFrameService({
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
+const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
   manifest: TRANSLATE_PACK,
@@ -1874,7 +1876,6 @@ app.whenReady().then(async () => {
   }, { autoResume: true })
 
   persistentTaskRuntime.register('media.edit-trim', async ({ task, signal, checkpoint, status }) => {
-    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.trim') throw new Error('冻结的剪辑决策无效')
@@ -1885,9 +1886,11 @@ app.whenReady().then(async () => {
       ? await mediaEditService.verify({ sourcePath, outputPath, decision: task.spec.decision, signal })
       : await mediaEditService.trim({ sourcePath, outputPath, decision: task.spec.decision, signal })
     validateMediaSources(task.spec.sources)
-    checkpoint({ stage: 'artifact-written', result })
+    const projectCapsule = mediaEditProjects.recordTrim({ taskId: task.id, sourcePath, outputPath, decision: task.spec.decision })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
     userAuthorizedPaths.add(path.resolve(outputPath))
-    return result
+    return completed
   }, { autoResume: true })
 
   persistentTaskRuntime.register('media.dedup', async ({ task, signal, checkpoint, status }) => {
@@ -1993,6 +1996,33 @@ app.whenReady().then(async () => {
       return decision ? { matched: true, decision } : { matched: false }
     } catch (error) {
       return { matched: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('media:edit-history-plan', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      assertAllowedPath(input.currentPath)
+      const action = compileEditHistoryAction(input.instruction)
+      return action ? { matched: true, action } : { matched: false }
+    } catch (error) {
+      return { matched: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('media:edit-history', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const currentPath = assertAllowedPath(input.currentPath)
+      const action = compileEditHistoryAction(input.instruction)
+      if (!action) return { success: false, matched: false, error: '这句话不是明确的剪辑撤销或重做指令' }
+      const result = mediaEditProjects.navigate({ currentPath, direction: action.action })
+      if (!result.success) return { ...result, matched: true }
+      userAuthorizedPaths.add(path.resolve(result.currentPath))
+      const summary = action.action === 'undo'
+        ? `已撤销刚才的剪辑，正在打开上一版：${path.basename(result.currentPath)}`
+        : `已重做刚才撤销的剪辑，正在打开下一版：${path.basename(result.currentPath)}`
+      return { ...result, matched: true, summary }
+    } catch (error) {
+      return { success: false, matched: true, error: error instanceof Error ? error.message : String(error) }
     }
   })
   ipcMain.handle('media:trim', async (event, input = {}) => {

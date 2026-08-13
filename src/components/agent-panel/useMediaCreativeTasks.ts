@@ -189,6 +189,34 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     }
   }
 
+  const runEditHistoryTask = async (text: string): Promise<boolean> => {
+    if (!text) return false
+    const currentPath = usePlayerStore.getState().videoSrc
+    if (!currentPath || /^(https?|blob):/i.test(currentPath) || !window.aiPlayer?.mediaTools?.planHistory) return false
+    try {
+      const plan = await window.aiPlayer.mediaTools.planHistory({ instruction: text, currentPath })
+      if (!plan?.matched || !plan.action) return false
+      addMessage('user', text)
+      setInputText('')
+      if (busyRef.current) {
+        addMessage('agent', '当前任务还在处理中，完成后再撤销或重做，避免切换到错误版本。')
+        return true
+      }
+      const result = await window.aiPlayer.mediaTools.navigateHistory({ instruction: text, currentPath })
+      if (!result?.success || !result.currentPath) {
+        addMessage('agent', `[错误] ${result?.error || '没有可以切换的编辑版本'}`)
+        return true
+      }
+      const position = Number(result.cursor) + 1
+      addMessage('agent', `${result.summary || '已切换编辑版本'}\n项目版本：${position}/${result.versionCount || position}；所有版本文件均保留。`)
+      window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.currentPath }))
+      return true
+    } catch (error) {
+      addMessage('agent', `[错误] ${error instanceof Error ? error.message : String(error)}`)
+      return true
+    }
+  }
+
   const runTrimTask = async (text: string, override?: TrimInput): Promise<boolean> => {
     if (!text) return false
     const sourcePath = override?.sourcePath || usePlayerStore.getState().videoSrc
@@ -226,8 +254,12 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       if (!result?.success || !result.outputPath) throw new Error(result?.error || '视频剪辑失败')
       const receipt = result.timelineReceipt?.[0]
       const summary = result.summary || `已生成 ${Number(result.durationSeconds || 0).toFixed(3)} 秒新视频；原文件未改动`
+      const capsule = result.projectCapsule
+      const projectHint = capsule
+        ? `\n编辑项目：第 ${capsule.cursor + 1}/${capsule.versionCount} 版；可直接说“撤销刚才的剪辑”。`
+        : ''
       completeExecutionTask({ outputs: [result.outputPath], summary })
-      addMessage('agent', `${summary}${receipt ? `\n时间线：源片 ${receipt.sourceRange}；成片 ${receipt.outputRange}` : ''}\n成果：${result.outputPath}`)
+      addMessage('agent', `${summary}${receipt ? `\n时间线：源片 ${receipt.sourceRange}；成片 ${receipt.outputRange}` : ''}${projectHint}\n成果：${result.outputPath}`)
       window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
       return true
     } catch (error) {
@@ -330,7 +362,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
 
   useEffect(() => {
     const onAgentMediaTask = (event: Event) => {
-      const detail = (event as CustomEvent<{ action?: string; value?: { targetMb?: number; mode?: 'compress' | 'remux'; startSeconds?: number; endSeconds?: number } }>).detail || {}
+      const detail = (event as CustomEvent<{ action?: string; value?: { targetMb?: number; mode?: 'compress' | 'remux'; startSeconds?: number; endSeconds?: number; direction?: 'undo' | 'redo' } }>).detail || {}
       if (detail.action === 'start_batch_transcribe') {
         void runBatchTask('全部转写')
         return
@@ -345,6 +377,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         const startSeconds = Math.max(0, Number(detail.value?.startSeconds) || 0)
         const endSeconds = Math.max(0, Number(detail.value?.endSeconds) || 0)
         void runTrimTask(`保留第${startSeconds}秒到第${endSeconds}秒`)
+        return
+      }
+      if (detail.action === 'start_edit_history') {
+        void runEditHistoryTask(detail.value?.direction === 'redo' ? '重做刚才撤销的剪辑' : '撤销刚才的剪辑')
         return
       }
       if (detail.action === 'start_duplicate_scan') void runDedupTask('重复文件检查')
@@ -425,6 +461,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     runRecutShort,
     runVideoGenTask,
     runBatchTask,
+    runEditHistoryTask,
     runTrimTask,
     runCompressTask,
     runDedupTask,
