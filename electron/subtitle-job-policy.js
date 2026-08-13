@@ -1,7 +1,10 @@
 const path = require('path')
 
 function subtitleMediaKey(mediaPath) {
-  const resolved = path.resolve(String(mediaPath || '')).replace(/\\/g, '/')
+  const input = String(mediaPath || '')
+  const isWindowsAbsolute = /^[a-z]:[\\/]/i.test(input) || /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(input)
+  if (isWindowsAbsolute) return path.win32.normalize(input).replace(/\\/g, '/').toLowerCase()
+  const resolved = path.resolve(input).replace(/\\/g, '/')
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
