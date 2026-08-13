@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const YTDLP_PACK = require('../electron/ytdlp-pack-manifest')
 const { SiteVideoService } = require('../electron/site-video-service')
@@ -61,7 +62,7 @@ test('every recognized link keeps both download choices visible', async () => {
 
 test('link analysis pipeline wiring: detect mode, IPC and approval-resume path', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   assert.match(main, /wantsAnalysis = \/拉片\|解剖\|分析\|解读\|讲解\//)
   assert.match(main, /ipcMain\.handle\('media:link-analysis'/)
   assert.match(main, /正在离线转写语音/)

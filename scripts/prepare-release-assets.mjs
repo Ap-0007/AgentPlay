@@ -133,7 +133,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const result = prepareReleaseAssets({
     rootDir: moduleRoot,
     version,
-    installerPath: cliValue('--installer') ?? path.join(moduleRoot, 'release', `AI播放器标准版安装包-${version}.exe`),
+    installerPath: cliValue('--installer') ?? path.join(moduleRoot, 'release', `AgentPlay-标准版安装包-${version}.exe`),
     verificationPath: cliValue('--verification') ?? path.join(moduleRoot, 'release', `release-verification-${version}.json`),
     securityScanPath: cliValue('--security') ?? path.join(moduleRoot, 'release', 'security-release-scan.json'),
     sbomPath: cliValue('--sbom') ?? path.join(moduleRoot, 'release', `AgentPlay-${version}.spdx.json`),

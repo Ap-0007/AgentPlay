@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const { AgentEngine } = require('../electron/llm-service')
 const { CastService } = require('../electron/cast-service')
@@ -17,20 +18,21 @@ const { ModelConfigStore } = require('../electron/model-config-store')
 const { extractExternalMediaPaths } = require('../electron/external-media-open')
 const { buildMpvEdl, buildOfflineAnalysis, parseSubtitleCues } = require('../electron/analysis-studio-service')
 
-test('playing media auto-hides chrome after idle while paused or blocked UI stays visible', async () => {
+test('only immersive playback auto-hides chrome while normal, paused or blocked UI stays visible', async () => {
   const policyPath = path.join(__dirname, '..', 'src', 'player-ui-policy.mjs')
   assert.equal(fs.existsSync(policyPath), true, 'missing player UI visibility policy')
   const { PLAYER_CHROME_HIDE_DELAY_MS, shouldAutoHideControls } = await import(`file:///${policyPath.replace(/\\/g, '/')}`)
   assert.equal(PLAYER_CHROME_HIDE_DELAY_MS, 3000)
-  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true }), true)
+  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, immersive: false }), false)
+  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, immersive: true }), true)
   assert.equal(shouldAutoHideControls({ hasMedia: true, playing: false }), false)
   assert.equal(shouldAutoHideControls({ hasMedia: false, playing: true }), false)
-  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, blocked: true }), false)
+  assert.equal(shouldAutoHideControls({ hasMedia: true, playing: true, immersive: true, blocked: true }), false)
   const playerView = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
   const controls = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerControls.tsx'), 'utf8')
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
-  assert.match(playerView, /setPlaybackChromeVisible\(!isMedia\)/)
-  assert.match(playerView, /onClick={searchOnlineSubtitle}[\s\S]{0,500}controlsVisible \? 'opacity-100'/)
+  assert.match(playerView, /setPlaybackChromeVisible\(false\)/)
+  assert.match(playerView, /data-smart-translate-subtitle="true"[\s\S]{0,500}controlsVisible \? 'opacity-100'/)
   assert.match(controls, /data-player-chrome="true"/)
   assert.match(main, /window:setPlaybackChromeVisible[\s\S]{0,420}setMenuBarVisibility/)
   assert.match(main, /window:isPlaybackChromeVisible[\s\S]{0,180}isMenuBarVisible/)
@@ -48,7 +50,7 @@ test('player right-click is a real context menu, not an open-file shortcut', () 
   const preloadSrc = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
   assert.match(mainSrc, /ipcMain\.on\('context:show'/)
   assert.match(preloadSrc, /contextMenu/)
-  for (const item of ['生成双语字幕', '实时翻译字幕', '实时识别字幕', '拉片（AI 对话解剖）', '截取当前画面']) {
+  for (const item of ['自动翻译字幕', '字幕高级选项', '翻译已加载字幕', '仅实时识别原文', '拉片（AI 对话解剖）', '截取当前画面']) {
     assert.ok(mainSrc.includes(item), )
   }
   assert.doesNotMatch(playerView, /onContextMenu={[\s\S]{0,240}dialog\?\.openFile/)
@@ -63,10 +65,15 @@ test('Explorer Open with forwards initial and second-instance media paths to the
   assert.match(main, /did-finish-load['"][\s\S]{0,300}flushPendingExternalMedia\(\)/)
   assert.match(preload, /external-media:accepted/)
   assert.match(app, /confirmOpenFile\?\.\(filePath\)/)
+  assert.match(
+    main,
+    /ipcMain\.on\('external-media:accepted',[\s\S]{0,500}userAuthorizedPaths\.add\(path\.resolve\(acceptedPath\)\)/,
+    'an external media file accepted by the renderer must be authorized for subtitle and analysis IPCs'
+  )
   assert.match(main, /播放界面已接收外部文件/)
 })
 
-test('both Windows installers repair the per-user Open with command without taking over defaults', () => {
+test('both Windows installers register a real per-user video ProgID without taking over defaults', () => {
   const packageConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
   const leanConfig = fs.readFileSync(path.join(__dirname, '..', 'electron-builder.lean.yml'), 'utf8')
   const installer = fs.readFileSync(path.join(__dirname, '..', 'build', 'installer.nsh'), 'utf8')
@@ -75,7 +82,16 @@ test('both Windows installers repair the per-user Open with command without taki
   assert.match(installer, /Applications\\\$\{APP_EXECUTABLE_FILENAME\}\\shell\\open\\command/)
   assert.match(installer, /\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}/)
   assert.match(installer, /SupportedTypes[\s\S]*\.mp4/)
-  assert.doesNotMatch(installer, /Software\\Classes\\\.mp4/)
+  assert.match(installer, /Software\\Classes\\AgentPlay\.Video\\shell\\open\\command/)
+  assert.match(installer, /Software\\RegisteredApplications/)
+  assert.match(installer, /Software\\AgentPlay\\Capabilities\\FileAssociations/)
+  const videoExts = ['.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v', '.wmv', '.flv', '.ts', '.mpeg', '.mpg', '.3gp']
+  for (const ext of videoExts) {
+    assert.ok(installer.includes(`AgentPlayRegisterVideoExtension "${ext}"`), `missing ProgID registration for ${ext}`)
+    assert.ok(installer.includes(`AgentPlayUnregisterVideoExtension "${ext}"`), `missing ProgID cleanup for ${ext}`)
+  }
+  assert.doesNotMatch(installer, /Software\\Classes\\\$\{EXT\}"\s+""/, 'installer must not replace the extension default ProgID')
+  assert.match(installer, /DeleteRegKey HKCU "Software\\Classes\\AgentPlay\.Video"/)
 })
 
 test('Windows installer registers the AgentPlay document verb for documents, separate from the player', () => {
@@ -96,7 +112,7 @@ test('Explorer AgentPlay document verb is routed to the unified chat, never the 
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
   const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   const guard = main.match(/function queueExternalMediaArgs\(argv\) \{([\s\S]*?)\n\}/)
   assert.ok(guard, 'queueExternalMediaArgs body must be found')
   assert.ok(guard[1].includes('hasDocumentVerbFlag(argv)'), 'document verb guard must run inside queueExternalMediaArgs')
@@ -133,7 +149,7 @@ test('single installer carries the in-app local AI download instead of a second 
 test('unified conversation opens any file and runs document tasks inline', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
   const globalTypes = fs.readFileSync(path.join(__dirname, '..', 'src', 'types', 'global.d.ts'), 'utf8')
   assert.match(main, /chat:open-any/)
@@ -143,7 +159,9 @@ test('unified conversation opens any file and runs document tasks inline', () =>
   assert.match(panel, /chat\?\.openAny/)
   assert.match(panel, /attachments\.length > 0/)
   assert.match(panel, /api\.run\(\{ tokens, instruction, outputFormat, cloudApproved/)
-  assert.match(panel, /允许把本次任务的内容（文件正文、字幕或视频关键画面截图）发送给当前云端模型/)
+  assert.match(panel, /允许把本次任务内容发送给云端大上下文模型/)
+  assert.match(panel, /本地分段/)
+  assert.match(panel, /允许云端并继续/)
   assert.match(panel, /ai-player-play-file/)
   assert.match(panel, /system\?\.openPath\(output\)/)
   assert.match(app, /ai-player-play-file/)
@@ -165,7 +183,7 @@ test('document previews are allowed by CSP while scripts stay self-only', () => 
 
 test('library context menu routes documents to the unified chat with authorized tokens', () => {
   const library = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MediaLibrary.tsx'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   assert.match(library, /onContextMenu=\{\(event\)/)
   assert.match(library, /chat\?\.attachPaths\(\[menu\.file\.path\]\)/)
   assert.match(library, /ai-player-attach-docs/)
@@ -186,12 +204,34 @@ test('printing routes office formats to the local engine and validates authorize
   assert.match(service, /async printFile\(sourcePath\)/)
 })
 
-test('AgentPlay branding preserves the existing internal app identity and user data', () => {
+test('AgentPlay branding is unified while preserving the existing internal app identity and user data', () => {
   const packageConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8')
+  const leanBuilder = fs.readFileSync(path.join(__dirname, '..', 'electron-builder.lean.yml'), 'utf8')
+  const webShell = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8')
+  const capacitor = fs.readFileSync(path.join(__dirname, '..', 'capacitor.config.ts'), 'utf8')
+  const androidStrings = fs.readFileSync(path.join(__dirname, '..', 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf8')
+  const runtimeBrandFiles = [
+    'electron/main.js', 'electron/preload.js', 'electron/mpv-service.js', 'electron/wifi-transfer.js',
+    'electron/dlna-server.js', 'electron/dlna-receiver.js', 'electron/subtitle-service.js',
+    'electron/llm-service.js', 'src/components/Recorder.tsx'
+  ].map((file) => fs.readFileSync(path.join(__dirname, '..', ...file.split('/')), 'utf8'))
   assert.equal(packageConfig.name, 'ai-player')
   assert.equal(packageConfig.build.appId, 'com.aiplayer.app')
-  assert.equal(packageConfig.build.productName, 'AI播放器')
+  assert.equal(packageConfig.build.productName, 'AgentPlay')
+  assert.match(packageConfig.build.nsis.artifactName, /^AgentPlay-/)
+  assert.match(leanBuilder, /^productName: AgentPlay$/m)
+  assert.match(leanBuilder, /artifactName: AgentPlay-标准版安装包-/)
+  assert.match(webShell, /<title>AgentPlay<\/title>/)
+  assert.match(capacitor, /appName:\s*'AgentPlay'/)
+  assert.match(androidStrings, /<string name="app_name">AgentPlay<\/string>/)
+  for (const content of runtimeBrandFiles) assert.doesNotMatch(content, /AI播放器|AIPlayer/)
+  const brandMark = fs.readFileSync(path.join(__dirname, '..', 'resources', 'icons', 'agentplay-mark.svg'), 'utf8')
+  assert.match(brandMark, /M4 13c5\.2-/)
+  const installer = fs.readFileSync(path.join(__dirname, '..', 'build', 'installer.nsh'), 'utf8')
+  assert.match(installer, /Delete "\$DESKTOP\\AI播放器\.lnk"/)
+  assert.match(installer, /Delete "\$INSTDIR\\AI播放器\.exe"/)
+  assert.match(installer, /DeleteRegKey HKCU "Software\\Classes\\Applications\\AI播放器\.exe"/)
   assert.match(readme, /AgentPlay/)
   assert.doesNotMatch(readme, /AgentHub/)
 })
@@ -201,11 +241,15 @@ test('service worker registration is web-only and cannot fail in packaged Electr
   const entry = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.tsx'), 'utf8')
   const buildWeb = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-web.mjs'), 'utf8')
   assert.match(vite, /injectRegister:\s*null/)
+  assert.match(vite, /root:\s*projectRoot/)
+  assert.match(vite, /fs\.realpathSync\(__dirname\)/)
   assert.match(entry, /location\.protocol === 'http:'[\s\S]*location\.protocol === 'https:'/)
   assert.match(entry, /navigator\.serviceWorker\.register/)
   assert.doesNotMatch(entry, /virtual:pwa-register/)
   assert.match(buildWeb, /'sw\.js'/)
   assert.doesNotMatch(buildWeb, /'registerSW\.js'/)
+  assert.match(buildWeb, /new Worker/)
+  assert.match(buildWeb, /writeFallbackServiceWorker/)
 })
 
 test('Explorer Open with accepts supported files with spaces and Chinese characters only', () => {
@@ -216,7 +260,7 @@ test('Explorer Open with accepts supported files with spaces and Chinese charact
   fs.writeFileSync(unsupported, 'fixture')
   try {
     assert.deepEqual(extractExternalMediaPaths([
-      'AI播放器.exe', '--flag', `"${video}"`, unsupported, video
+      'AgentPlay.exe', '--flag', `"${video}"`, unsupported, video
     ]), [path.resolve(video)])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -409,7 +453,7 @@ test('basic Agent playback commands work without a cloud key', async () => {
   const result = await engine.chat([{ role: 'user', content: '把音量调到 35' }])
   assert.equal(result.toolResults[0].result.action, 'set_volume')
   assert.equal(result.toolResults[0].result.value, 35)
-  assert.equal(engine.resolveProvider('sk-test').model, 'deepseek-chat')
+  assert.equal(engine.resolveProvider('sk-test').model, 'deepseek-v4-flash')
 })
 
 test('player controls use the deterministic local fast path without starting a model', async () => {

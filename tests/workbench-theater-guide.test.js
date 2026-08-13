@@ -2,11 +2,12 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
 const guide = fs.readFileSync(path.join(__dirname, '..', 'electron', 'screen-guide-service.js'), 'utf8')
-const agentPanel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+const agentPanel = agentPanelSource()
 const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
 const workbench = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'Workbench.tsx'), 'utf8')
 const playerView = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
@@ -32,7 +33,8 @@ test('screen guide: overlay is transparent, click-through and auto-dismisses; IP
   assert.match(main, /ipcMain\.handle\('guide:dismiss'/)
   assert.match(preload, /guide: \{/)
   assert.match(preload, /annotate: \(question\) => ipcRenderer\.invoke\('guide:annotate', question\)/)
-  assert.match(agentPanel, /🎯 指路/)
+  assert.match(agentPanel, /屏幕指路/)
+  assert.match(agentPanel, /UiIcon name="target"/)
 })
 
 test('global hotkey wakes app with voice input; unregistered on quit', () => {
@@ -47,10 +49,11 @@ test('global hotkey wakes app with voice input; unregistered on quit', () => {
 test('theater mode: panes collapse, double-click and Esc enter/exit, controls button wired', () => {
   assert.match(playerStore, /theater: boolean/)
   assert.match(playerStore, /setTheater/)
-  assert.match(workbench, /s\.theater/)
-  assert.match(workbench, /!theater && divider\('right'\)/)
+  assert.match(workbench, /state\) => state\.theater/)
+  assert.match(workbench, /if \(theater\)[\s\S]*workspace-theater/)
   assert.match(playerView, /toggleTheaterMode/)
   assert.match(playerView, /event\.key !== 'Escape'/)
+  assert.match(playerView, /onFullscreenChanged\(\(fullscreen\)[\s\S]{0,420}theater:\s*fullscreen \? state\.theater : false/)
   assert.match(playerControls, /state\.setTheater\(next\)/)
 })
 
@@ -65,7 +68,8 @@ test('frame ask: current video frame goes to vision model, answer returns to cha
 })
 
 test('chat video-gen intent routes to Agnes generateVideo and auto-plays result', () => {
-  assert.match(agentPanel, /videoGenIntents/)
+  assert.match(agentPanel, /const VIDEO_GENERATION_INTENT/)
+  assert.match(agentPanel, /isVideoGenerationIntent/)
   assert.match(agentPanel, /studio\?\.generateVideo/)
   assert.match(agentPanel, /AI 生成视频/)
   assert.match(agentPanel, /ai-player-play-file/)

@@ -15,7 +15,39 @@ const RAW_PROVIDERS = [
   { id: 'anthropic', name: 'Anthropic Claude', region: '全球', protocol: 'anthropic', baseUrl: 'https://api.anthropic.com', models: ['claude-sonnet-5', 'claude-opus-4-6', 'claude-sonnet-4-6'], requiresKey: true },
   { id: 'google', name: 'Google Gemini', region: '全球', protocol: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', models: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-flash'], requiresKey: true },
   { id: 'xai', name: 'xAI Grok', region: '全球', protocol: 'openai', baseUrl: 'https://api.x.ai/v1', models: ['latest', 'grok-4.5'], requiresKey: true },
-  { id: 'deepseek', name: 'DeepSeek', region: '中国', protocol: 'openai', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-reasoner'], requiresKey: true },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    region: '中国',
+    protocol: 'openai',
+    baseUrl: 'https://api.deepseek.com/v1',
+    models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    requiresKey: true,
+    modelAliases: {
+      'deepseek-chat': 'deepseek-v4-flash',
+      'deepseek-reasoner': 'deepseek-v4-flash'
+    },
+    legacyModelOptions: {
+      'deepseek-chat': { thinkingMode: 'disabled' },
+      'deepseek-reasoner': { thinkingMode: 'enabled' }
+    },
+    modelProfiles: {
+      'deepseek-v4-flash': {
+        contextWindow: 1000000,
+        maxOutputTokens: 384000,
+        thinkingMode: 'enabled',
+        pricing: { cachedInputUsdPerMillion: 0.0028, inputUsdPerMillion: 0.14, outputUsdPerMillion: 0.28 }
+      },
+      'deepseek-v4-pro': {
+        contextWindow: 1000000,
+        maxOutputTokens: 384000,
+        thinkingMode: 'enabled',
+        pricing: { cachedInputUsdPerMillion: 0.003625, inputUsdPerMillion: 0.435, outputUsdPerMillion: 0.87 }
+      }
+    },
+    pricingUrl: 'https://api-docs.deepseek.com/quick_start/pricing/?article_id=article_1779470751466_8',
+    pricingVerifiedAt: '2026-08-13'
+  },
   { id: 'mistral', name: 'Mistral AI', region: '欧洲', protocol: 'openai', baseUrl: 'https://api.mistral.ai/v1', models: ['mistral-large-latest', 'mistral-small-latest'], requiresKey: true },
   { id: 'openrouter', name: 'OpenRouter（聚合）', region: '全球', protocol: 'openai', baseUrl: 'https://openrouter.ai/api/v1', models: ['openai/gpt-5.2', 'anthropic/claude-sonnet-4.6', 'google/gemini-3.1-pro-preview'], requiresKey: true },
   { id: 'groq', name: 'Groq', region: '全球', protocol: 'openai', baseUrl: 'https://api.groq.com/openai/v1', models: ['llama-3.3-70b-versatile'], requiresKey: true },
@@ -28,7 +60,7 @@ const RAW_PROVIDERS = [
   { id: 'volcengine-coding', name: '火山方舟 Coding Plan（编程套餐）', region: '中国', protocol: 'openai', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', models: ['ark-code-latest', 'doubao-seed-2.1-turbo', 'doubao-seed-2.0-lite', 'minimax-m2.7', 'minimax-m3', 'glm-5.2', 'glm-latest', 'deepseek-v4-flash', 'deepseek-v4-pro', 'kimi-k2.6', 'kimi-k2.7-code'], requiresKey: true, modelHint: 'Coding Plan 套餐专用地址（/api/coding/v3），套餐内模型直接选；测试连接时会自动识别套餐 Key 并提示一键接入。' },
   { id: 'codex-chatgpt', name: 'ChatGPT 订阅（经 Codex CLI）', region: '本地', protocol: 'cli', baseUrl: '', models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'], requiresKey: false, modelHint: '复用本机 Codex CLI 的 ChatGPT 订阅登录态（官方 CLI 自管 OAuth），只读子进程调用，不产生 API 费用。' },
   { id: 'claude-code', name: 'Claude 订阅（经 Claude Code）', region: '本地', protocol: 'cli', baseUrl: '', models: ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-haiku-4.5'], requiresKey: false, modelHint: '复用本机 Claude Code 的 Claude 订阅登录态（官方 CLI 自管 OAuth），只读子进程调用，不产生 API 费用。' },
-  { id: 'agnes', name: 'Agnes AI（生图/生视频聚合）', region: '国际', protocol: 'openai', baseUrl: 'https://apihub.agnes-ai.com/v1', models: ['agnes-2.5-flash', 'agnes-2.0-flash'], requiresKey: true, modelHint: '聊天与视觉默认 agnes-2.5-flash（最新）；生图/生视频走创作工作室，已内置 agnes-image-2.1-flash 与 agnes-video-v2.0。' },
+  { id: 'agnes', name: 'Agnes AI（文本/图像/视频）', region: '国际', protocol: 'openai', baseUrl: 'https://apihub.agnes-ai.com/v1', models: ['agnes-2.5-flash', 'agnes-2.0-flash'], requiresKey: true, modelHint: '字幕翻译与聊天默认 agnes-2.5-flash；生图/生视频走创作工作室，已内置 agnes-image-2.1-flash 与 agnes-video-v2.0。' },
   { id: 'baidu', name: '百度千帆 / 文心', region: '中国', protocol: 'openai', baseUrl: 'https://qianfan.baidubce.com/v2', models: ['ernie-5.0', 'ernie-4.5-turbo'], requiresKey: true },
   { id: 'bundled-lite', name: '内置 Qwen2.5-0.5B（离线轻量版）', region: '本机内置', protocol: 'openai', baseUrl: 'http://127.0.0.1:11555/v1', models: ['ai-player-qwen2.5-0.5b'], requiresKey: false, localOnly: true, bundled: true, capabilities: { streaming: false, tools: false, maxConcurrency: 1 }, modelHint: '约 409MB，只用于字幕摘要和一般问答；播放器控制走毫秒级本地路由。默认 4 线程以内、2K 上下文，闲置 5 分钟自动释放。' },
   { id: 'ollama', name: 'Ollama（本机）', region: '本机', protocol: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', models: ['qwen3:8b', 'deepseek-r1:8b', 'llama3.3'], requiresKey: false, localOnly: true },
@@ -96,20 +128,37 @@ function getProvider(providerId, role = 'chat') {
 function normalizeConfig(input = {}, requestedRole = null) {
   const role = requestedRole || input.role || 'chat'
   const provider = getProvider(input.providerId || defaultProviderId(role), role)
+  const requestedModel = String(input.model || provider.models[0])
+  const model = provider.modelAliases?.[requestedModel] || requestedModel
+  const modelProfile = provider.modelProfiles?.[model] || {}
+  const legacyModelOptions = provider.legacyModelOptions?.[requestedModel] || {}
+  const thinkingMode = input.thinkingMode || legacyModelOptions.thinkingMode || modelProfile.thinkingMode
   return {
     role,
     providerId: provider.id,
     providerName: provider.name,
     protocol: provider.protocol,
     baseUrl: String(input.baseUrl || provider.baseUrl).replace(/\/+$/, ''),
-    model: String(input.model || provider.models[0]),
+    model,
     apiKey: String(input.apiKey || ''),
     requiresKey: provider.requiresKey,
     localOnly: Boolean(provider.localOnly),
     bundled: Boolean(provider.bundled),
     computerUseProtocol: provider.computerUseProtocol || null,
-    capabilities: { ...provider.capabilities }
+    capabilities: { ...provider.capabilities, ...(modelProfile.capabilities || {}) },
+    ...(modelProfile.contextWindow ? { contextWindow: modelProfile.contextWindow } : {}),
+    ...(modelProfile.maxOutputTokens ? { maxOutputTokens: modelProfile.maxOutputTokens } : {}),
+    ...(thinkingMode ? { thinkingMode } : {}),
+    ...(modelProfile.pricing ? { pricing: { ...modelProfile.pricing } } : {}),
+    ...(provider.pricingUrl ? { pricingUrl: provider.pricingUrl } : {}),
+    ...(provider.pricingVerifiedAt ? { pricingVerifiedAt: provider.pricingVerifiedAt } : {})
   }
+}
+
+function normalizeProviderModels(provider, models = []) {
+  const source = Array.isArray(models) && models.length ? models : provider?.models || []
+  const currentDefaults = provider?.id === 'deepseek' ? provider.models : []
+  return [...new Set([...currentDefaults, ...source].map((model) => provider?.modelAliases?.[String(model)] || String(model)).filter(Boolean))]
 }
 
 function validateProviderUrl(input) {
@@ -124,6 +173,7 @@ function validateProviderUrl(input) {
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('API 地址只允许 HTTP 或 HTTPS')
   if (parsed.username || parsed.password) throw new Error('API 地址不得包含账号或密码')
+  if (parsed.search || parsed.hash) throw new Error('API 地址不得包含查询参数或片段；Key 请只填在专用输入框')
   if (isBlockedMetadataHostname(parsed.hostname)) throw new Error('已拒绝云元数据或链路本地地址')
   if (config.localOnly && !isLoopbackHostname(parsed.hostname)) {
     throw new Error(`${config.providerName} 仅允许连接本机 127.0.0.1/localhost`)
@@ -264,6 +314,7 @@ module.exports = {
   PROVIDERS,
   getProvider,
   normalizeConfig,
+  normalizeProviderModels,
   validateProviderUrl,
   isLoopbackHostname,
   authHeaders,

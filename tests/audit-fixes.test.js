@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const root = path.join(__dirname, '..')
 const source = (rel) => fs.readFileSync(path.join(root, rel), 'utf8')
@@ -21,7 +22,7 @@ test('previously orphaned library actions are reachable via chat intent routes',
   const main = source('electron/main.js')
   const menuBlock = main.slice(main.indexOf("{ label: '功能', submenu: ["), main.indexOf("{ label: '窗口', submenu: ["))
   assert.ok(!menuBlock.includes('屏幕录制'), '菜单保持精简，屏幕录制不进菜单')
-  const panel = source('src/components/AgentPanel.tsx')
+  const panel = agentPanelSource()
   for (const action of ['record', 'organize', 'plugins', 'poster']) {
     assert.ok(panel.includes(`'${action}'`), `对话路由缺少 ${action}`)
   }
@@ -43,7 +44,7 @@ test('mirror card and cast status are not nested inside the wifi-enabled branch'
 })
 
 test('mic path uses MediaRecorder + local whisper, not the missing Web Speech API', () => {
-  const panel = source('src/components/AgentPanel.tsx')
+  const panel = agentPanelSource()
   assert.match(panel, /MediaRecorder/)
   assert.match(panel, /transcribe\?\.blob/)
   assert.doesNotMatch(panel, /webkitSpeechRecognition/)
@@ -67,12 +68,12 @@ test('print failures surface to the user instead of being swallowed', () => {
 })
 
 test('agent panel stop button dispatches cancel per pending task kind', () => {
-  const panel = source('src/components/AgentPanel.tsx')
-  assert.match(panel, /pending === 'download' \|\| pending === 'link-analysis'/)
+  const panel = agentPanelSource()
+  assert.match(panel, /case 'download':[\s\S]{0,120}case 'link-analysis':/)
   assert.match(panel, /mediaDownload\?\.cancel\(requestId\)/)
   assert.match(panel, /analysis\?\.cancel\(requestId\)/)
   // 无本地视频提前返回时必须复位任务锁，否则面板永久静默
-  assert.match(panel, /当前没有可解剖的本地视频[\s\S]{0,80}docBusyRef\.current = false|docBusyRef\.current = false[\s\S]{0,80}当前没有可解剖的本地视频/)
+  assert.match(panel, /当前没有可解剖的本地视频[\s\S]{0,80}(?:docBusyRef|busyRef)\.current = false|(?:docBusyRef|busyRef)\.current = false[\s\S]{0,80}当前没有可解剖的本地视频/)
 })
 
 test('mirror discovery uses a per-scan local result map', () => {
@@ -108,7 +109,7 @@ test('sensitive blacklist covers git/ssh/key-material and is checked on the real
 test('scan and media analysis channels reject arbitrary directory enumeration', () => {
   const main = source('electron/main.js')
   for (const ch of ['files:scan', 'media:analyze', 'media:dedup', 'media:suggest']) {
-    const block = main.slice(main.indexOf(`ipcMain.handle('${ch}'`), main.indexOf(`ipcMain.handle('${ch}'`) + 300)
+    const block = main.slice(main.indexOf(`ipcMain.handle('${ch}'`), main.indexOf(`ipcMain.handle('${ch}'`) + 500)
     assert.match(block, /assertAllowedPath\(dir\)/, `${ch} 必须校验目录`)
   }
 })
@@ -127,7 +128,7 @@ test('mic blob channel validates binary type, real size and unique temp names', 
   assert.match(block, /ArrayBuffer\.isView\(data\)/)
   assert.match(block, /Buffer\.from\(data\)/)
   assert.match(block, /crypto\.randomUUID\(\)/)
-  const panel = source('src/components/AgentPanel.tsx')
+  const panel = agentPanelSource()
   assert.match(panel, /if \(cancelled\) return/, '关面板后不得继续转写发送')
   assert.match(panel, /25 \* 1024 \* 1024/, '录音必须有累积上限')
 })
@@ -145,8 +146,8 @@ test('explorer document verb survives cold start via store-held pending docs', (
   assert.match(app, /useAgentStore\.getState\(\)\.setPendingDocs\(seedFiles\)/)
   assert.match(app, /useAgentStore\.getState\(\)\.open\)/)
   const store = source('src/stores/agentStore.ts')
-  assert.match(store, /pendingDocs: Array<\{ token: string; name: string; ext: string; size: number \}> \| null/)
-  const panel = source('src/components/AgentPanel.tsx')
+  assert.match(store, /pendingDocs: Array<\{ token: string; name: string; ext: string; size: number; previewPath\?: string \}> \| null/)
+  const panel = agentPanelSource()
   assert.match(panel, /useAgentStore\.getState\(\)\.pendingDocs/)
   assert.match(panel, /setPendingDocs\(null\)/)
 })

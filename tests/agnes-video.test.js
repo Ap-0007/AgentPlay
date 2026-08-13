@@ -22,6 +22,8 @@ test('video generation uses Agnes field names, retry on busy, and whitelists the
   assert.match(service, /catch\(\(\) => null\)/, '轮询必须容忍网络抖动')
   assert.match(service, /internal_status/)
   assert.ok(service.includes('agnesapi?video_id=${encodeURIComponent(videoId)}`, { headers, signal: controller.signal }'), '轮询必须带 Bearer（漏带会 401）')
+  assert.match(service, /let videoId = safeText\(input\.resumeVideoId/)
+  assert.match(service, /input\.onCheckpoint\?\.\(\{ stage: 'remote-created', videoId, numFrames \}\)/)
   assert.ok(service.includes('预签名公开 URL：带 Authorization 头反而 401'), '下载必须裸拉（带认证头会 401）')
 })
 

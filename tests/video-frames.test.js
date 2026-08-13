@@ -8,16 +8,23 @@ const {
   VideoFrameService,
   frameBudget,
   formatTimestamp,
+  sceneThreshold,
   meanAbsDiff,
   dedupeThumbs,
   thinToBudget
 } = require('../electron/video-frame-service')
 
-test('frame budget scales with duration and caps at 20', () => {
+test('frame budget scales with duration and caps at 24', () => {
   assert.equal(frameBudget(10), 12)
-  assert.equal(frameBudget(45), 16)
-  assert.equal(frameBudget(120), 20)
-  assert.equal(frameBudget(3600), 20)
+  assert.equal(frameBudget(45), 18)
+  assert.equal(frameBudget(120), 24)
+  assert.equal(frameBudget(3600), 24)
+})
+
+test('scene threshold is more sensitive for short videos and conservative for long videos', () => {
+  assert.equal(sceneThreshold(94), 0.18)
+  assert.equal(sceneThreshold(300), 0.22)
+  assert.equal(sceneThreshold(3600), 0.28)
 })
 
 test('timestamp formatting is mm:ss', () => {
@@ -117,9 +124,9 @@ test('scene frames collapsing under dedup (noise-triggered) also falls back to u
   // scene 产出 60 帧但缩略图几乎全同（噪点/闪动误触发），去重后只剩 1
   const { spawnImpl, calls } = fakeFfmpeg({
     sceneFrames: Array.from({ length: 60 }, (_, i) => i * 0.2),
-    uniformFrames: 20,
+    uniformFrames: 24,
     thumbs: Array.from({ length: 60 }, () => Buffer.alloc(256, 7)),
-    uniformThumbs: Array.from({ length: 20 }, (_, i) => Buffer.alloc(256, i * 12))
+    uniformThumbs: Array.from({ length: 24 }, (_, i) => Buffer.alloc(256, i * 10))
   })
   const service = new VideoFrameService({ ffmpegPath: process.execPath, spawnImpl })
   const frames = await service.extract({ sourcePath: video, durationSec: 1500, outDir: path.join(dir, 'frames') })
@@ -144,4 +151,19 @@ test('scene pass hard failure (e.g. limited-range HEVC) still falls back to unif
 test('extract returns empty without ffmpeg or source', async () => {
   const service = new VideoFrameService({ ffmpegPath: path.join(os.tmpdir(), 'no-such-ffmpeg.exe') })
   assert.deepEqual(await service.extract({ sourcePath: __filename, outDir: os.tmpdir() }), [])
+})
+
+test('aborting a media encode kills the ffmpeg child and rejects promptly', async () => {
+  const { EventEmitter } = require('events')
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
+  child.killed = false
+  child.kill = () => { child.killed = true }
+  const service = new VideoFrameService({ ffmpegPath: process.execPath, spawnImpl: () => child })
+  const controller = new AbortController()
+  const pending = service.run(['--long-media-job'], { signal: controller.signal })
+  controller.abort()
+  await assert.rejects(pending, /已取消/)
+  assert.equal(child.killed, true)
 })

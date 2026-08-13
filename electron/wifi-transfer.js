@@ -5,9 +5,9 @@ const os = require('os')
 const { formidable } = require('formidable')
 
 function uploadPage() {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI播放器 WiFi传文件</title></head><body style="font-family:system-ui;padding:20px;max-width:500px;margin:0 auto;background:#0a0a0a;color:#fff">
-<h2>AI播放器 WiFi 传文件</h2>
-<p style="color:#888">请输入电脑端 AI播放器 显示的 6 位配对 PIN。</p>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentPlay WiFi传文件</title></head><body style="font-family:system-ui;padding:20px;max-width:500px;margin:0 auto;background:#0a0a0a;color:#fff">
+<h2>AgentPlay WiFi 传文件</h2>
+<p style="color:#888">请输入电脑端 AgentPlay 显示的 6 位配对 PIN。</p>
 <form id="upload-form">
   <input id="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="6 位 PIN" required style="display:block;margin:10px 0;padding:10px;width:100%;box-sizing:border-box">
   <input type="file" name="file" multiple style="margin:10px 0;color:#fff">

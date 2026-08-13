@@ -1,23 +1,36 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import { usePlayerStore } from './playerStore'
+import { createWorkspaceTask, patchWorkspaceTask, progressFromStatus, recordWorkspaceTaskProgress, restoreWorkspaceTasks } from '../taskLifecycle'
+import type { WorkspaceTask, WorkspaceTaskInput, WorkspaceTaskPhase } from '../taskLifecycle'
+import { normalizeAgentMode } from '../../electron/agent-runtime-policy.mjs'
+import type { AgentMode } from '../../electron/agent-runtime-policy.mjs'
+import { applyAgentToolResult, type AgentToolReceipt } from '../agentToolExecutor'
+import { dedupeAttachments } from '../attachment-policy.mjs'
 
 export interface AgentMessage {
   role: 'user' | 'agent'
   text: string
 }
 
-// 对话窗任务卡片：文档/解剖任务的可视状态；放 store 里，面板关闭再打开不丢
-export interface AgentTask {
-  kind: 'doc' | 'analysis' | null
-  label: string
-  running: boolean
-  status: string
-  outputs: string[]
-  error: string
+export type AgentDocumentAttachment = {
+  token: string
+  name: string
+  ext: string
+  size: number
+  previewPath?: string
 }
 
-const EMPTY_TASK: AgentTask = { kind: null, label: '', running: false, status: '', outputs: [], error: '' }
+// 可持久化任务账本：当前卡片只是被选中的任务，全部任务保留在 tasks 中。
+export type AgentTask = WorkspaceTask
 
+const EMPTY_TASK: AgentTask = {
+  id: '', kind: 'doc', label: '', phase: 'waiting', running: false, status: '', progress: null,
+  outputs: [], summary: '', error: '', instruction: '', source: '', retry: null,
+  steps: [], evidence: [], budget: null,
+  quality: null, repairHistory: [], failure: null,
+  createdAt: 0, updatedAt: 0, completedAt: null
+}
 interface AgentState {
   open: boolean
   // 每次 openPanel 自增：中栏常驻布局下用它触发输入框聚焦
@@ -27,22 +40,40 @@ interface AgentState {
   messages: AgentMessage[]
   thinking: boolean
   activeRequestId: string | null
-  pendingDocs: Array<{ token: string; name: string; ext: string; size: number }> | null
+  pendingDocs: Array<{ token: string; name: string; ext: string; size: number; previewPath?: string }> | null
+  attachments: AgentDocumentAttachment[]
+  setAttachments: (
+    next: AgentDocumentAttachment[] | ((current: AgentDocumentAttachment[]) => AgentDocumentAttachment[])
+  ) => void
+  agentMode: AgentMode
   task: AgentTask
+  tasks: AgentTask[]
+  activeTaskId: string | null
+  startTask: (input: WorkspaceTaskInput) => string
+  updateTask: (id: string, patch: Partial<AgentTask>) => void
   setTask: (patch: Partial<AgentTask>) => void
+  finishTask: (patch?: Partial<AgentTask>) => void
+  failTask: (error: string) => void
+  cancelTask: () => void
+  selectTask: (id: string) => void
+  retryTask: (id: string) => AgentTask | null
+  clearFinishedTasks: () => void
   resetTask: () => void
   setPendingDocs: (docs: AgentState['pendingDocs']) => void
+  setAgentMode: (mode: AgentMode) => void
   openPanel: () => void
   closePanel: () => void
   toggleListening: () => void
   setListening: (v: boolean) => void
   setInputText: (t: string) => void
   addMessage: (role: 'user' | 'agent', text: string) => void
-  send: () => Promise<void>
+  send: (contextNote?: string) => Promise<void>
   cancel: () => void
 }
 
-export const useAgentStore = create<AgentState>((set, get) => ({
+export const useAgentStore = create<AgentState>()(
+  persist(
+    (set, get) => ({
   open: false,
   focusNonce: 0,
   listening: false,
@@ -50,11 +81,92 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   messages: [],
   thinking: false,
   activeRequestId: null,
+  attachments: [],
+  agentMode: 'work',
   task: EMPTY_TASK,
+  tasks: [],
+  activeTaskId: null,
   pendingDocs: null,
-  setTask: (patch) => set((s) => ({ task: { ...s.task, ...patch } })),
-  resetTask: () => set({ task: EMPTY_TASK }),
+  setAttachments: (next) => set((state) => ({
+    attachments: dedupeAttachments(typeof next === 'function' ? next(state.attachments) : next)
+  })),
+  startTask: (input) => {
+    const next = createWorkspaceTask({ ...input, phase: input.phase || 'queued' })
+    set((state) => ({
+      task: next,
+      activeTaskId: next.id,
+      tasks: [next, ...state.tasks.filter((item) => item.id !== next.id)].slice(0, 80)
+    }))
+    return next.id
+  },
+  updateTask: (id, patch) => set((state) => {
+    const current = state.tasks.find((item) => item.id === id)
+    if (!current) return state
+    let phase: WorkspaceTaskPhase = patch.phase || current.phase
+    if (!patch.phase && patch.running === true) phase = 'running'
+    if (!patch.phase && patch.running === false && current.phase === 'running') {
+      const outputs = patch.outputs || current.outputs
+      const error = patch.error || current.error
+      phase = error ? 'failed' : outputs.length > 0 ? 'completed' : 'waiting'
+    }
+    const normalized: Partial<AgentTask> = { ...patch, phase }
+    if (typeof patch.status === 'string') normalized.progress = progressFromStatus(patch.status)
+    let next = patchWorkspaceTask(current, normalized)
+    if (typeof patch.status === 'string') next = recordWorkspaceTaskProgress(next, patch.status)
+    return {
+      tasks: state.tasks.map((item) => item.id === id ? next : item),
+      ...(state.activeTaskId === id ? { task: next } : {})
+    }
+  }),  setTask: (patch) => set((state) => {
+    const current = state.task
+    if (!current.id) return { task: { ...current, ...patch } }
+    let phase: WorkspaceTaskPhase = patch.phase || current.phase
+    if (!patch.phase && patch.running === true) phase = 'running'
+    if (!patch.phase && patch.running === false && current.phase === 'running') {
+      const outputs = patch.outputs || current.outputs
+      const error = patch.error || current.error
+      phase = error ? 'failed' : outputs.length > 0 ? 'completed' : 'waiting'
+    }
+    const normalized: Partial<AgentTask> = { ...patch, phase }
+    if (typeof patch.status === 'string') normalized.progress = progressFromStatus(patch.status)
+    let next = patchWorkspaceTask(current, normalized)
+    if (typeof patch.status === 'string') next = recordWorkspaceTaskProgress(next, patch.status)
+    return { task: next, tasks: state.tasks.map((item) => item.id === next.id ? next : item) }
+  }),
+  finishTask: (patch = {}) => set((state) => {
+    if (!state.task.id) return state
+    const next = patchWorkspaceTask(state.task, { ...patch, phase: 'completed', status: '', error: '' })
+    return { task: next, tasks: state.tasks.map((item) => item.id === next.id ? next : item) }
+  }),
+  failTask: (error) => set((state) => {
+    if (!state.task.id) return state
+    const next = patchWorkspaceTask(state.task, { phase: 'failed', status: '', error })
+    return { task: next, tasks: state.tasks.map((item) => item.id === next.id ? next : item) }
+  }),
+  cancelTask: () => set((state) => {
+    if (!state.task.id) return state
+    const next = patchWorkspaceTask(state.task, { phase: 'cancelled', status: '', error: '任务已取消' })
+    return { task: next, tasks: state.tasks.map((item) => item.id === next.id ? next : item) }
+  }),
+  selectTask: (id) => set((state) => {
+    const task = state.tasks.find((item) => item.id === id)
+    return task ? { task, activeTaskId: id } : state
+  }),
+  retryTask: (id) => {
+    const found = get().tasks.find((item) => item.id === id)
+    if (!found) return null
+    const next = patchWorkspaceTask(found, { phase: 'queued', running: false, status: '', progress: null, outputs: [], summary: '', error: '', quality: null, repairHistory: [], failure: null })
+    set((state) => ({ task: next, activeTaskId: id, tasks: state.tasks.map((item) => item.id === id ? next : item) }))
+    return next
+  },
+  clearFinishedTasks: () => set((state) => {
+    const tasks = state.tasks.filter((item) => !['completed', 'failed', 'cancelled'].includes(item.phase))
+    const active = tasks.find((item) => item.id === state.activeTaskId) || tasks[0] || EMPTY_TASK
+    return { tasks, activeTaskId: active.id || null, task: active }
+  }),
+  resetTask: () => set({ task: EMPTY_TASK, activeTaskId: null }),
   setPendingDocs: (docs) => set({ pendingDocs: docs }),
+  setAgentMode: (mode) => set({ agentMode: normalizeAgentMode(mode) }),
   openPanel: () => set((s) => ({ open: true, focusNonce: s.focusNonce + 1 })),
   closePanel: () => set({ open: false }),
   toggleListening: () => set((s) => ({ listening: !s.listening })),
@@ -65,7 +177,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const requestId = get().activeRequestId
     if (requestId) void window.aiPlayer?.ai?.cancel(requestId)
   },
-  send: async () => {
+  send: async (contextNote = '') => {
     const text = get().inputText.trim()
     if (!text) return
     get().addMessage('user', text)
@@ -76,6 +188,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const history = get()
       .messages.filter((m) => m.text !== '思考中…')
       .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
+    if (contextNote.trim() && history.length > 0) {
+      const latest = history[history.length - 1]
+      history[history.length - 1] = { ...latest, content: `${latest.content}\n\n[当前任务上下文]\n${contextNote.trim()}` }
+    }
 
     // 桌面端：调云端 Agent（function calling 控制播放）
     if (window.aiPlayer?.ai) {
@@ -111,45 +227,54 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           pictureMode: player.pictureMode,
           subtitleVisible: player.subtitleVisible,
           isFullscreen: player.isFullscreen
-        }, requestId)
+        }, requestId, { mode: get().agentMode })
         let reply = result.text
         if ((result.toolResults || []).length > 0) {
-          const ps = usePlayerStore.getState()
           const descs: string[] = []
+          const receipts: AgentToolReceipt[] = []
           for (const t of result.toolResults || []) {
-            const r = t.result as { action?: string; value?: unknown; desc?: string }
+            const r = t.result as { success?: boolean; error?: string; action?: string; value?: unknown; desc?: string; verified?: boolean; execution?: 'main' | 'renderer' }
             if (r.desc) descs.push(r.desc)
-            if (r.action === 'pause') {
-              usePlayerStore.setState({ isPlaying: false })
-              void window.aiPlayer?.player?.pause()
-            } else if (r.action === 'resume') {
-              usePlayerStore.setState({ isPlaying: true })
-              void window.aiPlayer?.player?.play()
-            } else if (r.action === 'seek' && typeof r.value === 'number') {
-              ps.seek(r.value)
-              void window.aiPlayer?.player?.seek(r.value)
-            } else if (r.action === 'set_volume' && typeof r.value === 'number') {
-              ps.setVolume(r.value)
-              void window.aiPlayer?.player?.setVolume(r.value)
-            } else if (r.action === 'set_subtitle' && typeof r.value === 'boolean') {
-              usePlayerStore.setState({ subtitleVisible: r.value })
-              void window.aiPlayer?.player?.setSubtitleVisible(r.value)
-            } else if (r.action === 'set_speed' && typeof r.value === 'number') {
-              ps.setPlaybackRate(r.value)
-              void window.aiPlayer?.player?.setSpeed(r.value)
-            } else if (r.action === 'set_picture_mode' && typeof r.value === 'string') {
-              window.dispatchEvent(new CustomEvent('ai-player-action', { detail: `picture-${r.value}` }))
-            } else if (r.action === 'set_window_preset' && typeof r.value === 'string') {
-              window.dispatchEvent(new CustomEvent('ai-player-action', { detail: `window-${r.value}` }))
-            } else if (r.action === 'screenshot') {
-              window.dispatchEvent(new CustomEvent('ai-player-action', { detail: 'screenshot' }))
-            } else if (r.action === 'load_subtitle' && typeof r.value === 'string') {
-              void window.aiPlayer?.player?.loadSubtitle(r.value)
-            } else if (r.action === 'print_file' && typeof r.value === 'string') {
-              void window.aiPlayer?.print?.file(r.value)
-            }
+            receipts.push(await applyAgentToolResult(t.tool, r))
           }
-          if (descs.length) reply += `\n[已执行] ${descs.join('；')}`
+          if (receipts.length) {
+            const verified = receipts.filter((receipt) => receipt.verified).length
+            reply += `\n[执行收据] ${verified}/${receipts.length} 项已验证${descs.length ? `：${descs.join('；')}` : ''}`
+          }
+          const run = result.run
+          if (run?.steps?.length) {
+            const runTaskId = get().startTask({
+              kind: 'utility',
+              label: `Agent · ${result.mode === 'auto' ? '自动' : result.mode === 'work' ? '执行' : result.mode === 'plan' ? '规划' : '问答'}`,
+              phase: 'running',
+              instruction: text,
+              source: player.mediaName || '',
+              budget: run.budget,
+              steps: run.steps.map((step, index) => ({
+                id: step.id,
+                label: step.label,
+                phase: step.status === 'blocked' ? 'blocked' : step.status === 'failed' ? 'failed' : 'completed',
+                detail: step.detail,
+                evidence: receipts[index]?.evidence || step.evidence?.value || '',
+                startedAt: step.startedAt,
+                completedAt: step.completedAt
+              })),
+              evidence: receipts.map((receipt, index) => ({
+                id: `receipt-${run.id}-${index + 1}`,
+                kind: receipt.verified ? 'state' : 'receipt',
+                label: receipt.label,
+                value: receipt.evidence,
+                verified: receipt.verified,
+                createdAt: Date.now()
+              }))
+            })
+            const failed = run.status === 'blocked' || run.status === 'failed' || receipts.some((receipt) => !receipt.success)
+            get().updateTask(runTaskId, {
+              phase: failed ? 'failed' : 'completed',
+              summary: receipts.length ? `${receipts.filter((receipt) => receipt.verified).length}/${receipts.length} 项执行证据已验证` : '模型已完成回答',
+              error: failed ? '部分步骤未完成，请查看执行收据' : ''
+            })
+          }
         }
         if (result.cancelled && !reply) reply = '已取消生成。'
         set((state) => {
@@ -177,4 +302,38 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       })
     }
   }
-}))
+    }),
+    {
+      name: 'agentplay-workspace-tasks',
+      version: 3,
+      partialize: (state) => ({ tasks: state.tasks, activeTaskId: state.activeTaskId, agentMode: state.agentMode }),
+      merge: (persisted, current) => {
+        const stored = persisted as Partial<AgentState>
+        const tasks = restoreWorkspaceTasks(stored.tasks)
+        const activeTaskId = tasks.some((item) => item.id === stored.activeTaskId)
+          ? stored.activeTaskId || null
+          : tasks[0]?.id || null
+        return {
+          ...current,
+          agentMode: normalizeAgentMode(stored.agentMode),
+          tasks,
+          activeTaskId,
+          task: tasks.find((item) => item.id === activeTaskId) || EMPTY_TASK
+        }
+      },
+      onRehydrateStorage: () => (state) => {
+        if (!state) return
+        // merge() fail-closes unfinished work in memory. Persist that transition too,
+        // otherwise localStorage keeps saying "running" until another store write.
+        queueMicrotask(() => {
+          const tasks = restoreWorkspaceTasks(state.tasks)
+          const activeTaskId = tasks.some((item) => item.id === state.activeTaskId)
+            ? state.activeTaskId
+            : tasks[0]?.id || null
+          const task = tasks.find((item) => item.id === activeTaskId) || EMPTY_TASK
+          useAgentStore.setState({ tasks, activeTaskId, task })
+        })
+      }
+    }
+  )
+)

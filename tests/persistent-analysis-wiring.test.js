@@ -1,0 +1,23 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+const test = require('node:test')
+
+const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
+
+test('video analysis uses frozen source, unified approval and persistent runtime cancellation', () => {
+  const main = read('electron/main.js')
+  const service = read('electron/analysis-chat-service.js')
+  const hook = read('src/components/agent-panel/useDocumentAnalysisTasks.ts')
+  const recovery = read('src/components/agent-panel/usePersistentTaskRuntime.ts')
+
+  assert.match(main, /register\('analysis\.run'/)
+  assert.match(main, /type:\s*'analysis\.run'/)
+  assert.match(main, /snapshotDocumentSources\(\[resolvedSource\]\)/)
+  assert.match(main, /action:\s*'cloud'/)
+  assert.match(main, /persistentTaskRuntime\.cancel\(String\(requestId/)
+  assert.match(service, /onCheckpoint\?\.\(\{ stage: 'outputs-written'/)
+  assert.match(service, /onCheckpoint\?\.\(\{ stage: 'history-written'/)
+  assert.match(hook, /workspaceTaskId:\s*executionTaskIdRef\.current/)
+  assert.match(recovery, /analysis\.run/)
+})

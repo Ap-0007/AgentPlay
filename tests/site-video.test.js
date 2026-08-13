@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const { SiteVideoService, parseProgressLine, sanitizeTitle, cookiesFileForUrl, detectCookiesDomain, normalizeCookiesText, stripHashFromName, extractorArgsForUrl } = require('../electron/site-video-service')
 const YTDLP_PACK = require('../electron/ytdlp-pack-manifest')
@@ -291,7 +292,7 @@ test('yt-dlp GBK console output with Chinese path decodes to the real file', asy
 
 test('editable fields get system edit menu and messages are selectable', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'PlayerView.tsx'), 'utf8')
   assert.match(main, /webContents\.on\('context-menu'/)
   assert.match(main, /role: 'paste', label: '粘贴'/)
@@ -302,7 +303,7 @@ test('editable fields get system edit menu and messages are selectable', () => {
 
 test('site video wiring: auto component download, chat route and model center card', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   const center = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'ModelCenter.tsx'), 'utf8')
   const service = fs.readFileSync(path.join(__dirname, '..', 'electron', 'media-download-service.js'), 'utf8')
   assert.match(main, /ipcMain\.handle\('media:site-download'/)
@@ -342,7 +343,7 @@ test('yt-dlp spawns with inherited process env (proxy handling left to user VPN 
 })
 
 test('link choice is a prominent two-option card and does not duplicate the link in history', () => {
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   assert.match(panel, /这个链接想怎么处理？/)
   assert.match(panel, /存到本地，不做分析/)
   assert.match(panel, /下载后自动出深度报告/)

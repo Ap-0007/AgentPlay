@@ -1,0 +1,68 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const { listAgentTools, getAgentTool, executeAgentTool } = require('../electron/agent-tool-registry')
+const { AgentRunLedger } = require('../electron/agent-run-ledger')
+
+test('agent tool registry is the single metadata source for model tools', () => {
+  const tools = listAgentTools()
+  assert.equal(tools.length, 20)
+  assert.equal(tools[0].function.name, 'pause')
+  assert.equal(getAgentTool('summarize_video').risk, 'read-only')
+  assert.deepEqual(tools.find((tool) => tool.function.name === 'seek').function.parameters.required, ['seconds'])
+  assert.equal(getAgentTool('batch_transcribe').category, 'media')
+  assert.equal(getAgentTool('compress_video').risk, 'local-write')
+  assert.equal(getAgentTool('find_duplicates').risk, 'read-only')
+  assert.equal(getAgentTool('advanced_document_ocr').category, 'document')
+})
+
+test('advanced document OCR enters the unified registry as a recoverable document action', async () => {
+  const result = await executeAgentTool('advanced_document_ocr')
+  assert.equal(result.action, 'start_advanced_document_ocr')
+  assert.equal(result.execution, 'renderer')
+  assert.equal(result.verified, false)
+})
+
+test('long-running media tools dispatch through the renderer workflow instead of bypassing task recovery', async () => {
+  const batch = await executeAgentTool('batch_transcribe')
+  assert.equal(batch.action, 'start_batch_transcribe')
+  assert.equal(batch.execution, 'renderer')
+  const compress = await executeAgentTool('compress_video', { mode: 'remux' })
+  assert.equal(compress.action, 'start_compress_video')
+  assert.equal(compress.value.mode, 'remux')
+  const dedup = await executeAgentTool('find_duplicates')
+  assert.equal(dedup.action, 'start_duplicate_scan')
+})
+
+test('tool registry validates required arguments and marks renderer actions unverified', async () => {
+  const missing = await executeAgentTool('seek', {})
+  assert.equal(missing.success, false)
+  assert.match(missing.error, /缺少参数 seconds/)
+  const result = await executeAgentTool('set_volume', { level: 150 })
+  assert.equal(result.value, 100)
+  assert.equal(result.execution, 'renderer')
+  assert.equal(result.verified, false)
+})
+
+test('read-only tool can emit verified main-process evidence', async () => {
+  const result = await executeAgentTool('summarize_video', {}, {}, {
+    summarize: async () => ({ success: true, desc: '读取了字幕', transcript: 'hello' })
+  })
+  assert.equal(result.verified, true)
+  assert.equal(result.execution, 'main')
+})
+
+test('agent run ledger blocks calls beyond budget and preserves receipts', () => {
+  let clock = 100
+  const ledger = new AgentRunLedger({ requestId: 'run-1', maxToolCalls: 1, maxElapsedMs: 1000, now: () => clock })
+  ledger.beginTurn()
+  const first = ledger.beginTool(getAgentTool('pause'), {})
+  ledger.finishTool(first.step, { success: true, desc: '已请求暂停', execution: 'renderer', verified: false })
+  clock = 120
+  const second = ledger.beginTool(getAgentTool('resume'), {})
+  assert.equal(second.allowed, false)
+  assert.match(second.error, /工具调用预算/)
+  const run = ledger.finish()
+  assert.equal(run.status, 'blocked')
+  assert.equal(run.budget.toolCalls, 1)
+  assert.equal(run.steps[0].evidence.verified, false)
+})

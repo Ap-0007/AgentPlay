@@ -2,12 +2,14 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
 const library = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'MediaLibrary.tsx'), 'utf8')
 const sidebar = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'Sidebar.tsx'), 'utf8')
 const workbench = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'Workbench.tsx'), 'utf8')
+const panel = agentPanelSource()
 const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
 const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types', 'global.d.ts'), 'utf8')
 
@@ -21,46 +23,52 @@ test('home:open combines file and directory selection in one dialog', () => {
   assert.match(types, /folders: string\[\]/)
 })
 
-test('sidebar exposes open, analysis, cast and model center entries', () => {
-  for (const label of ['📂', '打开', '🎬', '拉片', '📺', '投屏', '🧩', '模型接入中心']) {
-    assert.ok(sidebar.includes(label), `左栏缺：${label}`)
+test('capability drawer preserves open, analysis, cast, libraries and model center without emoji navigation', () => {
+  for (const label of ['打开', '拉片', '投屏', '本地媒体', '在线媒体库', '模型接入中心', '全部能力']) {
+    assert.ok(sidebar.includes(label), '能力抽屉缺：' + label)
   }
-  // Windows 组合对话框看不到文件：「打开」改为应用内两段式（文件走 chat.openAny，文件夹走 home.openFolder）
+  for (const retired of ['📂', '🎬', '📺', '🧩']) {
+    assert.ok(!sidebar.includes(retired), '活动轨道不应保留表情符号：' + retired)
+  }
+  assert.match(sidebar, /workspace-capability-flyout/)
   assert.match(sidebar, /ai-player-ask-open-mode/)
   assert.match(main, /ipcMain\.handle\('home:open-folder'/)
   assert.match(preload, /openFolder: \(\) => ipcRenderer\.invoke\('home:open-folder'\)/)
-  // 分流逻辑在 App 层：文件走 chat.openAny，文件夹进媒体库浮层
   assert.match(app, /ai-player-open-folder/)
   assert.match(app, /ai-player-attach-docs/)
-  // 媒体库入口并入「打开」的文件夹授权，不再是左栏独立按钮；媒体库本身为浮层
-  assert.ok(!library.includes('📂 打开'), '媒体库内不应再有打开动作行')
+  assert.ok(!library.includes('📂 打开'), '媒体库内不应再有重复打开按钮')
   assert.match(app, /<Workbench/)
-  assert.match(app, /<MediaLibrary onPlay=\{playMedia\} rootDir=\{libraryRoot\} \/>/)
+  assert.match(app, /<MediaLibrary onPlay=\{playMedia\} rootDir=\{libraryRoot\}(?: actionRequest=\{libraryActionRequest\})? \/>/)
 })
 
-test('analysis opens the chat flow from sidebar, and empty library has no duplicate open entry', () => {
+test('analysis still opens the unified chat flow, and the home uses one intent entrance', () => {
   assert.match(sidebar, /openAnalysisChat/)
   assert.match(sidebar, /就自动下载并开始拉片/)
   assert.doesNotMatch(sidebar, /detail: 'analysis-studio'/)
-  // 空态只剩引导，不再有第二个“打开”
+  assert.match(panel, /把任何事情交给我/)
+  assert.match(panel, /今天想完成什么？/)
+  assert.match(panel, /下载一个视频/)
+  assert.match(panel, /agent-composer-wrap-home/)
   const emptyBlock = library.slice(library.indexOf('这里还没有媒体文件'), library.indexOf('这里还没有媒体文件') + 900)
-  assert.ok(!emptyBlock.includes('📂 打开'), '空态不应再有打开按钮')
+  assert.ok(!emptyBlock.includes('📂 打开'), '空媒体库不应再有第二个打开入口')
 })
 
-test('sidebar shows recent list replaying on click; workbench panes resize and pin via localStorage', () => {
-  // 播放记录迁入左栏底部，点击即回播
-  assert.match(sidebar, /播放记录/)
-  assert.match(sidebar, /recentMedia\.map/)
+test('recent work and adaptive focus mode replace the old resizable three-pane console', () => {
+  assert.match(sidebar, /继续任务或打开结果/)
+  assert.match(sidebar, /tasks\.slice\(0, 10\)\.map/)
+  assert.match(sidebar, /agentplay-open-task-center/)
+  assert.match(sidebar, /recentMedia\.slice\(0, tasks\.length > 0 \? 4 : 10\)\.map/)
   assert.match(sidebar, /setMedia\(item\.name, item\.src\)/)
-  // 右侧竖排 RecentStrip 已随布局移除
   assert.ok(!library.includes('RecentStrip'), '媒体库内的 RecentStrip 应已移除')
-  // 三栏可拖拽拉伸 + 钉住，宽度持久化
-  assert.match(workbench, /cursor-col-resize/)
-  assert.match(workbench, /aiplayer_left_w/)
-  assert.match(workbench, /aiplayer_right_w/)
+  assert.match(workbench, /workspace-home-main/)
+  assert.match(workbench, /workspace-focus-canvas/)
+  assert.match(workbench, /workspace-focus-assistant/)
+  assert.match(workbench, /showRail = !theater && \(!rightOpen \|\| pinned\)/)
   assert.match(workbench, /aiplayer_left_pinned/)
-  // 右栏有媒体自动展开、左栏未钉住自动收起；影院模式全部收起
-  assert.match(workbench, /leftVisible = !theater && \(pinned \|\| !rightOpen\)/)
+  assert.doesNotMatch(workbench, /cursor-col-resize/)
+  assert.doesNotMatch(workbench, /aiplayer_left_w|aiplayer_right_w/)
+  assert.match(panel, /open=\{showServiceEdit\}/)
+  assert.match(panel, /运行方式与可选服务/)
   assert.match(app, /rightOpen = Boolean\(videoSrc\)/)
   assert.match(app, /clearMedia/)
 })

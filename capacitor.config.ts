@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.aiplayer.app',
-  appName: 'AI播放器',
+  appName: 'AgentPlay',
   webDir: 'dist'
 };
 

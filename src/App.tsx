@@ -12,12 +12,20 @@ import ModelCenter from './components/ModelCenter'
 import OnlineMediaLibrary from './components/OnlineMediaLibrary'
 import SmartCastPanel from './components/SmartCastPanel'
 import ComputerUsePanel from './components/ComputerUsePanel'
+import { selectPrimaryPreviewPath } from './document-preview-routing.mjs'
 
+interface ModelCenterIntent {
+  providerId?: string
+  model?: string
+  reason?: string
+}
 
 function AppInner() {
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [libraryRoot, setLibraryRoot] = useState<string | undefined>()
+  const [libraryActionRequest, setLibraryActionRequest] = useState<{ id: number; action: string } | null>(null)
   const [modelCenterOpen, setModelCenterOpen] = useState(false)
+  const [modelCenterIntent, setModelCenterIntent] = useState<ModelCenterIntent | null>(null)
   const [onlineMediaOpen, setOnlineMediaOpen] = useState(false)
   const [smartCastOpen, setSmartCastOpen] = useState(false)
   const [computerUseOpen, setComputerUseOpen] = useState(false)
@@ -51,11 +59,10 @@ function AppInner() {
     if (result.documents?.length) {
       useAgentStore.getState().openPanel()
       window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: result.documents }))
-      return
     }
-    if (result.media?.length) {
-      const first = result.media[0]
-      usePlayerStore.getState().setMedia(first.split(/[\\/]/).pop() || first, first)
+    const previewPath = selectPrimaryPreviewPath(result.media, result.documents)
+    if (previewPath) {
+      usePlayerStore.getState().setMedia(previewPath.split(/[\\/]/).pop() || previewPath, previewPath)
     }
   }
 
@@ -78,6 +85,7 @@ function AppInner() {
       void window.aiPlayer.models.config().then((saved) => {
         if (!saved.hasApiKey) {
           return window.aiPlayer?.models?.save({
+            // 保留旧 deepseek-chat 语义，由主进程迁移为 V4 Flash 的非思考模式。
             providerId: 'deepseek', model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com/v1', apiKey: legacyKey
           })
         }
@@ -173,6 +181,7 @@ function AppInner() {
       if (action === 'agent') useAgentStore.getState().openPanel()
       else if (action === 'model-center') {
         setComputerUseOpen(false)
+        setModelCenterIntent(null)
         setModelCenterOpen(true)
       }
       else if (action === 'computer-use') setComputerUseOpen(true)
@@ -197,7 +206,7 @@ function AppInner() {
         const libraryActions = ['network-source', 'record', 'dedup', 'organize', 'plugins', 'poster', 'devices']
         if (libraryActions.includes(action)) {
           setLibraryOpen(true)
-          setTimeout(() => window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action })), 0)
+          setLibraryActionRequest((current) => ({ id: (current?.id || 0) + 1, action }))
         } else {
           window.dispatchEvent(new CustomEvent('ai-player-action', { detail: action }))
         }
@@ -219,8 +228,14 @@ function AppInner() {
     }
     const actionHandler = (event: Event) => {
       const action = (event as CustomEvent<string>).detail
+      const libraryActions = ['network-source', 'record', 'dedup', 'organize', 'plugins', 'poster', 'devices']
+      if (libraryActions.includes(action)) {
+        setLibraryOpen(true)
+        setLibraryActionRequest((current) => ({ id: (current?.id || 0) + 1, action }))
+      }
       if (action === 'model-center') {
         setComputerUseOpen(false)
+        setModelCenterIntent(null)
         setModelCenterOpen(true)
       }
       if (action === 'computer-use') setComputerUseOpen(true)
@@ -248,6 +263,16 @@ function AppInner() {
     }
   }, [])
 
+  useEffect(() => {
+    const openModelCenterForIntent = (event: Event) => {
+      setComputerUseOpen(false)
+      setModelCenterIntent((event as CustomEvent<ModelCenterIntent>).detail || null)
+      setModelCenterOpen(true)
+    }
+    window.addEventListener('ai-player-open-model-center', openModelCenterForIntent)
+    return () => window.removeEventListener('ai-player-open-model-center', openModelCenterForIntent)
+  }, [])
+
   return (
     <>
       <Workbench
@@ -257,7 +282,7 @@ function AppInner() {
             pinned={pinned}
             onTogglePin={onTogglePin}
             onOpenLibrary={() => setLibraryOpen(true)}
-            onOpenModelCenter={() => { setComputerUseOpen(false); setModelCenterOpen(true) }}
+            onOpenModelCenter={() => { setComputerUseOpen(false); setModelCenterIntent(null); setModelCenterOpen(true) }}
             onOpenOnlineMedia={() => setOnlineMediaOpen(true)}
             onOpenSmartCast={() => setSmartCastOpen(true)}
           />
@@ -272,7 +297,7 @@ function AppInner() {
               <h2 className="text-sm text-gray-300">媒体库</h2>
               <button onClick={() => setLibraryOpen(false)} className="text-gray-400 hover:text-white">✕</button>
             </div>
-            <MediaLibrary onPlay={playMedia} rootDir={libraryRoot} />
+            <MediaLibrary onPlay={playMedia} rootDir={libraryRoot} actionRequest={libraryActionRequest} />
           </div>
         </div>
       )}
@@ -294,7 +319,7 @@ function AppInner() {
         </div>
       )}
       {computerUseOpen && <ComputerUsePanel onClose={() => setComputerUseOpen(false)} />}
-      {modelCenterOpen && <ModelCenter onClose={() => setModelCenterOpen(false)} />}
+      {modelCenterOpen && <ModelCenter intent={modelCenterIntent} onClose={() => { setModelCenterOpen(false); setModelCenterIntent(null) }} />}
       {onlineMediaOpen && <OnlineMediaLibrary onClose={() => setOnlineMediaOpen(false)} />}
       {smartCastOpen && <SmartCastPanel onClose={() => setSmartCastOpen(false)} />}
       {shortcutsOpen && (

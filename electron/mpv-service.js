@@ -74,7 +74,7 @@ class MpvService {
       console.log('[MpvService] 嵌入模式 --wid=' + embedHwnd)
     } else {
       this.embedded = false
-      args.push('--title=AI播放器 - mpv 兼容模式')
+      args.push('--title=AgentPlay - mpv 兼容模式')
       console.log('[MpvService] 兼容模式待命（HTML5 不支持时使用独立 mpv 窗口）')
     }
 
@@ -192,6 +192,10 @@ class MpvService {
   }
   loadSubtitle(filePath) { return this.send({ command: ['sub-add', filePath] }) }
   setSubtitleVisible(visible) { return this.send({ command: ['set_property', 'sub-visibility', visible] }) }
+  setSubtitlePosition(position) {
+    const values = { high: 54, middle: 70, low: 84 }
+    return this.send({ command: ['set_property', 'sub-pos', values[position] || values.low] })
+  }
   stopPlayback() { return this.send({ command: ['stop'] }) }
   screenshot(filePath) { return this.send({ command: ['screenshot-to-file', filePath, 'video'] }) }
 

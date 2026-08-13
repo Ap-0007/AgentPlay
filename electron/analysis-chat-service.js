@@ -5,7 +5,13 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { getType } = require('./file-service')
-const { buildOfflineAnalysis, formatTime, loadAnalysisContext } = require('./analysis-studio-service')
+const { formatTime, loadAnalysisContext } = require('./analysis-studio-service')
+const {
+  buildEvidenceAnalysis,
+  detectSourceLanguage,
+  evaluateProfessionalAnalysisQuality,
+  isUnderpoweredLocalAnalysisModel
+} = require('./analysis-quality-policy')
 
 const ANALYSIS_INTENT = /(拉片|深度解剖|解剖(这个|这段|当前|这部|该|一下)?视频|视频解剖|镜头分析|逐镜|拆解(这个|这段|当前|这部|该)?视频|视频分析|分析(这个|这段|当前|这部|该)?视频|analy[sz]e (this )?video|video analysis|shot breakdown)/i
 
@@ -22,10 +28,20 @@ function resolveAnalysisOutput(instruction) {
   return 'docx'
 }
 
-const DEEP_ANALYSIS_SYSTEM = '你是 AgentPlay 的视频拉片与深度解剖助手。只能依据用户提供的字幕正文与离线结构底稿作答，没有画面证据时必须明说“缺少画面证据”，不得编造未出现的镜头、表演或数据。输出结构化中文 Markdown，结论要具体、可执行。'
+const PROFESSIONAL_REPORT_CONTRACT = [
+  '正文必须严格两个一级部分（使用下面两个二级标题），不得增加“证据范围”“总结”“附录”等第三部分：',
+  '## 第一部分　视频讲了什么',
+  '其中使用三级标题：一句话精华、内容主线、全片结构时间轴、可复制的内容结构。',
+  '## 第二部分　专业视听拆解与 AI 复刻',
+  '其中使用三级标题：分镜与剪辑结构、摄影/机位/景别/构图/灯光/曝光/色彩、后期/字幕/声音、AI 复刻执行方案、生成提示词与最小素材清单。',
+  '第二部分每个关键判断按“原片观察—专业判断—复刻动作”表达；焦段、光位等不能从单帧精确确认的参数必须标注“专业估算”或“推断”。',
+  '时间轴必须覆盖开头、中段和结尾；删除营销套话、重复结论、信息密度打分和无关方法说明。'
+].join('\n')
+
+const DEEP_ANALYSIS_SYSTEM = `你是 AgentPlay 的资深导演、摄影指导、剪辑师和 AI 视频制片人。界面语言为中文，因此标题、解释、结论和建议必须全部使用中文；外语原句只能作为短证据引用，引用后立即用中文解释，禁止整段复制外语冒充分析。只能依据用户提供的字幕正文与证据底稿作答，没有画面证据时必须明说“缺少画面证据”，不得编造未出现的镜头、表演或数据。输出专业、克制、可直接执行的中文 Markdown。\n${PROFESSIONAL_REPORT_CONTRACT}`
 
 // 多模态拉片：画面关键帧（标注 t=MM:SS）与字幕同为一手证据，镜头/构图/节奏只看画面
-const DEEP_ANALYSIS_VISION_SYSTEM = '你是 AgentPlay 的视频拉片与深度解剖助手。用户会给你按时间顺序排列的视频关键帧（每张标注 t=MM:SS）与口播字幕，两者都是一手证据：镜头、构图、节奏只能依据画面，台词与观点只能依据字幕，两者冲突以画面为准，不得编造未出现的镜头、表演或数据。输出结构化中文 Markdown，结论要具体、可执行。'
+const DEEP_ANALYSIS_VISION_SYSTEM = `你是 AgentPlay 的资深导演、摄影指导、剪辑师和 AI 视频制片人。界面语言为中文，因此标题、解释、结论和建议必须全部使用中文；外语原句只能作为短证据引用，引用后立即用中文解释。用户会给你按时间顺序排列的视频关键帧（每张标注 t=MM:SS）与口播字幕，两者都是一手证据：镜头、构图、节奏只能依据画面，台词与观点只能依据字幕，两者冲突以画面为准，不得编造未出现的镜头、表演或数据。静态关键帧不能证明连续运镜、精确焦段、灯具型号或完整声音设计，相关结论必须标注观察边界、专业估算或复刻建议。\n${PROFESSIONAL_REPORT_CONTRACT}`
 
 function buildDeepAnalysisPrompt({ mediaName, duration, instruction, offlineDraft, transcript }) {
   const systemPrompt = DEEP_ANALYSIS_SYSTEM
@@ -33,18 +49,15 @@ function buildDeepAnalysisPrompt({ mediaName, duration, instruction, offlineDraf
     `视频：《${mediaName || '当前视频'}》（时长 ${formatTime(duration)}）`,
     instruction ? `用户的解剖要求：${String(instruction).slice(0, 500)}` : '用户的解剖要求：做一次完整的深度解剖。',
     '',
-    '离线结构底稿（由字幕与统计线索生成）：',
+    '离线证据底稿（只提取事实，不沿用其表达）：',
     offlineDraft.slice(0, 12000),
     '',
     `字幕正文（共若干条，截断保留前 20000 字）：`,
     transcript ? transcript.slice(0, 20000) : '（无字幕证据）',
     '',
-    '请输出以下章节的 Markdown 报告：',
-    '## 叙事结构（开端钩子/推进/高潮/结尾行动点，引用字幕原句做证据）',
-    '## 内容与信息密度（哪些段落信息重复或可压缩）',
-    '## 镜头与节奏（仅在字幕能推断时下结论，否则明说缺少画面证据）',
-    '## 传播钩子与受众（开头 15 秒是否抓人，适合什么平台与受众）',
-    '## 缺陷清单与二次创作建议（逐条可执行）'
+    '请按下面契约直接输出正文，不要写总标题或前言：',
+    PROFESSIONAL_REPORT_CONTRACT,
+    '本次缺少画面证据：第二部分必须明确哪些摄影结论无法确认，但仍可给出基于内容结构的拍摄与 AI 复刻方案；不得把字幕时间冒充镜头切点。'
   ].join('\n')
   return { systemPrompt, prompt }
 }
@@ -56,45 +69,66 @@ function buildVisionAnalysisPrompt({ mediaName, duration, instruction, offlineDr
     `画面证据：随附 ${frameCount} 张关键帧（镜头切换感知抽取、已去重），每张标注拍摄时间点 t=MM:SS。`,
     instruction ? `用户的解剖要求：${String(instruction).slice(0, 500)}` : '用户的解剖要求：做一次完整的拉片拆解。',
     '',
-    '离线结构底稿（字幕统计线索，仅供对照）：',
+    '离线证据底稿（字幕统计线索，仅供对照，不沿用其表达）：',
     offlineDraft.slice(0, 8000),
     '',
     '口播字幕正文（截断保留前 15000 字）：',
     transcript ? transcript.slice(0, 15000) : '（无字幕证据）',
     '',
-    '请输出以下章节的 Markdown 报告：',
-    '## 一句话定位（这是什么内容、为谁服务、靠什么留人）',
-    '## 钩子拆解（0-3 秒画面与第一句台词如何抓人，引用画面与字幕证据）',
-    '## 镜头与节奏（镜头数量与切换密度、景别与构图、节奏快慢变化，引用 t=MM:SS）',
-    '## 结构时间轴（按 t=MM:SS 划分段落：钩子/推进/高潮/行动点）',
-    '## 口播文案要点（核心观点与金句，引用字幕原句）',
-    '## 营销话术剥离（哪些是套路化表达，真正的信息增量是什么）',
-    '## 可复用套路与二次创作建议（逐条可执行）'
+    '请按下面契约直接输出正文，不要写总标题或前言：',
+    PROFESSIONAL_REPORT_CONTRACT,
+    '分镜表必须引用 t=MM:SS；不能从相邻静态帧确认的运动或转场不要写成事实。第二部分必须覆盖摄影、构图、灯光、色彩、剪辑、字幕、声音和 AI 复刻，并使用“原片观察—专业判断—复刻动作”。'
   ].join('\n')
   return { systemPrompt, prompt }
 }
 
-function buildAnalysisReport({ mediaName, duration, cueCount, frameCount = 0, provider, model, aiText, offlineDraft, visionNote = '' }) {
-  const name = mediaName || '当前视频'
-  const lines = [
-    `# 《${name}》深度解剖报告`,
+function buildQualityRepairPrompt({ mediaName, duration, draft, reasons, transcript, hasVisualEvidence }) {
+  return [
+    `《${mediaName || '当前视频'}》专业拉片初稿未通过质量门（时长 ${formatTime(duration)}）。`,
+    `失败原因：${reasons.join('；')}`,
     '',
-    '## 证据范围',
-    `- 时长：${formatTime(duration)}；字幕证据：${cueCount} 条${frameCount ? `；画面证据：关键帧 ${frameCount} 张（标注 t=MM:SS）` : ''}。`,
-    aiText
-      ? `- 分析方式：${frameCount ? '多模态拉片（画面关键帧＋字幕）' : '云端/本地模型深度解剖'}（${provider || '已配置模型'}${model ? ` / ${model}` : ''}）＋离线结构底稿。`
-      : '- 分析方式：离线结构底稿（未配置模型；配置模型后可升级为 AI 深度解剖）。',
-    frameCount
-      ? '- 画面结论仅依据随附关键帧，未抽取的片段不做编造。'
-      : '- 本报告只依据字幕与统计线索，未观察的画面不做编造。'
+    '请只重写，不解释修改过程。必须保留已有事实证据，不得补写未观察画面。',
+    hasVisualEvidence ? '已有关键帧证据；保留原片观察与时间码。' : '没有画面证据；摄影结论必须明确限制。',
+    PROFESSIONAL_REPORT_CONTRACT,
+    '',
+    '字幕证据：',
+    String(transcript || '').slice(0, 12000),
+    '',
+    '待修初稿：',
+    String(draft || '').slice(0, 24000)
+  ].join('\n')
+}
+
+function buildAnalysisReport({ mediaName, duration, cueCount, frameCount = 0, provider, model, aiText, offlineDraft, visionNote = '', analysisNote = '' }) {
+  const name = mediaName || '当前视频'
+  const method = aiText
+    ? `${frameCount ? '多模态拉片（画面关键帧＋字幕）' : '字幕证据分析'} · ${provider || '已配置模型'}${model ? ` / ${model}` : ''}`
+    : `证据化本地底稿 · ${analysisNote || '未配置模型或模型结果未通过质量门'}`
+  const lines = [
+    `# 《${name}》专业拉片与 AI 复刻报告`,
+    '',
+    `> 时长 ${formatTime(duration)} · 字幕 ${cueCount} 条${frameCount ? ` · 关键帧 ${frameCount} 张` : ''} · ${method}`,
+    '> 观察、专业推断与复刻建议分开表达；未取得的证据不做编造。'
   ]
-  if (visionNote) lines.push(`- 画面降级说明：${visionNote}`)
-  lines.push('')
-  if (aiText) {
-    lines.push('## AI 深度解剖', '', aiText.trim(), '', '---', '', '## 附录：离线结构底稿', '', offlineDraft)
-  } else {
-    lines.push('## 离线结构底稿', '', offlineDraft)
+  if (visionNote) lines.push(`> 画面降级说明：${visionNote}`)
+  let body = String(aiText || offlineDraft || '').trim()
+  const bodySections = body.match(/^##\s+.+$/gm) || []
+  if (bodySections.length !== 2) {
+    const plain = body.replace(/^#{1,6}\s+/gm, '**').replace(/\*\*([^\n]+)$/gm, '**$1**')
+    body = [
+      '## 第一部分　视频讲了什么',
+      '',
+      '### 当前可确认的内容',
+      plain || '- 缺少可核对的字幕内容。',
+      '',
+      '## 第二部分　专业视听拆解与 AI 复刻',
+      '',
+      '### 证据边界与复刻动作',
+      '- 当前结果未形成合格的画面分析；不编造摄影、灯光、焦段或剪辑结论。',
+      '- 复刻时先补齐关键帧和细粒度字幕，再按“原片观察—专业判断—复刻动作”重新生成。'
+    ].join('\n')
   }
+  lines.push('', body)
   return lines.join('\n')
 }
 
@@ -110,7 +144,8 @@ function assertAnalyzableVideo(sourcePath) {
 // model = { configured, local, provider, model }；complete = llmComplete；workspace = DocumentWorkspaceService。
 async function runChatAnalysis({
   sourcePath, mediaName, duration, instruction = '', outputFormat = 'auto',
-  cloudApproved = false, signal, onStatus = () => {}, workspace, complete, completeVisionMulti, frames, model = {}
+  cloudApproved = false, signal, onStatus = () => {}, workspace, complete, completeVisionMulti, frames,
+  translateToChinese, model = {}, onCheckpoint
 }) {
   const resolved = assertAnalyzableVideo(sourcePath)
   const format = outputFormat && outputFormat !== 'auto' ? outputFormat : resolveAnalysisOutput(instruction)
@@ -121,14 +156,42 @@ async function runChatAnalysis({
   }
   onStatus('正在读取字幕与上下文')
   const context = loadAnalysisContext(resolved)
-  const offlineDraft = buildOfflineAnalysis({ mediaName: displayName, duration, markers: [], cues: context.cues })
+  if (model.configured && !model.local && cloudApproved !== true) {
+    return { success: false, requiresApproval: true, cueCount: context.cues.length }
+  }
+  let translatedCues = []
+  if (context.cues.length && detectSourceLanguage(context.cues) === '英文' && typeof translateToChinese === 'function') {
+    onStatus('源字幕为英文，正在生成中文分析证据')
+    try {
+      const translated = await translateToChinese({ cues: context.cues, signal, onStatus })
+      if (Array.isArray(translated) && translated.length === context.cues.length) translatedCues = translated
+    } catch (error) {
+      onStatus(`中文证据生成失败（${String(error?.message || error).slice(0, 60)}），报告将只做结构判断`)
+    }
+  }
+  const offlineDraft = buildEvidenceAnalysis({
+    mediaName: displayName,
+    duration,
+    cues: context.cues,
+    translatedCues,
+    frameCount: 0
+  })
+  const evidenceCues = translatedCues.length ? translatedCues : context.cues
+  const analysisTranscript = evidenceCues.length
+    ? evidenceCues.map((cue) => `${formatTime(cue.start)}–${formatTime(cue.end)} ${cue.text}`).join('\n')
+    : context.transcript
   let aiText = ''
   let frameCount = 0
   let visionNote = ''
-  if (model.configured) {
-    if (!model.local && cloudApproved !== true) {
-      return { success: false, requiresApproval: true, cueCount: context.cues.length }
-    }
+  let analysisNote = ''
+  let reportFrames = []
+  let semanticQuality = null
+  const domainRepairHistory = []
+  const underpoweredLocal = isUnderpoweredLocalAnalysisModel(model)
+  if (underpoweredLocal) {
+    analysisNote = `内置轻量模型 ${model.model || ''} 不具备可靠深度拉片能力，已阻止其生成伪分析`
+    onStatus(`${analysisNote}；改用证据化中文拆解`)
+  } else if (model.configured) {
     // 多模态拉片：抽关键帧随字幕一起给视觉模型；模型不收图片则如实降级为纯文本解剖
     if (!model.local && frames && completeVisionMulti) {
       onStatus('正在抽取关键画面帧')
@@ -142,17 +205,19 @@ async function runChatAnalysis({
       if (shots.length) {
         onStatus(`AI 正在观看 ${shots.length} 张关键画面并拆解（约 1-3 分钟）…`)
         try {
-          const images = shots.map((shot) => ({
+          const framePayloads = shots.map((shot) => ({ label: shot.label, data: fs.readFileSync(shot.path) }))
+          const images = framePayloads.map((shot) => ({
             label: shot.label,
-            dataUrl: `data:image/jpeg;base64,${fs.readFileSync(shot.path).toString('base64')}`
+            dataUrl: `data:image/jpeg;base64,${shot.data.toString('base64')}`
           }))
           const { systemPrompt, prompt } = buildVisionAnalysisPrompt({
             mediaName: displayName, duration, instruction, offlineDraft,
-            transcript: context.transcript, frameCount: shots.length
+            transcript: analysisTranscript, frameCount: shots.length
           })
           const result = await completeVisionMulti({ systemPrompt, prompt, images, signal, timeoutMs: 300000 })
           aiText = result.text
           frameCount = shots.length
+          reportFrames = framePayloads
         } catch (error) {
           const message = String(error?.message || '')
           // 只有"模型能力上不收图"才降级纯文本；超时/网络错误直接抛出，不再白等一轮
@@ -170,18 +235,64 @@ async function runChatAnalysis({
     if (!aiText) {
       onStatus('AI 正在结合字幕证据做深度解剖…')
       const { systemPrompt, prompt } = buildDeepAnalysisPrompt({
-        mediaName: displayName, duration, instruction, offlineDraft, transcript: context.transcript
+        mediaName: displayName, duration, instruction, offlineDraft, transcript: analysisTranscript
       })
       const result = await complete({ systemPrompt, prompt, signal, timeoutMs: 300000 })
       aiText = result.text
     }
+  }
+  if (aiText) {
+    let quality = evaluateProfessionalAnalysisQuality(aiText, { duration, hasVisualEvidence: frameCount > 0 })
+    semanticQuality = quality
+    if (!quality.ok && typeof complete === 'function') {
+      onStatus(`初稿未通过专业质量门，正在自动精修（${quality.reasons.slice(0, 2).join('；')}）`)
+      try {
+        const repaired = await complete({
+          systemPrompt: DEEP_ANALYSIS_SYSTEM,
+          prompt: buildQualityRepairPrompt({
+            mediaName: displayName, duration, draft: aiText, reasons: quality.reasons,
+            transcript: analysisTranscript, hasVisualEvidence: frameCount > 0
+          }),
+          signal,
+          timeoutMs: 300000
+        })
+        const repairedText = String(repaired?.text || '').trim()
+        const repairedQuality = evaluateProfessionalAnalysisQuality(repairedText, { duration, hasVisualEvidence: frameCount > 0 })
+        domainRepairHistory.push({
+          attempt: 1, action: '按专业拉片质量门自动精修初稿',
+          fromScore: Math.max(20, 100 - quality.reasons.length * 12),
+          toScore: repairedQuality.ok ? 100 : Math.max(20, 100 - repairedQuality.reasons.length * 12),
+          passed: repairedQuality.ok, reasons: quality.reasons.slice(0, 6), completedAt: Date.now()
+        })
+        if (repairedQuality.ok) {
+          aiText = repairedText
+          quality = repairedQuality
+          onStatus('专业质量门已通过')
+        } else {
+          quality = repairedQuality
+        }
+        semanticQuality = quality
+      } catch (error) {
+        if (signal?.aborted) throw error
+        analysisNote = `自动精修失败：${String(error?.message || error).slice(0, 80)}`
+      }
+    }
+    if (!quality.ok) {
+      analysisNote = `模型结果未通过质量门：${quality.reasons.join('；')}`
+      onStatus(`${analysisNote}；不交付该结果，改用证据化中文拆解`)
+      aiText = ''
+      frameCount = 0
+      reportFrames = []
+    }
+  } else if (!analysisNote) {
+    analysisNote = model.configured ? '模型没有返回可用内容' : '未配置可用的深度分析模型'
   }
   onStatus('正在写出解剖报告')
   const summary = aiText
     ? frameCount
       ? `已完成《${displayName}》多模态拉片（${frameCount} 张关键帧 + ${context.cues.length} 条字幕证据）`
       : `已完成《${displayName}》AI 深度解剖（${context.cues.length} 条字幕证据）${visionNote ? `；${visionNote}` : ''}`
-    : `已生成《${displayName}》离线解剖结构稿（${context.cues.length} 条字幕证据；配置模型可升级为 AI 解剖）`
+    : `已生成《${displayName}》证据化中文拆解（${context.cues.length} 条字幕证据；未交付低质量模型结果）`
   const plan = {
     kind: 'video-analysis', instruction, summary, outputFormat: format,
     files: [{ name: displayName, path: resolved, ext: path.extname(resolved).toLowerCase() }]
@@ -190,20 +301,30 @@ async function runChatAnalysis({
     title: `${displayName}·深度解剖`, summary, outputFormat: format,
     content: buildAnalysisReport({
       mediaName: displayName, duration, cueCount: context.cues.length, frameCount,
-      provider: model.provider, model: model.model, aiText, offlineDraft, visionNote
+      provider: model.provider, model: model.model, aiText, offlineDraft, visionNote, analysisNote
     }),
-    slides: [], sheets: []
+    slides: [], sheets: [],
+    reportAssets: { type: 'video-analysis', frames: reportFrames }
   }
   const written = await workspace.writeGenerated(plan, aiPlan)
+  const domainQuality = aiText
+    ? { score: semanticQuality?.ok === false ? Math.max(20, 100 - semanticQuality.reasons.length * 12) : 100, passed: semanticQuality?.ok !== false, level: semanticQuality?.ok === false ? 'fail' : 'pass', reasons: semanticQuality?.reasons || [], fallbackUsed: false }
+    : { score: 80, passed: true, level: 'warning', reasons: semanticQuality?.reasons || (analysisNote ? [analysisNote] : []), fallbackUsed: true }
+  const result = { success: true, outputs: written.outputs, summary, usedAi: Boolean(aiText), cueCount: context.cues.length, frameCount, visionNote, analysisNote, excerpt: String(aiText || offlineDraft).slice(0, 2000), domainQuality, domainRepairHistory }
+  onCheckpoint?.({ stage: 'outputs-written', result })
   const historyId = workspace.recordHistory(plan, written)
-  return { success: true, outputs: written.outputs, summary, historyId, usedAi: Boolean(aiText), cueCount: context.cues.length, frameCount, visionNote, excerpt: String(aiText || '').slice(0, 2000) }
+  const completed = { ...result, historyId }
+  onCheckpoint?.({ stage: 'history-written', result: completed })
+  return completed
 }
 
 module.exports = {
   DEEP_ANALYSIS_SYSTEM,
   DEEP_ANALYSIS_VISION_SYSTEM,
+  PROFESSIONAL_REPORT_CONTRACT,
   buildAnalysisReport,
   buildDeepAnalysisPrompt,
+  buildQualityRepairPrompt,
   buildVisionAnalysisPrompt,
   detectAnalysisIntent,
   resolveAnalysisOutput,

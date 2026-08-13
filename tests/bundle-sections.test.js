@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const { DocumentWorkspaceService } = require('../electron/document-workspace-service')
 
@@ -75,9 +76,12 @@ test('paragraph-boundary truncation avoids mid-sentence cuts', () => {
   assert.equal(hard.length, 150, '无空行时硬切')
 })
 
-test('agent panel guards doc tasks against double submission', () => {
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
-  assert.match(panel, /docBusyRef\.current\) return/)
-  assert.equal((panel.match(/docBusyRef\.current = true/g) || []).length, 5, '文档/解剖/下载/链接拉片/去重任务都应有同步防重')
-  assert.equal((panel.match(/docBusyRef\.current = false/g) || []).length, 6, '五个 finally + 无本地视频提前返回点都应释放防重锁')
+test('agent panel guards every long-running task against double submission', () => {
+  const panel = agentPanelSource()
+  const guards = (panel.match(/(?:docBusyRef|busyRef)\.current\) return/g) || []).length
+  const locks = (panel.match(/(?:docBusyRef|busyRef)\.current = true/g) || []).length
+  const releases = (panel.match(/(?:docBusyRef|busyRef)\.current = false/g) || []).length
+  assert.equal(guards, locks, '每个同步防重入口都应在执行前取得锁')
+  assert.ok(locks >= 9, '文档、解剖、下载、链接拉片、去重、生成、批处理、压缩和重构都应防重')
+  assert.ok(releases >= locks, '每个长任务都应在 finally 或提前返回点释放防重锁')
 })

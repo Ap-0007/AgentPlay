@@ -1,4 +1,4 @@
-# AI播放器 项目索引
+# AgentPlay 项目索引
 
 > 一句话：给极客家庭和内容创作者的 AI 媒体中枢 -- Agent 替你操作媒体（播、投、印、理），桌面+Web 双端。
 
@@ -14,7 +14,10 @@ ai-player/
 │   ├── model-providers.js 主流厂商、动态模型列表与协议配置
 │   ├── model-config-store.js Windows 系统加密的模型配置存储
 │   ├── local-model-discovery.js Ollama/LM Studio/vLLM/llama.cpp/Fara 本机只读发现
+│   ├── agent-runtime-policy.mjs 模型无关工作模式、工具权限与证据协议
 │   ├── analysis-studio-service.js 拉片证据、字幕解析与基础重构
+│   ├── analysis-chat-service.js 对话拉片协议、质量门禁与自动重写
+│   ├── video-analysis-report-service.js 专业两部分 DOCX、表格与关键帧排版
 │   ├── creative-studio-service.js 多模态方案、新镜头/配音/字幕/音乐与创意渲染
 │   ├── file-service.js 媒体库扫描（视频/图片/PDF）
 │   ├── print-file.js   打印（Electron print）
@@ -40,12 +43,14 @@ ai-player/
 
 ## 当前状态
 
-- **Windows 0.7.6 本地候选版**：公开稳定版仍为 0.6.1；完整状态与外部条件见 `MULTIPLATFORM.md` 和 `../../../方案文档/AI播放器完工方案.md`。
-- 当前门禁：414 项自动化测试、TypeScript、ESLint、Web/PWA 构建、链接下载回归、全/生产依赖零漏洞审计、Office 实机验证、成品安全扫描和正式 EXE 冒烟；只有同一候选包全部闭环后才能视为可交付。
+- **Windows 0.8.0 本地候选版**：本轮尚未公开发布；完整状态与外部条件见 `MULTIPLATFORM.md` 和 `../../../方案文档/AI播放器完工方案.md`。
+- 当前门禁：619 项自动化测试（616 通过、0 失败、3 项按环境跳过）、TypeScript、ESLint、Web/PWA 构建、链接下载回归、Office/WPS 实机验证、成品安全扫描、SPDX 2.3 SBOM 和正式安装位 EXE 冒烟；只有同一候选包全部闭环后才能视为可交付。
 - 画面规则：每次打开新媒体都回到“完整显示”；HTML5 与 mpv 都保留完整宽高比。裁剪铺满改成明确的可选模式并提示可能隐藏边缘。
 - 桌面播放：常见编码使用 HTML5 内嵌，特殊编码回退独立 mpv 兼容窗口；Web 端为浏览器能力子集。
 - Agent：无 Key 可执行基础播放控制；模型中心覆盖官方、聚合、本地和自定义服务，支持动态读取账户模型；Ollama、LM Studio、vLLM、llama.cpp、Colibri/Fara 可作为外部本机服务。
-- AI 创作：关键帧 + 字幕 + 人工拉片进入多模态模型；支持结构化原创方案、AI 图像新镜头、系统/云配音、三种字幕包装、授权音乐自动压低和最终 MP4。所选型号不接受图片时会明确回退文本证据，不伪称视觉分析。
+- AI 拉片：关键帧 + 字幕进入多模态模型，底层强制“视频内容精华 / 专业视听拆解与 AI 复刻”两部分协议；时长感知证据门禁会检查全片时间轴、视听专业项和可执行复刻动作，不合格自动重写一次。所选型号不接受图片时会明确回退文本证据，不伪称视觉分析。
+- Agent Runtime：Agnes、OpenAI、Claude、Gemini、本地模型与订阅 CLI 共用“问答 / 规划 / 执行 / 自动”四种工作方式；16 项播放器工具来自单一注册表，四模式分别具有轮次、工具次数和耗时预算。模型调用、渲染器执行、状态/文件校验写入同一运行账本，任务中心展示逐步状态、证据回执与预算，不再把模型文字当作完成证明。
+- AI 创作：支持结构化原创方案、AI 图像新镜头、系统/云配音、三种字幕包装、授权音乐自动压低和最终 MP4。
 - 链接下载：B站、YouTube、抖音、X、Facebook 走统一站点链，识别后始终显示“仅下载 / 下载并拉片”；X 与 Facebook 登录态按原链接域名路由。
 - 仍未完整交付：macOS/Linux/Android/iOS 的高级渲染闭包与实机端到端验收；详见 `MULTIPLATFORM.md`。
 

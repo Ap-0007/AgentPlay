@@ -1,5 +1,6 @@
 import { usePlayerStore } from '../stores/playerStore'
 import { useAgentStore } from '../stores/agentStore'
+import { shiftSubtitlePosition } from '../subtitle-display-policy.mjs'
 
 interface Props {
   onInteractionStart?: () => void
@@ -11,7 +12,7 @@ export default function PlayerControls({ onInteractionStart, onInteractionEnd }:
     isPlaying, togglePlay,
     volume, setVolume,
     currentTime, duration, seek,
-    subtitleVisible, toggleSubtitle,
+    subtitleVisible, toggleSubtitle, subtitlePosition, setSubtitlePosition,
     isFullscreen, toggleFullscreen, theater,
     controlsVisible, playbackRate, setPlaybackRate, toggleMute
   } = usePlayerStore()
@@ -30,7 +31,7 @@ export default function PlayerControls({ onInteractionStart, onInteractionEnd }:
       onPointerLeave={onInteractionEnd}
       onFocusCapture={onInteractionStart}
       onBlurCapture={onInteractionEnd}
-      className={`absolute z-30 bottom-0 left-0 right-0 px-6 py-3 bg-gradient-to-t from-black/90 to-transparent transition-opacity duration-300 ${
+      className={`player-video-controls absolute z-30 bottom-0 left-0 right-0 px-6 py-3 text-white bg-gradient-to-t from-black/90 to-transparent transition-opacity duration-300 ${
         controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
       }`}
     >
@@ -116,6 +117,24 @@ export default function PlayerControls({ onInteractionStart, onInteractionEnd }:
         >
           字幕
         </button>
+        <div className="flex items-center rounded-lg bg-black/35 p-0.5" aria-label="字幕位置">
+          <button
+            title="字幕上移"
+            disabled={!subtitleVisible || subtitlePosition === 'high'}
+            onClick={() => {
+              setSubtitlePosition(shiftSubtitlePosition(subtitlePosition, 'up'))
+            }}
+            className="h-7 w-7 rounded text-sm text-gray-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30"
+          >↑</button>
+          <button
+            title="字幕下移"
+            disabled={!subtitleVisible || subtitlePosition === 'low'}
+            onClick={() => {
+              setSubtitlePosition(shiftSubtitlePosition(subtitlePosition, 'down'))
+            }}
+            className="h-7 w-7 rounded text-sm text-gray-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30"
+          >↓</button>
+        </div>
 
         {/* 4. 全屏 */}
         <button

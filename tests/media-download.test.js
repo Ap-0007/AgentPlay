@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const {
   downloadRemoteMedia,
@@ -92,7 +93,37 @@ test('download writes file atomically with progress and follows redirects', asyn
   assert.equal(result.bytes, 6)
   assert.equal(fs.readFileSync(result.outputPath).toString(), 'abcdef')
   assert.deepEqual(progress, [{ received: 3, total: 6 }, { received: 6, total: 6 }])
-  assert.equal(fs.existsSync(`${result.outputPath}.${process.pid}.part`), false, '临时文件必须已重命名')
+  assert.equal(fs.existsSync(`${result.outputPath}.agentplay.part`), false, '临时文件必须已重命名')
+})
+
+test('direct media download resumes a persisted partial file with HTTP Range', async (t) => {
+  const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-resume-'))
+  t.after(() => fs.rmSync(destDir, { recursive: true, force: true }))
+  const finalPath = path.join(destDir, 'resume.mp4')
+  const tempPath = `${finalPath}.agentplay.part`
+  fs.writeFileSync(tempPath, 'abc')
+  const calls = []
+  const checkpoints = []
+  const result = await downloadRemoteMedia('https://cdn.com/resume.mp4', {
+    destDir,
+    dnsLookup: dnsPublic,
+    checkpoint: { received: 3, tempPath, finalPath, finalUrl: 'https://cdn.com/resume.mp4' },
+    onCheckpoint: (value) => checkpoints.push(value),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options })
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => ({ 'content-type': 'video/mp4', 'content-length': '3', 'content-range': 'bytes 3-5/6' })[name] ?? null },
+        body: streamOf([Buffer.from('def')])
+      }
+    }
+  })
+
+  assert.equal(calls[0].options.headers.Range, 'bytes=3-')
+  assert.equal(fs.readFileSync(result.outputPath, 'utf8'), 'abcdef')
+  assert.equal(result.bytes, 6)
+  assert.equal(checkpoints.at(-1).received, 6)
 })
 
 test('rejects html pages with a site-link hint and oversized files', async () => {
@@ -128,7 +159,7 @@ test('rejects private-address resolutions and url-embedded credentials', async (
 test('media download wires IPC, preload, types and agent panel route', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(__dirname, '..', 'electron', 'preload.js'), 'utf8')
-  const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'AgentPanel.tsx'), 'utf8')
+  const panel = agentPanelSource()
   const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types', 'global.d.ts'), 'utf8')
   assert.match(main, /ipcMain\.handle\('media:download'/)
   assert.match(main, /AgentPlay 下载/)

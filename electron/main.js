@@ -1,4 +1,4 @@
-// AI播放器 Electron 主进程
+// AgentPlay Electron 主进程
 // dev: 加载 Vite dev server；prod: 加载构建产物
 // 集成 mpv sidecar，IPC 桥接渲染进程
 const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session, desktopCapturer, globalShortcut } = require('electron')
@@ -21,12 +21,16 @@ const { previewDocx, previewXlsx } = require('./office-preview')
 const { searchSubtitle, downloadSubtitle } = require('./subtitle-service')
 const { DlnaReceiver } = require('./dlna-receiver')
 const log = require('./logger')
-const { analyzeDir, clusterByTag, findDuplicates, suggestClip } = require('./media-service')
+const { analyzeDir, analyzeDirAsync, clusterByTag, findDuplicates, suggestClip } = require('./media-service')
 const { DlnaServer } = require('./dlna-server')
-const { listPlugins } = require('./plugin-service')
-const { PROVIDERS, listModels, probeConnection, detectVolcenginePlan, VOLCENGINE_CODING_BASE_URL, VOLCENGINE_CODING_MODELS, normalizeConfig } = require('./model-providers')
+const { PluginSkillService, PLUGIN_DIR } = require('./plugin-service')
+const { replacePluginContributions } = require('./agent-tool-registry')
+const { PROVIDERS, listModels, probeConnection, detectVolcenginePlan, VOLCENGINE_CODING_BASE_URL, VOLCENGINE_CODING_MODELS, normalizeConfig, normalizeProviderModels } = require('./model-providers')
 const { discoverLocalServices } = require('./local-model-discovery')
 const { ModelConfigStore } = require('./model-config-store')
+const { ModelPerformanceRouter, modelKey, taskKindForPersistentType } = require('./model-performance-router')
+const { chooseDocumentModel, cloudFallbackFromStore, contextWindowForConfig, maxOutputTokensForConfig } = require('./model-context-policy')
+const { ServiceCredentialStore } = require('./service-credential-store')
 const { ModelCatalog } = require('./model-catalog')
 const { ComputerUseProvider } = require('./adapters/computer-use-provider')
 const { ComputerUseOrchestrator } = require('./computer-use-orchestrator')
@@ -44,18 +48,25 @@ const {
   synthesizeSystemVoice
 } = require('./creative-studio-service')
 const { generateVideoAsset } = require('./creative-studio-service')
-const { DocumentWorkspaceService, SUPPORTED_EXTENSIONS, pdfPageCount } = require('./document-workspace-service')
+const { DocumentWorkspaceService, SUPPORTED_EXTENSIONS, extractText, pdfPageCount } = require('./document-workspace-service')
 const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
 const AUDIO_MEDIA_EXTS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma']
 const { WinRtOcrService } = require('./ocr-service')
+const { UnlimitedOcrConfigStore, UnlimitedOcrService, isLoopbackEndpoint } = require('./unlimited-ocr-service')
 const { LanguageDetectService } = require('./language-detect-service')
 const { OfficeConvertService } = require('./office-convert-service')
 const { TranscriptionService } = require('./transcription-service')
-const { parseSrt, buildBilingualSrt, translateEntries, cuesToEntries, runLiveTranslation } = require('./subtitle-bilingual-service')
+const { parseSrt, buildTranslationOnlySrt, chooseOppositeTarget, translateEntries, cuesToEntries, runLiveTranslation } = require('./subtitle-bilingual-service')
+const { chooseSubtitleEngine } = require('./subtitle-engine-policy')
+const { buildWhisperRecovery, buildOfflineTranslateRecovery, buildCloudTranslateRecovery } = require('./subtitle-recovery-policy')
+const { buildTranscriptionStatus, subtitleMediaKey } = require('./subtitle-job-policy')
 const { splitOpenAnyPaths, isPathInsideRoots } = require('./open-any')
 const { downloadRemoteMedia, extractUrl, isDownloadIntent, isMediaUrl } = require('./media-download-service')
 const { rasterizePdfPages } = require('./pdf-rasterizer')
 const { LocalAiDownloadService } = require('./local-ai-download-service')
+const { PersistentTaskRuntime } = require('./persistent-task-runtime')
+const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = require('./persistent-document-task')
+const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -65,6 +76,10 @@ const isDev = !app.isPackaged
 let mpv = null
 let agentEngine = null
 let modelConfigStore = null
+let modelPerformanceRouter = null
+let serviceCredentialStore = null
+let unlimitedOcrConfigStore = null
+let unlimitedOcrService = null
 let modelCatalog = null
 let computerUseOrchestrator = null
 let bundledRuntime = null
@@ -81,6 +96,8 @@ let rendererLoaded = false
 let activeRecutProcess = null
 let documentWorkspace = null
 let localAiDownload = null
+let persistentTaskRuntime = null
+let pluginService = null
 const pendingExternalMedia = []
 const pendingDocumentFiles = []
 let documentFlushTimer = null
@@ -88,7 +105,10 @@ const activeAiRequests = new Map()
 const activeComputerUseRequests = new Map()
 const activeDocumentRequests = new Map()
 const activeAnalysisRequests = new Map()
+const activeSubtitleMediaJobs = new Map()
 const activeMediaDownloads = new Map()
+const activeMediaTasks = new Map()
+const activeCreativeTasks = new Map()
 let liveSubtitleSession = null
 let liveTranscribeSession = null
 let mirrorReceiver = null
@@ -110,7 +130,10 @@ ipcMain.on('app:version', (event) => {
 ipcMain.on('external-media:accepted', (event, filePath) => {
   assertTrustedSender(event)
   const acceptedPath = extractExternalMediaPaths([filePath])[0]
-  if (acceptedPath) log.info(`播放界面已接收外部文件: ${path.basename(acceptedPath)}`)
+  if (acceptedPath) {
+    userAuthorizedPaths.add(path.resolve(acceptedPath))
+    log.info(`播放界面已接收外部文件: ${path.basename(acceptedPath)}`)
+  }
 })
 
 function stopActiveRender() {
@@ -149,7 +172,7 @@ function approveDocumentPaths(filePaths) {
     const token = crypto.randomUUID()
     approvedDocumentSelections.set(token, { path: file.path, createdAt: Date.now() })
     userAuthorizedPaths.add(file.path)
-    return { token, name: file.name, ext: file.ext, size: file.size }
+    return { token, name: file.name, ext: file.ext, size: file.size, previewPath: file.path }
   })
 }
 
@@ -221,6 +244,12 @@ function creativeConfig() {
   // stash 也可能是早期版本误存的非云端配置：视同无 stash，给出明确引导而非拿 cli 配置去撞云端协议
   if (!stashed || stashed.providerId === 'bundled-lite' || stashed.providerId === 'codex-chatgpt' || stashed.providerId === 'claude-code') return config
   return normalizeConfig({ ...stashed, role: 'chat', apiKey: modelConfigStore.decrypt(stashed.encryptedApiKey) }, 'chat')
+}
+
+function cloudConfigForExplicitFeature() {
+  const settings = modelPerformanceRouter?.status([])?.settings
+  if (settings?.preference === 'local') throw new Error('当前设置为“只在本机”；如需这项云端能力，请先切换为“智能选择”或“优先效果”')
+  return creativeConfig()
 }
 
 function assertTrustedSender(event) {
@@ -339,12 +368,14 @@ function createWindow() {
     maxWidth: display.workArea.width,
     maxHeight: display.workArea.height,
     backgroundColor: '#0a0a0a',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
     }
   })
+  if (process.platform !== 'darwin') mainWindow.setMenuBarVisibility(false)
 
   mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
     log.error(`preload 加载失败: ${preloadPath}`, error)
@@ -427,6 +458,22 @@ function assertAllowedPath(filePath, { denyExecutable = false } = {}) {
   throw new Error('只允许访问你明确授权过、媒体库或常用目录内的文件')
 }
 
+const SUBTITLE_ARTIFACT_EXTS = new Set(['.srt', '.vtt', '.ass', '.ssa', '.sub'])
+
+// 应用自己下载、识别或翻译得到的字幕是用户已授权媒体的派生产物。
+// 只有已经落盘的字幕文件才能进入授权集合，避免把任意渲染端路径变成通用读取通道。
+function authorizeDerivedSubtitle(subtitlePath) {
+  if (typeof subtitlePath !== 'string' || !subtitlePath.trim()) throw new Error('字幕产物路径无效')
+  const resolved = path.resolve(subtitlePath)
+  if (!SUBTITLE_ARTIFACT_EXTS.has(path.extname(resolved).toLowerCase())) throw new Error('字幕产物格式不受支持')
+  const stat = fs.statSync(resolved)
+  if (!stat.isFile()) throw new Error('字幕产物不是文件')
+  if (stat.size > 20 * 1024 * 1024) throw new Error('字幕产物超过 20MB 安全上限')
+  userAuthorizedPaths.add(resolved)
+  log.info(`字幕产物已授权并可加载: ${path.basename(resolved)}`)
+  return resolved
+}
+
 // 云端发送同意：原生对话框一次确认、本次开机内有效（渲染器自报布尔不算数）
 let cloudConsentGranted = false
 async function ensureCloudConsent(detail) {
@@ -446,6 +493,23 @@ async function ensureCloudConsent(detail) {
     return true
   }
   return false
+}
+
+async function ensurePersistentApproval(approval) {
+  if (!approval) return true
+  if (approval.action === 'cloud') return ensureCloudConsent(approval.summary)
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const isPaid = approval.action === 'paid'
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: isPaid ? '付费任务确认' : '敏感操作确认',
+    message: isPaid ? '这项创作会调用可能产生费用的云端模型' : '这项任务需要你的明确授权',
+    detail: `${approval.summary}\n\n确认只对当前任务有效；任务中断后会使用同一恢复令牌继续，不会重复创建已记录的云端任务。`,
+    buttons: ['取消', isPaid ? '确认并开始' : '确认'],
+    defaultId: 0,
+    cancelId: 0
+  })
+  return result.response === 1
 }
 
 async function chooseFile() {
@@ -605,12 +669,48 @@ const rapidOcr = new RapidOcrService({
   modelRoot: path.join(app.getPath('userData'), 'rapidocr-pack')
 })
 
-// 字幕翻译路由：离线翻译组件可用且任务为"英→中"时纯本地翻译；否则回退到已配置云端模型
-function pickTranslateEngine(entries, targetLang = '中文') {
-  if (offlineTranslate.availability().available && shouldUseOffline(entries, targetLang)) {
-    return { complete: (input) => offlineTranslate.jsonComplete(input), label: '离线翻译组件', offline: true }
+// 字幕翻译路由：配置过云模型时默认走云端加速（内容上云前仍由原生确认框把关）；
+// 没配置云端或用户拒绝后退回本地 OPUS-MT。Agnes 等 OpenAI 兼容模型直接复用统一文本接口。
+function pickTranslateEngine(entries, targetLang = '中文', preference = 'auto') {
+  const offlineAvailable = offlineTranslate.availability().available && shouldUseOffline(entries, targetLang)
+  const cloudConfig = creativeConfig()
+  const requiresKey = cloudConfig.requiresKey !== false
+  const cloudReady = !isLocalModelConfig(cloudConfig)
+    && cloudConfig.protocol !== 'cli'
+    && Boolean(cloudConfig.baseUrl && cloudConfig.model && (!requiresKey || cloudConfig.apiKey))
+  const selected = chooseSubtitleEngine({ preference, cloudReady, offlineAvailable })
+  if (selected === 'cloud') {
+    return {
+      complete: ({ systemPrompt, prompt, signal, timeoutMs }) => llmComplete({
+        systemPrompt, prompt, signal, timeoutMs, modelConfig: cloudConfig, taskKind: 'subtitle-translation'
+      }),
+      label: `${cloudConfig.providerName} · ${cloudConfig.model}`,
+      providerId: cloudConfig.providerId,
+      model: cloudConfig.model,
+      offline: false
+    }
   }
-  return { complete: llmComplete, label: '云端模型', offline: false }
+  if (selected === 'offline') {
+    return { complete: (input) => offlineTranslate.jsonComplete(input), label: '本地离线翻译', providerId: 'offline-opus-mt', model: 'Xenova/opus-mt-en-zh', offline: true }
+  }
+  return null
+}
+
+async function translateAnalysisCuesToChinese({ cues, signal, onStatus = () => {} }) {
+  const entries = cuesToEntries(cues)
+  if (!entries.length || chooseOppositeTarget(entries) !== '中文') return []
+  const engine = pickTranslateEngine(entries, '中文', 'local')
+  if (!engine) return []
+  const { translations } = await translateEntries(entries, engine.complete, {
+    targetLang: '中文',
+    signal,
+    onProgress: ({ done, total }) => onStatus(`正在把英文证据翻成中文 ${done}/${total}`)
+  })
+  return entries.map((entry, index) => ({
+    start: cues[index].start,
+    end: cues[index].end,
+    text: translations.get(entry.index) || '（该段未能可靠翻译，不纳入语义结论）'
+  }))
 }
 
 async function transcribeToFile(sourcePath, finalPath, { timestamps = false } = {}) {
@@ -626,7 +726,7 @@ async function transcribeToFile(sourcePath, finalPath, { timestamps = false } = 
   return { summary: `离线转写完成（${transcription.text.length} 字${timestamps ? '，含时间轴' : ''}）` }
 }
 
-async function recognizePdfWithOcr(filePath) {
+async function recognizePdfWithLightOcr(filePath) {
   // 高精度组件在位时优先（PP-OCRv4 中文精度显著优于系统 OCR）；否则回退 WinRT 系统 OCR
   const useRapid = rapidOcr.availability().available
   const status = await ocrService.detect()
@@ -650,6 +750,11 @@ async function recognizePdfWithOcr(filePath) {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
+}
+
+async function recognizePdfWithOcr(filePath, options = {}) {
+  if (!unlimitedOcrService) return recognizePdfWithLightOcr(filePath, options)
+  return unlimitedOcrService.recognizePdf(filePath, options)
 }
 
 async function wordsForImage(imagePath) {
@@ -747,7 +852,7 @@ const menuTemplate = [
     { label: '音量 -5　↓', click: () => sendAction('volume-down') },
     { label: '静音 / 恢复　M', click: () => sendAction('mute-toggle') },
     { label: '字幕开关', click: () => sendAction('subtitle-toggle') },
-    { label: '在线字幕…', click: () => sendAction('online-subtitle') },
+    { label: '自动翻译字幕', click: () => sendAction('bilingual-subtitle') },
     { label: '播放速度', submenu: [0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => ({ label: `${rate}×`, click: () => sendAction(`speed-${rate}`) })) },
     { type: 'separator' },
     { label: '截取当前画面', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendAction('screenshot') }
@@ -775,12 +880,12 @@ const menuTemplate = [
   ] },
   { label: '帮助', submenu: [
     { label: '快捷键', click: () => sendAction('shortcuts') },
-    { label: '关于 AI播放器', click: () => dialog.showMessageBox(mainWindow, { type: 'info', title: '关于 AI播放器', message: 'AI播放器', detail: `版本 ${app.getVersion()}\n支持本地播放、网络源、投屏同步与多模型 AI 助手。` }) }
+    { label: '关于 AgentPlay', click: () => dialog.showMessageBox(mainWindow, { type: 'info', title: '关于 AgentPlay', message: 'AgentPlay', detail: `版本 ${app.getVersion()}\n一个入口，完成媒体、文档与 AI 任务。` }) }
   ] }
 ]
 Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate))
 
-log.info('AI播放器启动')
+log.info('AgentPlay 启动')
 
 app.whenReady().then(async () => {
   const win = createWindow()
@@ -811,6 +916,18 @@ app.whenReady().then(async () => {
   }
 
   modelConfigStore = new ModelConfigStore(app.getPath('userData'), safeStorage)
+  modelPerformanceRouter = new ModelPerformanceRouter({ rootDir: path.join(app.getPath('userData'), 'model-performance') })
+  serviceCredentialStore = new ServiceCredentialStore(app.getPath('userData'), safeStorage)
+  unlimitedOcrConfigStore = new UnlimitedOcrConfigStore(app.getPath('userData'), safeStorage)
+  unlimitedOcrService = new UnlimitedOcrService({
+    configStore: unlimitedOcrConfigStore,
+    rasterizePdf: async (filePath) => rasterizePdfPages({
+      pdfPath: filePath,
+      pageCount: await pdfPageCount(filePath),
+      createWindow: createHiddenWindow
+    }),
+    fallbackRecognizePdf: recognizePdfWithLightOcr
+  })
   modelCatalog = new ModelCatalog(app.getPath('userData'))
   bundledRuntime = new BundledLocalRuntime({
     resourceRoot: app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', 'resources'),
@@ -821,10 +938,59 @@ app.whenReady().then(async () => {
     manifest: LOCAL_AI_PACK,
     logger: log
   })
+  pluginService = new PluginSkillService({
+    rootDir: path.join(app.getPath('userData'), 'plugins'),
+    legacyDir: PLUGIN_DIR,
+    onContributions: replacePluginContributions
+  })
+  pluginService.refresh()
   agentEngine = new AgentEngine(mpv)
-  llmComplete = async ({ systemPrompt, prompt, signal, timeoutMs }) => {
-    let config = modelConfigStore.resolved('chat')
+  const selectConfiguredModel = ({ taskKind = 'general-text', requirements = {}, modelConfig = null, cloudAllowed = null } = {}) => {
+    if (modelConfig) {
+      const eligibility = modelPerformanceRouter.validate(modelConfig, {
+        requirements,
+        cloudAllowed: typeof cloudAllowed === 'boolean' ? cloudAllowed : true
+      })
+      return eligibility.eligible
+        ? { selected: modelConfig, reason: '任务已冻结模型配置', ranking: [] }
+        : { selected: null, reason: `任务冻结模型${eligibility.reason}，未改用其他模型`, ranking: [] }
+    }
+    const active = modelConfigStore.resolved('chat')
+    const candidates = modelConfigStore.resolvedCandidates('chat')
+    const routingSettings = modelPerformanceRouter.status([]).settings
+    const effectiveCloudAllowed = typeof cloudAllowed === 'boolean'
+      ? cloudAllowed
+      : routingSettings.preference === 'cloud' || !isLocalModelConfig(active)
+    const decision = modelPerformanceRouter.select({
+      taskKind,
+      candidates: candidates.length ? candidates : [active],
+      activeKey: modelKey(active),
+      requirements,
+      cloudAllowed: effectiveCloudAllowed
+    })
+    return decision
+  }
+  const selectModelForTaskPlan = ({ taskKind, requirements = {}, candidates = null } = {}) => {
+    const active = modelConfigStore.resolved('chat')
+    const pool = (candidates || modelConfigStore.resolvedCandidates('chat')).map((config) => ({
+      ...config,
+      contextWindow: contextWindowForConfig(config)
+    }))
+    return modelPerformanceRouter.select({
+      taskKind,
+      candidates: pool,
+      activeKey: modelKey(active),
+      requirements,
+      // 这里只生成带模型身份的审批计划；真正执行仍必须先消费 approval。
+      cloudAllowed: true
+    })
+  }
+  llmComplete = async ({ systemPrompt, prompt, signal, timeoutMs, maxTokens, modelConfig, taskKind = 'general-text' }) => {
+    const decision = selectConfiguredModel({ taskKind, modelConfig })
+    let config = decision.selected
+    if (!config) throw new Error(decision.reason || '没有满足当前 AI 使用方式的模型')
     let usesBundledRuntime = false
+    const startedAt = Date.now()
     try {
       if (config.providerId === 'bundled-lite') {
         const status = await bundledRuntime.start()
@@ -832,29 +998,61 @@ app.whenReady().then(async () => {
         usesBundledRuntime = true
         config = { ...config, model: status.model, baseUrl: status.baseUrl }
       }
-      return await agentEngine.completeText([{ role: 'user', content: prompt }], config, { systemPrompt, signal, timeoutMs })
+      const result = await agentEngine.completeText([{ role: 'user', content: prompt }], config, { systemPrompt, signal, timeoutMs, maxTokens })
+      modelPerformanceRouter.recordCall({ taskKind, config, startedAt, completedAt: Date.now(), success: true, usage: result.usage })
+      return { ...result, routeReason: decision.reason }
+    } catch (error) {
+      modelPerformanceRouter.recordCall({ taskKind, config, startedAt, completedAt: Date.now(), success: false, errorCode: error?.code || error?.name })
+      throw error
     } finally {
       if (usesBundledRuntime) bundledRuntime.release()
     }
   }
   // 多图视觉调用（拉片关键帧）：images = [{ dataUrl, label }]，必须带当前配置，否则会落到引擎默认端点
-  llmCompleteVisionMulti = async ({ systemPrompt, prompt, images, signal, timeoutMs }) => {
-    const config = creativeConfig()
-    return agentEngine.completeVisionMulti({
-      prompt,
-      systemPrompt,
-      imageDataUrls: images.map((image) => image.dataUrl),
-      labels: images.map((image) => image.label),
-      apiKey: config,
-      signal,
-      timeoutMs: timeoutMs || 300000
-    })
+  llmCompleteVisionMulti = async ({ systemPrompt, prompt, images, signal, timeoutMs, modelConfig, taskKind = 'analysis-vision' }) => {
+    const decision = selectConfiguredModel({ taskKind, requirements: { vision: true }, modelConfig })
+    const config = decision.selected
+    if (!config) throw new Error(decision.reason || '没有满足看图能力与授权边界的模型')
+    const startedAt = Date.now()
+    try {
+      const result = await agentEngine.completeVisionMulti({
+        prompt,
+        systemPrompt,
+        imageDataUrls: images.map((image) => image.dataUrl),
+        labels: images.map((image) => image.label),
+        apiKey: config,
+        signal,
+        timeoutMs: timeoutMs || 300000
+      })
+      modelPerformanceRouter.recordCall({ taskKind, config, startedAt, completedAt: Date.now(), success: true, usage: result.usage })
+      return { ...result, routeReason: decision.reason }
+    } catch (error) {
+      modelPerformanceRouter.recordCall({ taskKind, config, startedAt, completedAt: Date.now(), success: false, errorCode: error?.code || error?.name })
+      throw error
+    }
+  }
+  const generateVideoWithReceipt = async (config, input = {}) => {
+    const observedConfig = { ...config, model: String(input.model || 'agnes-video-v2.0') }
+    const startedAt = Date.now()
+    try {
+      const result = await generateVideoAsset(config, input)
+      modelPerformanceRouter.recordCall({ taskKind: 'creative-video', config: observedConfig, startedAt, completedAt: Date.now(), success: true })
+      return result
+    } catch (error) {
+      modelPerformanceRouter.recordCall({ taskKind: 'creative-video', config: observedConfig, startedAt, completedAt: Date.now(), success: false, errorCode: error?.code || error?.name })
+      throw error
+    }
   }
   // 图片理解：优先已配置云端视觉模型；不行就本机 WinRT OCR 兜底（本地模型与零配置场景也能答）
-  const describeImage = async (imagePath, instruction, { signal } = {}) => {
-    const config = creativeConfig()
-    const requiresKey = config.requiresKey !== false
-    const visionReady = config.providerId !== 'bundled-lite' && Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey))
+  const describeImage = async (imagePath, instruction, { signal, modelConfig } = {}) => {
+    const localOnly = modelPerformanceRouter.status([]).settings.preference === 'local'
+    let config = modelConfig || (localOnly ? null : cloudConfigForExplicitFeature())
+    if (!modelConfig && !isLocalModelConfig(config)) {
+      const approved = await ensureCloudConsent('所选图片将发送给云端视觉模型，用于理解图片内容。')
+      if (!approved) config = null
+    }
+    const requiresKey = config?.requiresKey !== false
+    const visionReady = Boolean(config && config.providerId !== 'bundled-lite' && config.baseUrl && config.model && (!requiresKey || config.apiKey))
     if (visionReady) {
       const ext = path.extname(imagePath).toLowerCase().slice(1)
       try {
@@ -886,13 +1084,331 @@ app.whenReady().then(async () => {
     imageWindow: createHiddenWindow,
     transcriber: { transcribeToFile },
     describeImage,
-    complete: llmComplete
+    complete: (input) => llmComplete({ ...input, taskKind: 'document' })
   })
   const screenCapture = new ScreenCaptureService(() => mainWindow)
   computerUseOrchestrator = new ComputerUseOrchestrator({
     capture: () => screenCapture.capture(),
     provider: new ComputerUseProvider()
   })
+
+  const publishTaskRuntimeEvent = (task) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('task-runtime:event', task)
+    if (String(task.type || '').startsWith('download.')) {
+      mainWindow.webContents.send('media:download-status', { requestId: task.id, status: task.status || '' })
+    }
+    if (task.type === 'document.run') {
+      mainWindow.webContents.send('documents:status', { requestId: task.id, status: task.status || '' })
+    }
+    if (task.type === 'analysis.run') {
+      mainWindow.webContents.send('analysis:status', { requestId: task.id, status: task.status || '' })
+    }
+    if (task.type === 'subtitle.generate') {
+      mainWindow.webContents.send('subtitle:bilingual-status', { requestId: task.id, status: task.status || '' })
+    }
+    if (task.type === 'creative.recut-short') {
+      mainWindow.webContents.send('studio:recut-progress', { requestId: task.id, stage: task.status || '' })
+    }
+  }
+  const fixedDownloadDir = () => path.join(app.getPath('videos'), 'AgentPlay 下载')
+  const prepareQualityRepair = ({ task, result, quality }) => {
+    if (!Array.isArray(quality?.reasons) || !quality.reasons.some((item) => item?.repairable)) return null
+    const type = String(task.type || '')
+    // 语义模型和付费创作不得由技术质量门重新发起云端调用；拉片内部已有一次获批范围内的精修。
+    if (type === 'analysis.run' || type.startsWith('creative.')) return null
+    if ((type === 'document.run' || type === 'subtitle.generate') && task.spec?.modelRoute && !task.spec.modelRoute.local) return null
+    let nextCheckpoint = { ...(task.checkpoint || {}), stage: 'quality-repair', result: null }
+    let action = '重新执行未通过的本地质量步骤'
+    if (type === 'media.batch') {
+      const results = Array.isArray(result?.results) ? result.results : []
+      let failedIndex = results.findIndex((item) => !item?.success || !item?.outputPath)
+      if (failedIndex < 0) failedIndex = 0
+      for (let index = failedIndex; index < (task.spec?.plannedOutputs || []).length; index += 1) {
+        const outputPath = path.resolve(String(task.spec.plannedOutputs[index] || ''))
+        const expected = path.resolve(String(task.spec.plannedOutputs[index] || ''))
+        if (outputPath === expected && fs.existsSync(outputPath) && (!results[index]?.success || quality.reasons.some((item) => path.resolve(String(item?.detail || '')) === outputPath))) {
+          fs.rmSync(outputPath, { force: true })
+        }
+      }
+      nextCheckpoint = { ...nextCheckpoint, nextIndex: failedIndex, results: results.slice(0, failedIndex) }
+      action = `从第 ${failedIndex + 1} 项重新执行批量任务`
+    } else if (type === 'media.compress') {
+      const frozenValue = String(task.spec?.outputPath || '')
+      const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
+      const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
+      const actualOutput = actualValue ? path.resolve(actualValue) : ''
+      if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
+      action = '清理不合格的任务自产物并重新压缩'
+    } else if (type === 'media.dedup') {
+      action = '保留哈希缓存并重新汇总扫描结果'
+    } else if (type.startsWith('download.')) {
+      action = '沿用下载检查点重新校验成果'
+    } else if (type === 'subtitle.generate') {
+      action = '沿用识别检查点重新生成字幕成果'
+    } else if (type === 'document.run') {
+      action = '重新执行本地文档写出与验证'
+    } else {
+      return null
+    }
+    return { checkpoint: nextCheckpoint, action }
+  }
+  persistentTaskRuntime = new PersistentTaskRuntime({
+    rootDir: path.join(app.getPath('userData'), 'task-runtime'),
+    logger: log,
+    onChange: publishTaskRuntimeEvent,
+    qualityEvaluator: evaluateTaskResult,
+    onQuality: ({ task, quality }) => {
+      const route = task?.spec?.modelRoute
+      const taskKind = route?.taskKind || taskKindForPersistentType(task?.type)
+      if (!taskKind || !route || !quality) return
+      const config = modelConfigStore.resolvedCandidates('chat').find((candidate) => (
+        candidate.providerId === route.providerId
+        && candidate.model === route.model
+        && candidate.baseUrl === route.baseUrl
+      ))
+      if (config) {
+        const observedConfig = route.metricModel ? { ...config, model: route.metricModel } : config
+        modelPerformanceRouter.recordQuality({ taskKind, config: observedConfig, score: quality.score, passed: quality.passed })
+      }
+    },
+    failureClassifier: classifyTaskFailure,
+    prepareRepair: prepareQualityRepair,
+    maxQualityRepairs: 1
+  })
+  const freezeTaskModelRoute = (config, { taskKind = '', metricModel = '' } = {}) => ({
+    providerId: String(config.providerId || ''),
+    providerName: String(config.providerName || config.providerId || ''),
+    model: String(config.model || ''),
+    baseUrl: String(config.baseUrl || ''),
+    local: isLocalModelConfig(config),
+    ...(taskKind ? { taskKind: String(taskKind) } : {}),
+    ...(metricModel ? { metricModel: String(metricModel) } : {})
+  })
+  const resolveTaskModelRoute = (route) => {
+    if (!route) return null
+    const config = modelConfigStore.resolvedCandidates('chat').find((item) =>
+      String(item.providerId || '') === route.providerId &&
+      String(item.model || '') === route.model &&
+      String(item.baseUrl || '') === route.baseUrl)
+    if (!config) throw new Error('任务原先使用的模型配置已变化，请确认后重新执行')
+    const requiresKey = config?.requiresKey !== false
+    if (requiresKey && !config.apiKey) throw new Error('任务原先使用的模型凭证已不可用，请重新配置')
+    return config
+  }
+  const preparePersistentDocumentTask = async (paths, input) => {
+    const plan = documentWorkspace.plan(paths, input.instruction, input.outputFormat)
+    let modelRoute = null
+    const advancedOcr = plan.kind === 'text-extract' ? unlimitedOcrConfigStore.publicConfig() : null
+    const ocrRemote = Boolean(advancedOcr?.enabled && !advancedOcr.local)
+    const ocrRoute = advancedOcr?.enabled
+      ? { baseUrl: advancedOcr.baseUrl, model: advancedOcr.model, local: advancedOcr.local }
+      : null
+    if (plan.requiresAi) {
+      const planned = selectModelForTaskPlan({ taskKind: 'document', requirements: { text: true } })
+      const current = planned.selected || modelConfigStore.resolved('chat')
+      const currentWithPolicy = { ...current, local: isLocalModelConfig(current), contextWindow: contextWindowForConfig(current) }
+      const cloudCandidates = modelConfigStore.resolvedCandidates('chat').filter((candidate) => !isLocalModelConfig(candidate) && candidate.protocol !== 'cli')
+      const fallbackDecision = input.preferLocal === true ? null : selectModelForTaskPlan({ taskKind: 'document', requirements: { text: true }, candidates: cloudCandidates })
+      const fallback = fallbackDecision?.selected || cloudFallbackFromStore(modelConfigStore, 'chat')
+      const fallbackWithPolicy = fallback ? { ...fallback, local: isLocalModelConfig(fallback), contextWindow: contextWindowForConfig(fallback) } : null
+      const preflight = await documentWorkspace.preflight(paths, input.instruction, input.outputFormat, {
+        contextWindow: currentWithPolicy.contextWindow,
+        maxOutputTokens: maxOutputTokensForConfig(currentWithPolicy)
+      })
+      let routing = chooseDocumentModel({
+        current: currentWithPolicy,
+        fallback: input.preferLocal === true ? null : fallbackWithPolicy,
+        preflight,
+        cloudApproved: input.cloudApproved === true
+      })
+      if (routing.requiresCloudApproval) {
+        routing = chooseDocumentModel({
+          current: currentWithPolicy,
+          fallback: fallbackWithPolicy,
+          preflight,
+          cloudApproved: true
+        })
+      }
+      const config = routing.config
+      const requiresKey = config.requiresKey !== false
+      if (!config.baseUrl || !config.model || (requiresKey && !config.apiKey)) {
+        throw new Error('这个任务需要模型理解内容，请先在“模型接入中心”配置模型')
+      }
+      modelRoute = {
+        providerId: String(config.providerId || ''),
+        providerName: String(config.providerName || ''),
+        model: String(config.model || ''),
+        baseUrl: String(config.baseUrl || ''),
+        local: isLocalModelConfig(config),
+        contextWindow: contextWindowForConfig(config),
+        maxOutputTokens: maxOutputTokensForConfig(config)
+      }
+    }
+    return {
+      spec: {
+        sources: snapshotDocumentSources(paths),
+        instruction: String(input.instruction || ''),
+        outputFormat: String(input.outputFormat || 'auto'),
+        modelRoute,
+        ocrRemote,
+        ocrRoute
+      },
+      approval: ocrRemote
+        ? { action: 'cloud', summary: `把所选扫描文档页面发送给远端高级 OCR · ${advancedOcr.model}` }
+        : modelRoute && !modelRoute.local
+        ? { action: 'cloud', summary: `把所选文件正文发送给 ${modelRoute.providerName} · ${modelRoute.model}` }
+        : null
+    }
+  }
+  persistentTaskRuntime.register('document.run', async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'history-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const paths = validateDocumentSources(task.spec.sources)
+    for (const sourcePath of paths) userAuthorizedPaths.add(sourcePath)
+    let documentOptions = {
+      signal,
+      onStatus: status,
+      onCheckpoint: checkpoint,
+      cloudApproved: task.spec.ocrRemote === true
+    }
+    if (task.spec.ocrRoute) {
+      const currentOcr = unlimitedOcrConfigStore.publicConfig()
+      if (!currentOcr.enabled
+        || currentOcr.baseUrl !== task.spec.ocrRoute.baseUrl
+        || currentOcr.model !== task.spec.ocrRoute.model
+        || currentOcr.local !== task.spec.ocrRoute.local) {
+        throw new Error('任务原先使用的高级 OCR 配置已变化，请确认后重新执行')
+      }
+    }
+    if (task.spec.modelRoute) {
+      const config = resolveTaskModelRoute(task.spec.modelRoute)
+      documentOptions = {
+        ...documentOptions,
+        contextWindow: task.spec.modelRoute.contextWindow,
+        maxOutputTokens: task.spec.modelRoute.maxOutputTokens,
+        modelLabel: `${task.spec.modelRoute.providerName} · ${task.spec.modelRoute.model}`,
+        modelConfig: config
+      }
+    }
+    const plan = documentWorkspace.plan(paths, task.spec.instruction, task.spec.outputFormat)
+    status(plan.requiresAi ? '正在理解要求和生成内容' : '正在执行本地文档操作')
+    const result = await documentWorkspace.run(paths, task.spec.instruction, task.spec.outputFormat, documentOptions)
+    for (const outputPath of result.outputs || []) userAuthorizedPaths.add(path.resolve(outputPath))
+    status('正在验证并保存结果')
+    return result
+  }, { autoResume: true })
+  const preparePersistentAnalysisTask = (input) => {
+    const resolvedSource = assertAllowedPath(input.sourcePath)
+    const visionDecision = selectModelForTaskPlan({ taskKind: 'analysis-vision', requirements: { vision: true } })
+    const textDecision = visionDecision.selected ? null : selectModelForTaskPlan({ taskKind: 'analysis', requirements: { text: true } })
+    const config = visionDecision.selected || textDecision?.selected || null
+    const requiresKey = config?.requiresKey !== false
+    const modelConfigured = Boolean(config && config.baseUrl && config.model && (!requiresKey || config.apiKey))
+    const modelRoute = modelConfigured
+      ? freezeTaskModelRoute(config, { taskKind: visionDecision.selected ? 'analysis-vision' : 'analysis' })
+      : null
+    return {
+      spec: {
+        sources: snapshotDocumentSources([resolvedSource]),
+        mediaName: String(input.mediaName || path.basename(resolvedSource)),
+        duration: Number(input.duration) || 0,
+        instruction: String(input.instruction || ''),
+        outputFormat: String(input.outputFormat || 'docx'),
+        modelRoute
+      },
+      approval: modelRoute && !modelRoute.local
+        ? { action: 'cloud', summary: `把视频关键画面与字幕证据发送给 ${modelRoute.providerName} · ${modelRoute.model} 做深度解剖` }
+        : null
+    }
+  }
+  persistentTaskRuntime.register('analysis.run', async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'history-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const [sourcePath] = validateDocumentSources(task.spec.sources)
+    userAuthorizedPaths.add(sourcePath)
+    const config = resolveTaskModelRoute(task.spec.modelRoute)
+    const result = await runChatAnalysis({
+      sourcePath,
+      mediaName: task.spec.mediaName,
+      duration: task.spec.duration,
+      instruction: task.spec.instruction,
+      outputFormat: task.spec.outputFormat,
+      cloudApproved: Boolean(config && !isLocalModelConfig(config)),
+      signal,
+      onStatus: status,
+      onCheckpoint: checkpoint,
+      workspace: documentWorkspace,
+      complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'analysis' }),
+      completeVisionMulti: (input) => llmCompleteVisionMulti({ ...input, modelConfig: config, taskKind: 'analysis-vision' }),
+      frames: videoFrames,
+      translateToChinese: translateAnalysisCuesToChinese,
+      model: {
+        configured: Boolean(config),
+        local: config ? isLocalModelConfig(config) : false,
+        provider: config?.providerName || config?.providerId || '',
+        model: config?.model || ''
+      }
+    })
+    for (const outputPath of result.outputs || []) userAuthorizedPaths.add(path.resolve(outputPath))
+    return result
+  }, { autoResume: true })
+  persistentTaskRuntime.register('download.direct', async ({ task, signal, checkpoint, status }) => {
+    let lastCheckpointAt = 0
+    let lastCheckpointBytes = Number(task.checkpoint?.received || 0)
+    let lastStatusAt = 0
+    const saveCheckpoint = (patch) => {
+      const now = Date.now()
+      const received = Number(patch?.received || 0)
+      if (lastCheckpointAt && now - lastCheckpointAt < 1000 && received - lastCheckpointBytes < 1024 * 1024) return
+      lastCheckpointAt = now
+      lastCheckpointBytes = received
+      checkpoint(patch)
+    }
+    const reportProgress = ({ received, total }) => {
+      const now = Date.now()
+      if (lastStatusAt && now - lastStatusAt < 500) return
+      lastStatusAt = now
+      const mb = (value) => (value / 1024 / 1024).toFixed(1)
+      status(total ? `正在下载 ${mb(received)}/${mb(total)}MB` : `已下载 ${mb(received)}MB`)
+    }
+    status('正在校验链接')
+    const result = await downloadRemoteMedia(task.spec.url, {
+      destDir: fixedDownloadDir(),
+      signal,
+      checkpoint: task.checkpoint,
+      onCheckpoint: saveCheckpoint,
+      onProgress: reportProgress
+    })
+    userAuthorizedPaths.add(path.resolve(result.outputPath))
+    return result
+  }, { autoResume: true })
+  persistentTaskRuntime.register('download.site', async ({ task, signal, checkpoint, status }) => {
+    let lastStatusAt = 0
+    const reportStatus = (value, force = false) => {
+      const now = Date.now()
+      if (!force && lastStatusAt && now - lastStatusAt < 500) return
+      lastStatusAt = now
+      status(value)
+    }
+    if (!siteVideo.availability().available) {
+      reportStatus('首次使用站点视频，正在准备解析组件', true)
+      await ytdlpDownload.start({})
+    }
+    let info = task.checkpoint?.info || null
+    if (!info) {
+      reportStatus('正在解析视频页', true)
+      info = await siteVideo.resolve(task.spec.url, { signal, onRetryNote: (note) => reportStatus(note, true) })
+      checkpoint({ info })
+    }
+    reportStatus(`正在下载：${String(info.title || '').slice(0, 40)}`, true)
+    const result = await siteVideo.download(task.spec.url, {
+      destDir: fixedDownloadDir(),
+      signal,
+      onRetryNote: (note) => reportStatus(note, true),
+      onProgress: (progress) => reportStatus(`正在下载 ${progress.percent}%`)
+    })
+    userAuthorizedPaths.add(path.resolve(result.outputPath))
+    return { info, ...result }
+  }, { autoResume: true })
 
   // LAN-facing services are instantiated but remain stopped until the user
   // explicitly enables them from “设备、投屏与同步”.
@@ -1043,8 +1559,14 @@ app.whenReady().then(async () => {
     rendererLoaded = false
     mainWindow = null
   })
-  win.on('enter-full-screen', () => win.webContents.send('window:fullscreen-changed', true))
-  win.on('leave-full-screen', () => win.webContents.send('window:fullscreen-changed', false))
+  win.on('enter-full-screen', () => {
+    win.webContents.send('window:fullscreen-changed', true)
+    win.webContents.send('mpv:remeasure')
+  })
+  win.on('leave-full-screen', () => {
+    win.webContents.send('window:fullscreen-changed', false)
+    win.webContents.send('mpv:remeasure')
+  })
 
   // IPC：渲染进程 -> mpv
   ipcMain.on('mpv:playerArea', (_e, rect) => {
@@ -1070,11 +1592,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('mpv:picture-mode', (_e, mode) => { assertTrustedSender(_e); return mpvReady && mpv.setPictureMode(mode) })
   ipcMain.handle('mpv:subtitle', (_e, p) => { assertTrustedSender(_e); return mpvReady && mpv.loadSubtitle(p) })
   ipcMain.handle('mpv:subtitle-visible', (_e, v) => { assertTrustedSender(_e); return mpvReady && mpv.setSubtitleVisible(v) })
+  ipcMain.handle('mpv:subtitle-position', (_e, position) => { assertTrustedSender(_e); return mpvReady && mpv.setSubtitlePosition(position) })
   ipcMain.handle('mpv:stop', (event) => { assertTrustedSender(event); return mpvReady && mpv.stopPlayback() })
   ipcMain.handle('mpv:screenshot', async (_e, suggestedName) => {
     assertTrustedSender(_e)
     const result = await dialog.showSaveDialog(mainWindow, {
-      defaultPath: path.join(app.getPath('pictures'), String(suggestedName || 'AI播放器截图.png')),
+      defaultPath: path.join(app.getPath('pictures'), String(suggestedName || 'AgentPlay截图.png')),
       filters: [{ name: 'PNG 图片', extensions: ['png'] }]
     })
     return result.canceled || !result.filePath ? false : mpvReady && mpv.screenshot(result.filePath)
@@ -1107,9 +1630,12 @@ app.whenReady().then(async () => {
       { type: 'separator' },
       item('截取当前画面…', 'screenshot', { enabled: !!state.hasMedia }),
       item(state.subtitleVisible ? '关闭字幕' : '打开字幕', 'subtitle-toggle', { enabled: !!state.hasMedia }),
-      item('生成双语字幕（离线识别+云端翻译）', 'bilingual-subtitle', { enabled: !!state.hasMedia }),
-      item(state.liveTranslate ? '停止实时翻译字幕' : '实时翻译字幕（译文排在原文下方）', 'live-translate-subtitle', { enabled: !!state.hasMedia }),
-      item('实时识别字幕（无字幕视频边播边转写）', 'live-transcribe-subtitle', { enabled: !!state.hasMedia }),
+      item('自动翻译字幕', 'bilingual-subtitle', { enabled: !!state.hasMedia }),
+      { label: '字幕高级选项', enabled: !!state.hasMedia, submenu: [
+        item(state.liveTranslate ? '停止实时翻译' : '翻译已加载字幕（边播边译）', 'live-translate-subtitle'),
+        item('仅实时识别原文（无字幕视频）', 'live-transcribe-subtitle'),
+        item('搜索 OpenSubtitles 字幕库…', 'online-subtitle')
+      ] },
       item('拉片（AI 对话解剖）', 'analysis-studio', { enabled: !!state.hasMedia }),
       { label: '播放速度', submenu: [0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => item(`${rate}×`, `speed-${rate}`, { type: 'radio', checked: state.playbackRate === rate })) },
       { label: '画面比例', submenu: [
@@ -1128,14 +1654,13 @@ app.whenReady().then(async () => {
     contextMenu.popup({ window: mainWindow })
   })
   ipcMain.handle('window:setPreset', (_e, preset, mediaSize) => { assertTrustedSender(_e); return setWindowPreset(preset, mediaSize) })
-  ipcMain.handle('window:setPlaybackChromeVisible', (_e, visible) => {
+  ipcMain.handle('window:setPlaybackChromeVisible', (_e, _visible) => {
     assertTrustedSender(_e)
     if (!mainWindow || mainWindow.isDestroyed()) return false
     if (process.platform !== 'darwin') {
-      // 播放期间菜单栏全程隐藏（Alt 可唤出），不随控制栏显隐：
-      // 菜单栏显隐会改变客户区高度(~21px)，把按钮挪到静止光标下触发 pointerenter，形成显隐循环
-      mainWindow.setAutoHideMenuBar(!visible)
-      mainWindow.setMenuBarVisibility(Boolean(visible))
+      // AI-native 工作区默认不占一整行展示旧菜单；功能仍由快捷键、右键菜单和 Alt 临时菜单保留。
+      mainWindow.setAutoHideMenuBar(true)
+      mainWindow.setMenuBarVisibility(false)
     }
     return true
   })
@@ -1147,7 +1672,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('guide:annotate', async (event, question) => {
     assertTrustedSender(event)
     try {
-      const ask = () => requestScreenGuide(creativeConfig(), String(question || ''))
+      const config = cloudConfigForExplicitFeature()
+      const approved = await ensureCloudConsent('当前屏幕截图将发送给云端视觉模型，用于生成操作指引。')
+      if (!approved) return { success: false, error: '已取消：未授权发送云端' }
+      const ask = () => requestScreenGuide(config, String(question || ''))
       // 网络抖动自动重试一次（实测云端视觉偶发 fetch failed）
       const result = await ask().catch((firstError) => {
         if (!/fetch failed|network|timed ?out|abort|econn|socket/i.test(firstError.message)) throw firstError
@@ -1160,31 +1688,219 @@ app.whenReady().then(async () => {
     }
   })
   // 单文件压缩/转码核心：返回 { success, outputPath, beforeBytes, afterBytes, error? }
-  async function compressOne(sourcePath, targetMb, mode) {
+  async function compressOne(sourcePath, targetMb, mode, { signal, outputPath: requestedOutputPath } = {}) {
     const parsed = path.parse(sourcePath)
-    let outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版.mp4`)
-    if (fs.existsSync(outputPath)) {
-      outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版-${Date.now()}.mp4`)
-    }
-    const args = ['-i', sourcePath]
-    if (mode === 'remux') {
-      args.push('-c', 'copy', '-movflags', '+faststart', '-y', outputPath)
-    } else {
-      const duration = await videoFrames.probeDuration(sourcePath).catch(() => 0)
-      if (duration > 0) {
-        const totalKbps = Math.max(300, Math.floor((targetMb * 8 * 1024) / duration) - 96)
-        args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${totalKbps}k`, '-maxrate', `${totalKbps}k`, '-bufsize', `${totalKbps * 2}k`)
+    const outputPath = requestedOutputPath || path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版.mp4`)
+    const tempPath = `${outputPath}.agentplay-${process.pid}-${Date.now()}.mp4`
+    try {
+      if (signal?.aborted) throw new Error('已取消')
+      const args = ['-i', sourcePath]
+      if (mode === 'remux') {
+        args.push('-c', 'copy', '-movflags', '+faststart', '-y', tempPath)
       } else {
-        args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28')
+        let duration = 0
+        try {
+          duration = await videoFrames.probeDuration(sourcePath, { signal })
+        } catch (error) {
+          if (signal?.aborted) throw error
+        }
+        if (duration > 0) {
+          const totalKbps = Math.max(300, Math.floor((targetMb * 8 * 1024) / duration) - 96)
+          args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${totalKbps}k`, '-maxrate', `${totalKbps}k`, '-bufsize', `${totalKbps * 2}k`)
+        } else {
+          args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28')
+        }
+        args.push('-vf', "scale='min(1280,iw)':-2", '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', '-y', tempPath)
       }
-      args.push('-vf', "scale='min(1280,iw)':-2", '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', '-y', outputPath)
+      await videoFrames.run(args, { timeoutMs: 30 * 60 * 1000, signal })
+      if (signal?.aborted) throw new Error('已取消')
+      fs.renameSync(tempPath, outputPath)
+      return { success: true, outputPath, beforeBytes: fs.statSync(sourcePath).size, afterBytes: fs.statSync(outputPath).size }
+    } catch (error) {
+      if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true })
+      throw error
     }
-    await videoFrames.run(args, { timeoutMs: 30 * 60 * 1000 })
-    return { success: true, outputPath, beforeBytes: fs.statSync(sourcePath).size, afterBytes: fs.statSync(outputPath).size }
   }
 
+  const taskSuffix = (requestId) => String(requestId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(-12) || crypto.randomUUID().slice(0, 8)
+  const plannedMediaOutput = (sourcePath, label, extension, requestId, index = 0) => {
+    const parsed = path.parse(sourcePath)
+    const ordinal = index > 0 ? `-${index + 1}` : ''
+    return path.join(parsed.dir, `${parsed.name}-AgentPlay${label}-${taskSuffix(requestId)}${ordinal}${extension}`)
+  }
+  const validatePlannedMediaOutput = (actualPath, sourcePath, label, extension, requestId, index = 0) => {
+    const expected = plannedMediaOutput(sourcePath, label, extension, requestId, index)
+    if (path.resolve(String(actualPath || '')) !== path.resolve(expected)) throw new Error('任务成果路径完整性校验失败')
+    return expected
+  }
+  const quickMediaFingerprint = (filePath, stat = fs.statSync(filePath)) => {
+    const handle = fs.openSync(filePath, 'r')
+    const sampleSize = Math.min(128 * 1024, stat.size)
+    const first = Buffer.allocUnsafe(sampleSize)
+    const last = Buffer.allocUnsafe(sampleSize)
+    try {
+      fs.readSync(handle, first, 0, sampleSize, 0)
+      fs.readSync(handle, last, 0, sampleSize, Math.max(0, stat.size - sampleSize))
+    } finally {
+      fs.closeSync(handle)
+    }
+    return crypto.createHash('sha256').update(first).update(last).update(String(stat.size)).digest('hex')
+  }
+  const snapshotMediaSources = (filePaths) => (Array.isArray(filePaths) ? filePaths : []).slice(0, 20).map((filePath) => {
+    const resolved = fs.realpathSync(path.resolve(String(filePath || '')))
+    const stat = fs.statSync(resolved)
+    if (!stat.isFile()) throw new Error(`媒体源不是文件：${path.basename(resolved)}`)
+    return { path: resolved, size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs), dev: Number(stat.dev) || 0, ino: Number(stat.ino) || 0, fingerprint: quickMediaFingerprint(resolved, stat) }
+  })
+  const validateMediaSources = (sources) => (Array.isArray(sources) ? sources : []).map((expected) => {
+    let resolved
+    try { resolved = fs.realpathSync(path.resolve(String(expected?.path || ''))) } catch { throw new Error(`媒体源文件已不存在：${path.basename(String(expected?.path || ''))}`) }
+    const stat = fs.statSync(resolved)
+    const unchanged = stat.isFile() && stat.size === Number(expected.size) && Math.trunc(stat.mtimeMs) === Number(expected.mtimeMs) && quickMediaFingerprint(resolved, stat) === expected.fingerprint
+    if (!unchanged) throw new Error(`媒体源文件已发生变化，请重新选择：${path.basename(resolved)}`)
+    if (Number(expected.dev) && Number(stat.dev) !== Number(expected.dev)) throw new Error(`媒体源磁盘已变化，请重新选择：${path.basename(resolved)}`)
+    if (Number(expected.ino) && Number(stat.ino) !== Number(expected.ino)) throw new Error(`媒体源文件身份已变化，请重新选择：${path.basename(resolved)}`)
+    return resolved
+  })
+  const frozenDirectoryRoot = (root) => {
+    const resolved = fs.realpathSync(assertAllowedPath(root))
+    const stat = fs.statSync(resolved)
+    if (!stat.isDirectory()) throw new Error('重复文件检查目标不是文件夹')
+    return { path: resolved, dev: Number(stat.dev) || 0, ino: Number(stat.ino) || 0 }
+  }
+  const validateFrozenDirectoryRoot = (snapshot) => {
+    const resolved = fs.realpathSync(path.resolve(String(snapshot?.path || '')))
+    const stat = fs.statSync(resolved)
+    if (!stat.isDirectory()) throw new Error('重复文件检查目标已不是文件夹')
+    if (path.resolve(resolved) !== path.resolve(String(snapshot?.path || ''))) throw new Error('重复文件检查目标路径已变化')
+    if (Number(snapshot?.dev) && Number(stat.dev) !== Number(snapshot.dev)) throw new Error('重复文件检查目标磁盘已变化')
+    if (Number(snapshot?.ino) && Number(stat.ino) !== Number(snapshot.ino)) throw new Error('重复文件检查目标文件夹已变化')
+    return resolved
+  }
+
+  const publishBatchProgress = (requestId, done, total, name) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('media:batch-progress', { requestId, done, total, name })
+  }
+  const publishDedupProgress = (requestId, progress) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('media:dedup-progress', { requestId, ...progress })
+  }
+
+  persistentTaskRuntime.register('media.batch', async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result) return task.checkpoint.result
+    const sources = validateMediaSources(task.spec.sources)
+    const kind = task.spec.kind === 'transcribe' ? 'transcribe' : 'compress'
+    const total = sources.length
+    const savedResults = Array.isArray(task.checkpoint?.results) ? task.checkpoint.results : []
+    const startIndex = Math.max(0, Math.min(total, Number(task.checkpoint?.nextIndex) || 0))
+    const results = savedResults.slice(0, startIndex)
+    for (let index = startIndex; index < total; index += 1) {
+      if (signal.aborted) throw new DOMException('批量任务已停止', 'AbortError')
+      const sourcePath = sources[index]
+      const token = String(task.spec.items?.[index]?.token || '')
+      const label = kind === 'transcribe' ? '转写' : '压缩版'
+      const extension = kind === 'transcribe' ? '.srt' : '.mp4'
+      const outputPath = validatePlannedMediaOutput(task.spec.plannedOutputs?.[index], sourcePath, label, extension, task.id, index)
+      publishBatchProgress(task.id, index, total, path.basename(sourcePath))
+      status(`（${index + 1}/${total}）正在${kind === 'transcribe' ? '转写' : '压缩'} ${path.basename(sourcePath)}`)
+      let itemResult
+      try {
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+          if (kind === 'transcribe') authorizeDerivedSubtitle(outputPath)
+          else userAuthorizedPaths.add(path.resolve(outputPath))
+          itemResult = { token, success: true, outputPath }
+        } else if (kind === 'transcribe') {
+          const transcription = await transcriptionService.transcribe({ sourcePath, lang: 'auto', timestamps: true, timeoutMs: 60 * 60 * 1000, noSpeechThold: 0.72, logprobThold: -0.6, signal })
+          if (signal.aborted) throw new DOMException('批量转写已停止', 'AbortError')
+          const text = String(transcription.text || '').trim()
+          if (!text) throw new Error('没有识别到可写入的字幕内容')
+          const tempPath = `${outputPath}.agentplay-${process.pid}-${Date.now()}.tmp`
+          try {
+            fs.writeFileSync(tempPath, `${text}\n`, 'utf8')
+            fs.renameSync(tempPath, outputPath)
+          } finally {
+            if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true })
+          }
+          authorizeDerivedSubtitle(outputPath)
+          itemResult = { token, success: true, outputPath }
+        } else {
+          const compressed = await compressOne(sourcePath, task.spec.targetMb, 'compress', { signal, outputPath })
+          userAuthorizedPaths.add(path.resolve(outputPath))
+          itemResult = { token, ...compressed }
+        }
+      } catch (error) {
+        if (signal.aborted || error?.name === 'AbortError') throw error
+        itemResult = { token, success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+      results.push(itemResult)
+      checkpoint({ stage: 'item-complete', nextIndex: index + 1, results })
+    }
+    publishBatchProgress(task.id, total, total, '')
+    const outputs = results.filter((item) => item.success && item.outputPath).map((item) => item.outputPath)
+    const result = { success: true, requestId: task.id, kind, results, outputs, summary: `批量${kind === 'transcribe' ? '转写' : '压缩'}完成：成功 ${outputs.length}/${total}` }
+    checkpoint({ stage: 'artifact-written', nextIndex: total, results, result })
+    return result
+  }, { autoResume: true })
+
+  persistentTaskRuntime.register('media.compress', async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const mode = task.spec.mode === 'remux' ? 'remux' : 'compress'
+    const label = mode === 'remux' ? '转码' : '压缩版'
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, label, '.mp4', task.id)
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+      const result = { success: true, outputPath, outputs: [outputPath], beforeBytes: fs.statSync(sourcePath).size, afterBytes: fs.statSync(outputPath).size, mode }
+      checkpoint({ stage: 'artifact-written', result })
+      userAuthorizedPaths.add(path.resolve(outputPath))
+      return result
+    }
+    status(mode === 'remux' ? '正在转封装为 MP4' : `正在压缩到约 ${task.spec.targetMb}MB`)
+    const result = await compressOne(sourcePath, task.spec.targetMb, mode, { signal, outputPath })
+    const completed = { ...result, outputs: [outputPath], mode }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return completed
+  }, { autoResume: true })
+
+  persistentTaskRuntime.register('media.dedup', async ({ task, signal, checkpoint, status }) => {
+    const root = validateFrozenDirectoryRoot(task.spec.root)
+    const hashCache = task.checkpoint?.hashCache && typeof task.checkpoint.hashCache === 'object' ? { ...task.checkpoint.hashCache } : {}
+    let lastCheckpointAt = 0
+    let hashesSinceCheckpoint = 0
+    let filesScanned = 0
+    const reportProgress = (progress) => {
+      filesScanned = Math.max(filesScanned, Number(progress.filesScanned) || 0)
+      publishDedupProgress(task.id, { ...progress, filesScanned })
+      if (progress.phase === 'scanning') status(`正在扫描媒体库 · 已发现 ${filesScanned} 个文件`)
+      if (progress.phase === 'hashing') status(`正在核对文件内容 ${progress.processedFiles || 0}/${progress.totalFiles || 0}`)
+    }
+    const files = await analyzeDirAsync(root, { signal, onProgress: reportProgress })
+    filesScanned = files.length
+    const duplicates = await findDuplicates(files, {
+      signal,
+      hashCache,
+      onProgress: (progress) => reportProgress({ ...progress, filesScanned }),
+      onFileHashed: (file, hash) => {
+        hashCache[file.path] = { hash, size: file.size, mtimeMs: file.mtimeMs }
+        hashesSinceCheckpoint += 1
+        const now = Date.now()
+        if (hashesSinceCheckpoint >= 20 || now - lastCheckpointAt >= 1000) {
+          const entries = Object.entries(hashCache).slice(-5000)
+          checkpoint({ stage: 'hash-cache', hashCache: Object.fromEntries(entries) })
+          lastCheckpointAt = now
+          hashesSinceCheckpoint = 0
+        }
+      }
+    })
+    publishDedupProgress(task.id, { phase: 'complete', filesScanned, duplicateCount: duplicates.length })
+    const result = { success: true, requestId: task.id, duplicates, filesScanned, outputs: duplicates.slice(0, 5).map((item) => item.duplicate), summary: duplicates.length ? `发现 ${duplicates.length} 组内容重复` : `已扫描 ${filesScanned} 个媒体文件，没有发现内容重复` }
+    checkpoint({ stage: 'scan-complete', hashCache: Object.fromEntries(Object.entries(hashCache).slice(-5000)), result })
+    return result
+  }, { autoResume: true })
+
   // 批量任务：按授权 token 批量压缩或批量转写（附件多选后说「全部压缩/全部转写」）
-  // 一键接入：粘贴 Key 自动识别厂商——并发探测所有 OpenAI 兼容厂商，返回按延迟排序的匹配与真实模型列表
+  // 安全接入：Key 只发送给用户明确选择的一个厂商，绝不拿同一凭证并发试探多家第三方。
   ipcMain.handle('models:cli-status', async (event) => {
     assertTrustedSender(event)
     const { cliModelStatus } = require('./cli-model-service')
@@ -1194,93 +1910,81 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     const apiKey = String(input.apiKey || '').trim()
     if (apiKey.length < 8) return { success: false, error: 'Key 太短，请粘贴完整 API Key' }
-    const candidates = PROVIDERS.filter((provider) => provider.protocol === 'openai' && provider.baseUrl && !['bundled-lite', 'fara-local', 'custom'].includes(provider.id))
-    const probes = candidates.map(async (provider) => {
-      const started = Date.now()
-      try {
-        const models = await listModels(
-          { providerId: provider.id, baseUrl: provider.baseUrl, model: provider.models[0], apiKey, role: 'chat' },
-          { timeoutMs: 8000 }
-        )
-        if (models.length) return { providerId: provider.id, providerName: provider.name, models, latencyMs: Date.now() - started }
-      } catch { /* 该厂商不通 */ }
-      return null
-    })
-    const matches = (await Promise.all(probes)).filter(Boolean)
-    if (!matches.length) return { success: false, error: '所有候选厂商都不通：请检查 Key 是否完整、网络是否可达（也可下方手动配置）' }
-    matches.sort((a, b) => a.latencyMs - b.latencyMs)
-    return { success: true, matches }
+    const providerId = String(input.providerId || '')
+    if (!providerId) return { success: false, needsProvider: true, error: '先选择这个 Key 是从哪家复制的；凭证不会发送给其他厂商' }
+    const provider = PROVIDERS.find((item) => item.id === providerId && item.protocol === 'openai' && item.baseUrl && !item.localOnly && !item.bundled)
+    if (!provider) return { success: false, error: '请选择一个受支持的云端服务' }
+    const started = Date.now()
+    try {
+      const models = await listModels(
+        { providerId: provider.id, baseUrl: provider.baseUrl, model: provider.models[0], apiKey, role: 'chat' },
+        { timeoutMs: 8000 }
+      )
+      if (!models.length) throw new Error('账户没有返回可用模型')
+      return { success: true, matches: [{ providerId: provider.id, providerName: provider.name, models, latencyMs: Date.now() - started }] }
+    } catch (error) {
+      return { success: false, error: `${provider.name} 验证失败：${error instanceof Error ? error.message : String(error)}` }
+    }
   })
 
   ipcMain.handle('media:batch', async (event, input = {}) => {
     assertTrustedSender(event)
-    const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 30) : []
+    const requestId = normalizeRequestId(input.requestId, 'media-batch')
+    const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 20).map(String) : []
     const kind = input.kind === 'transcribe' ? 'transcribe' : 'compress'
-    const send = (done, total, name) => {
-      if (!event.sender.isDestroyed()) event.sender.send('media:batch-progress', { requestId: input.requestId, done, total, name })
-    }
-    const results = []
-    for (let index = 0; index < tokens.length; index += 1) {
-      const token = String(tokens[index])
-      const record = approvedDocumentSelections.get(token)
-      if (!record?.path || !fs.existsSync(record.path)) {
-        results.push({ token, success: false, error: '文件授权已失效或已被移动' })
-        continue
-      }
-      send(index, tokens.length, path.basename(record.path))
-      try {
-        if (kind === 'transcribe') {
-          const parsed = path.parse(record.path)
-          const srtPath = path.join(parsed.dir, `${parsed.name}-AgentPlay转写.srt`)
-          const transcription = await transcriptionService.transcribe({ sourcePath: record.path, lang: 'auto', timestamps: true, timeoutMs: 60 * 60 * 1000, noSpeechThold: 0.72, logprobThold: -0.6 })
-          fs.writeFileSync(srtPath, transcription.text, 'utf8')
-          results.push({ token, success: true, outputPath: srtPath })
-        } else {
-          const result = await compressOne(record.path, Math.max(5, Math.min(500, Number(input.targetMb) || 25)), 'compress')
-          results.push({ token, ...result })
+    try {
+      if (!tokens.length) throw new Error('没有可处理的附件')
+      const paths = tokens.map(documentSelectionFromToken)
+      const label = kind === 'transcribe' ? '转写' : '压缩版'
+      const extension = kind === 'transcribe' ? '.srt' : '.mp4'
+      persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'media.batch',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: {
+          kind,
+          targetMb: Math.max(5, Math.min(500, Number(input.targetMb) || 25)),
+          sources: snapshotMediaSources(paths),
+          items: tokens.map((token) => ({ token })),
+          plannedOutputs: paths.map((sourcePath, index) => plannedMediaOutput(sourcePath, label, extension, requestId, index))
         }
-      } catch (error) {
-        results.push({ token, success: false, error: error instanceof Error ? error.message : String(error) })
-      }
+      })
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { ...(task.checkpoint?.result || {}), success: false, requestId, cancelled: task.state === 'cancelled', error: task.error || '批量任务未完成', results: task.checkpoint?.results || [], kind }
+      return { ...task.result, requestId }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error), results: [], kind }
     }
-    send(tokens.length, tokens.length, '')
-    return { success: true, results, kind }
   })
 
   // 视频压缩/转码：默认压到微信可发（25MB 目标码率），remux 模式不重编码秒级换封装；原文件不动
   ipcMain.handle('media:compress', async (event, input = {}) => {
     assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'media-compress')
     try {
-      const sourcePath = path.resolve(String(input.sourcePath || ''))
-      if (!fs.existsSync(sourcePath)) return { success: false, error: '视频文件不存在或已被移动' }
+      const sourcePath = assertAllowedPath(input.sourcePath)
       if (!videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
       const mode = input.mode === 'remux' ? 'remux' : 'compress'
-      const parsed = path.parse(sourcePath)
-      let outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版.mp4`)
-      if (fs.existsSync(outputPath)) {
-        outputPath = path.join(parsed.dir, `${parsed.name}-AgentPlay${mode === 'remux' ? '转码' : '压缩'}版-${Date.now()}.mp4`)
-      }
-      const args = ['-i', sourcePath]
-      if (mode === 'remux') {
-        args.push('-c', 'copy', '-movflags', '+faststart', '-y', outputPath)
-      } else {
-        const targetMb = Math.max(5, Math.min(500, Number(input.targetMb) || 25))
-        const duration = await videoFrames.probeDuration(sourcePath).catch(() => 0)
-        if (duration > 0) {
-          const totalKbps = Math.max(300, Math.floor((targetMb * 8 * 1024) / duration) - 96)
-          args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${totalKbps}k`, '-maxrate', `${totalKbps}k`, '-bufsize', `${totalKbps * 2}k`)
-        } else {
-          args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28')
-        }
-        args.push('-vf', "scale='min(1280,iw)':-2", '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', '-y', outputPath)
-      }
-      await videoFrames.run(args, { timeoutMs: 30 * 60 * 1000 })
-      const beforeBytes = fs.statSync(sourcePath).size
-      const afterBytes = fs.statSync(outputPath).size
-      return { success: true, outputPath, beforeBytes, afterBytes, mode }
+      const targetMb = Math.max(5, Math.min(500, Number(input.targetMb) || 25))
+      const label = mode === 'remux' ? '转码' : '压缩版'
+      persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'media.compress',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: { sources: snapshotMediaSources([sourcePath]), targetMb, mode, outputPath: plannedMediaOutput(sourcePath, label, '.mp4', requestId) }
+      })
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, requestId, mode, cancelled: task.state === 'cancelled', error: task.error || '视频处理未完成' }
+      return { ...task.result, requestId, mode }
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
     }
+  })
+  ipcMain.handle('media:task-cancel', (event, requestId) => {
+    assertTrustedSender(event)
+    const controller = activeMediaTasks.get(String(requestId || ''))
+    controller?.abort()
+    return persistentTaskRuntime.cancel(String(requestId || '')) || Boolean(controller)
   })
   ipcMain.handle('guide:dismiss', (event) => {
     assertTrustedSender(event)
@@ -1294,6 +1998,9 @@ app.whenReady().then(async () => {
     let dataUrl = String(input?.dataUrl || '')
     let tmpShot = ''
     try {
+      const config = cloudConfigForExplicitFeature()
+      const approved = await ensureCloudConsent('当前视频画面截图将发送给云端视觉模型，用于回答画面问题。')
+      if (!approved) return { success: false, error: '已取消：未授权发送云端' }
       if (!dataUrl) {
         if (!mpvReady || !mpv) throw new Error('播放器尚未就绪')
         tmpShot = path.join(os.tmpdir(), `agentplay-frame-${Date.now()}.jpg`)
@@ -1301,7 +2008,7 @@ app.whenReady().then(async () => {
         if (!ok || !fs.existsSync(tmpShot)) throw new Error('视频帧抓取失败')
         dataUrl = 'data:image/jpeg;base64,' + (await fsPromises.readFile(tmpShot)).toString('base64')
       }
-      const result = await askAboutImage(creativeConfig(), {
+      const result = await askAboutImage(config, {
         dataUrl,
         question: String(input?.question || '')
       })
@@ -1320,7 +2027,7 @@ app.whenReady().then(async () => {
       const buffer = Buffer.from(match[1], 'base64')
       if (buffer.length > 50 * 1024 * 1024) throw new Error('截图超过 50MB')
       const result = await dialog.showSaveDialog(mainWindow, {
-        defaultPath: path.join(app.getPath('pictures'), String(suggestedName || 'AI播放器截图.png')),
+        defaultPath: path.join(app.getPath('pictures'), String(suggestedName || 'AgentPlay截图.png')),
         filters: [{ name: 'PNG 图片', extensions: ['png'] }]
       })
       if (result.canceled || !result.filePath) return false
@@ -1333,19 +2040,23 @@ app.whenReady().then(async () => {
   })
 
   // IPC：对话流式输出、取消，以及按角色隔离的模型配置。
-  ipcMain.handle('ai:chat', async (event, messages, context, requestedId) => {
+  ipcMain.handle('ai:chat', async (event, messages, context, requestedId, agentOptions = {}) => {
     assertTrustedSender(event)
     const requestId = normalizeRequestId(requestedId, 'chat')
     activeAiRequests.get(requestId)?.abort()
     const controller = new AbortController()
     activeAiRequests.set(requestId, controller)
     let usesBundledRuntime = false
+    let chatConfig = null
+    const startedAt = Date.now()
     const send = (payload) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:stream', { requestId, ...payload })
     }
     try {
       send({ status: 'queued' })
-      let chatConfig = modelConfigStore.resolved('chat')
+      const decision = selectConfiguredModel({ taskKind: 'chat' })
+      chatConfig = decision.selected
+      if (!chatConfig) throw new Error(decision.reason || '没有满足当前 AI 使用方式的模型')
       if (chatConfig.providerId === 'bundled-lite') {
         send({ status: 'loading-local-model' })
         const localStatus = await bundledRuntime.start()
@@ -1354,12 +2065,22 @@ app.whenReady().then(async () => {
         chatConfig = { ...chatConfig, model: localStatus.model, baseUrl: localStatus.baseUrl }
       }
       const result = await agentEngine.chat(messages, chatConfig, context, {
+        requestId,
+        mode: agentOptions?.mode,
         signal: controller.signal,
         onStatus: (status) => send({ status }),
         onDelta: (delta) => send({ delta })
       })
+      modelPerformanceRouter.recordCall({
+        taskKind: 'chat', config: chatConfig, startedAt, completedAt: Date.now(),
+        success: !result.cancelled && !/^\[(API|网络|达到)/.test(String(result.text || '')),
+        usage: result.usage
+      })
       send({ status: result.cancelled ? 'cancelled' : 'done' })
-      return { ...result, requestId }
+      return { ...result, requestId, routeReason: decision.reason }
+    } catch (error) {
+      if (chatConfig) modelPerformanceRouter.recordCall({ taskKind: 'chat', config: chatConfig, startedAt, completedAt: Date.now(), success: false, errorCode: error?.code || error?.name })
+      throw error
     } finally {
       if (usesBundledRuntime) bundledRuntime.release()
       activeAiRequests.delete(requestId)
@@ -1468,37 +2189,18 @@ app.whenReady().then(async () => {
     const url = String(input.url || '').trim()
     if (!url) return { success: false, error: '没有找到链接' }
     const requestId = normalizeRequestId(input.requestId, 'site-dl')
-    activeMediaDownloads.get(requestId)?.abort()
-    const controller = new AbortController()
-    activeMediaDownloads.set(requestId, controller)
-    const sendStatus = (status) => {
-      if (!event.sender.isDestroyed()) event.sender.send('media:download-status', { requestId, status })
-    }
     try {
-      if (!siteVideo.availability().available) {
-        sendStatus('首次使用站点视频，正在下载解析组件（约 18MB）')
-        await ytdlpDownload.start({
-          onProgress: (progress) => {
-            if (progress.totalBytes) sendStatus(`下载解析组件 ${Math.round(((progress.presentBytes || progress.receivedBytes || 0) / progress.totalBytes) * 100)}%`)
-          }
-        })
-      }
-      sendStatus('正在解析视频页')
-      const info = await siteVideo.resolve(url, { signal: controller.signal, onRetryNote: (note) => sendStatus(note) })
-      sendStatus(`正在下载：${info.title.slice(0, 40)}`)
-      const result = await siteVideo.download(url, {
-        destDir: path.join(app.getPath('videos'), 'AgentPlay 下载'),
-        signal: controller.signal,
-        onRetryNote: (note) => sendStatus(note),
-        onProgress: (progress) => sendStatus(`正在下载 ${progress.percent}%`)
+      persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'download.site',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: { url }
       })
-      userAuthorizedPaths.add(path.resolve(result.outputPath))
-      sendStatus('下载完成')
-      return { success: true, requestId, info, ...result }
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, requestId, error: task.error || task.status || '下载未完成' }
+      return { success: true, requestId, ...task.result }
     } catch (error) {
       return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
-    } finally {
-      activeMediaDownloads.delete(requestId)
     }
   })
   ipcMain.handle('media:link-analysis', async (event, input = {}) => {
@@ -1566,9 +2268,16 @@ app.whenReady().then(async () => {
       }
       // 拉片解剖（自动读取同名字幕证据）
       sendStatus('正在生成拉片解剖报告')
-      const config = modelConfigStore.resolved('chat')
-      const requiresKey = config.requiresKey !== false
-      const approved = await ensureCloudConsent('视频关键画面截图与口播字幕将发送给云端模型用于拉片分析。')
+      const visionDecision = selectModelForTaskPlan({ taskKind: 'analysis-vision', requirements: { vision: true } })
+      const textDecision = visionDecision.selected ? null : selectModelForTaskPlan({ taskKind: 'analysis', requirements: { text: true } })
+      const config = visionDecision.selected || textDecision?.selected || null
+      const analysisTaskKind = visionDecision.selected ? 'analysis-vision' : 'analysis'
+      const requiresKey = config?.requiresKey !== false
+       const modelConfigured = Boolean(config && config.baseUrl && config.model && (!requiresKey || config.apiKey))
+       const modelLocal = Boolean(config && isLocalModelConfig(config))
+       const approved = modelConfigured && !modelLocal
+         ? await ensureCloudConsent('视频关键画面截图与口播字幕将发送给云端模型用于拉片分析。')
+         : false
       const analysis = await runChatAnalysis({
         sourcePath: videoPath,
         mediaName: info?.title || path.basename(videoPath),
@@ -1579,14 +2288,15 @@ app.whenReady().then(async () => {
         signal: controller.signal,
         onStatus: sendStatus,
         workspace: documentWorkspace,
-        complete: llmComplete,
-        completeVisionMulti: llmCompleteVisionMulti,
-        frames: videoFrames,
-        model: {
-          configured: Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey)),
-          local: isLocalModelConfig(config),
-          provider: config.providerName || config.providerId || '',
-          model: config.model || ''
+        complete: (call) => llmComplete({ ...call, modelConfig: config, taskKind: analysisTaskKind }),
+         completeVisionMulti: (call) => llmCompleteVisionMulti({ ...call, modelConfig: config, taskKind: analysisTaskKind }),
+         frames: videoFrames,
+         translateToChinese: translateAnalysisCuesToChinese,
+         model: {
+           configured: modelConfigured,
+           local: modelLocal,
+           provider: config?.providerName || config?.providerId || '',
+           model: config?.model || ''
         }
       })
       if (analysis.requiresApproval) {
@@ -1612,36 +2322,43 @@ app.whenReady().then(async () => {
     const url = extractUrl(input.url || input.text || '')
     if (!url) return { success: false, error: '没有找到可下载的链接' }
     const requestId = normalizeRequestId(input.requestId, 'media-dl')
-    activeMediaDownloads.get(requestId)?.abort()
-    const controller = new AbortController()
-    activeMediaDownloads.set(requestId, controller)
-    const sendStatus = (status) => {
-      if (!event.sender.isDestroyed()) event.sender.send('media:download-status', { requestId, status })
-    }
     try {
-      sendStatus('正在校验链接')
-      const result = await downloadRemoteMedia(url, {
-        destDir: path.join(app.getPath('videos'), 'AgentPlay 下载'),
-        signal: controller.signal,
-        onProgress: ({ received, total }) => {
-          const mb = (value) => (value / 1024 / 1024).toFixed(1)
-          sendStatus(total ? `正在下载 ${mb(received)}/${mb(total)}MB` : `已下载 ${mb(received)}MB`)
-        }
+      persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'download.direct',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: { url }
       })
-      userAuthorizedPaths.add(path.resolve(result.outputPath))
-      sendStatus('下载完成')
-      return { success: true, requestId, ...result }
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, requestId, error: task.error || task.status || '下载未完成' }
+      return { success: true, requestId, ...task.result }
     } catch (error) {
       return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
-    } finally {
-      activeMediaDownloads.delete(requestId)
     }
   })
   ipcMain.handle('media:download-cancel', (event, requestId) => {
     assertTrustedSender(event)
     const controller = activeMediaDownloads.get(String(requestId || ''))
     controller?.abort()
-    return Boolean(controller)
+    return persistentTaskRuntime.cancel(String(requestId || '')) || Boolean(controller)
+  })
+  ipcMain.handle('taskRuntime:list', (event) => {
+    assertTrustedSender(event)
+    return persistentTaskRuntime.list()
+  })
+  ipcMain.handle('taskRuntime:approve', (event, input = {}) => {
+    assertTrustedSender(event)
+    const task = persistentTaskRuntime.approve(input.approvalId, input.token)
+    if (task.state === 'queued') void persistentTaskRuntime.run(task.id)
+    return task
+  })
+  ipcMain.handle('taskRuntime:resume', async (event, input = {}) => {
+    assertTrustedSender(event)
+    return persistentTaskRuntime.resume(input.id, input.token)
+  })
+  ipcMain.handle('taskRuntime:cancel', (event, id) => {
+    assertTrustedSender(event)
+    return persistentTaskRuntime.cancel(String(id || ''))
   })
   ipcMain.handle('documents:attach-paths', (event, filePaths) => {
     assertTrustedSender(event)
@@ -1665,6 +2382,16 @@ app.whenReady().then(async () => {
       return { error: error instanceof Error ? error.message : String(error) }
     }
   })
+  ipcMain.handle('documents:preview-text', async (event, filePath) => {
+    assertTrustedSender(event)
+    try {
+      const resolved = assertAllowedPath(filePath)
+      const content = await extractText(resolved)
+      return { success: true, content: content || '（没有可显示的文字内容）' }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
   ipcMain.handle('documents:history', (event) => {
     assertTrustedSender(event)
     const historyFile = path.join(app.getPath('userData'), 'document-workspace', 'history.jsonl')
@@ -1680,57 +2407,71 @@ app.whenReady().then(async () => {
       return []
     }
   })
-  ipcMain.handle('documents:plan', (event, input = {}) => {
+  ipcMain.handle('documents:plan', async (event, input = {}) => {
     assertTrustedSender(event)
     const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 20) : []
     const paths = tokens.map(documentSelectionFromToken)
     const plan = documentWorkspace.plan(paths, input.instruction, input.outputFormat)
+    const current = modelConfigStore.resolved('chat')
+    const currentWithPolicy = { ...current, local: isLocalModelConfig(current), contextWindow: contextWindowForConfig(current) }
+    const fallback = cloudFallbackFromStore(modelConfigStore, 'chat')
+    const fallbackWithPolicy = fallback ? { ...fallback, local: isLocalModelConfig(fallback), contextWindow: contextWindowForConfig(fallback) } : null
+    const preflight = plan.requiresAi
+      ? await documentWorkspace.preflight(paths, input.instruction, input.outputFormat, {
+          contextWindow: currentWithPolicy.contextWindow,
+          maxOutputTokens: maxOutputTokensForConfig(currentWithPolicy)
+        })
+      : { estimatedTokens: 0, exceedsSingleCall: false }
+    const routing = chooseDocumentModel({ current: currentWithPolicy, fallback: fallbackWithPolicy, preflight, cloudApproved: false })
     return {
       kind: plan.kind,
       requiresAi: plan.requiresAi,
       outputFormat: plan.outputFormat,
       summary: plan.summary,
+      estimatedTokens: preflight.estimatedTokens,
+      contextWindow: currentWithPolicy.contextWindow,
+      processingMode: routing.mode,
+      requiresCloudApproval: routing.requiresCloudApproval,
+      fallbackModel: routing.requiresCloudApproval ? `${fallbackWithPolicy.providerName} · ${fallbackWithPolicy.model}` : '',
       files: plan.files.map(({ name, ext, size }) => ({ name, ext, size }))
     }
   })
   ipcMain.handle('documents:run', async (event, input = {}) => {
     assertTrustedSender(event)
     const requestId = normalizeRequestId(input.requestId, 'document')
-    activeDocumentRequests.get(requestId)?.abort()
-    const controller = new AbortController()
-    activeDocumentRequests.set(requestId, controller)
-    const sendStatus = (status) => {
-      if (!event.sender.isDestroyed()) event.sender.send('documents:status', { requestId, status })
-    }
     try {
       const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 20) : []
       const paths = tokens.map(documentSelectionFromToken)
-      const plan = documentWorkspace.plan(paths, input.instruction, input.outputFormat)
-      if (plan.requiresAi) {
-        const config = modelConfigStore.resolved('chat')
-        const requiresKey = config.requiresKey !== false
-        if (!config.baseUrl || !config.model || (requiresKey && !config.apiKey)) {
-          throw new Error('这个任务需要模型理解内容，请先在“模型接入中心”配置模型')
-        }
-        if (paths.length > 0 && !isLocalModelConfig(config) && input.cloudApproved !== true && !(await ensureCloudConsent('所选文件的正文将用于理解并生成新文档。'))) {
-          throw new Error('当前连接的是云端模型。请勾选“允许发送所选文件内容”，或改用本地模型')
+      const prepared = await preparePersistentDocumentTask(paths, input)
+      let task = persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'document.run',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: prepared.spec,
+        approval: prepared.approval
+      })
+      if (task.state === 'waiting_approval') {
+        if (input.cloudApproved === true) {
+          task = persistentTaskRuntime.approve(task.approval.id, task.approval.token)
+        } else {
+          return { success: false, requiresApproval: true, requestId, approval: task.approval }
         }
       }
-      sendStatus(plan.requiresAi ? '正在理解要求和生成内容' : '正在执行本地文档操作')
-      const result = await documentWorkspace.run(paths, input.instruction, input.outputFormat, { signal: controller.signal, onStatus: sendStatus })
-      sendStatus('正在验证并保存结果')
-      return { ...result, requestId }
+      task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') {
+        return { success: false, requestId, error: task.error || '文档处理未完成' }
+      }
+      return { ...task.result, requestId }
     } catch (error) {
       return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
-    } finally {
-      activeDocumentRequests.delete(requestId)
     }
   })
   ipcMain.handle('documents:cancel', (event, requestId) => {
     assertTrustedSender(event)
-    const controller = activeDocumentRequests.get(String(requestId || ''))
+    const normalizedRequestId = String(requestId || '')
+    const controller = activeDocumentRequests.get(normalizedRequestId)
     controller?.abort()
-    return Boolean(controller)
+    return persistentTaskRuntime.cancel(String(requestId || '')) || Boolean(controller)
   })
   // “打开任意文件”统一分流：媒体进播放器、文档进授权附件（chat:open-any 与 home:open 共用）
   const splitAndApproveAny = (filePaths) => {
@@ -1745,7 +2486,7 @@ app.whenReady().then(async () => {
         const token = crypto.randomUUID()
         approvedDocumentSelections.set(token, { path: file.path, createdAt: Date.now() })
         userAuthorizedPaths.add(file.path)
-        return { token, name: file.name, ext: file.ext, size: file.size }
+        return { token, name: file.name, ext: file.ext, size: file.size, previewPath: file.path }
       }
     })
     for (const mediaPath of split.media) userAuthorizedPaths.add(mediaPath)
@@ -1816,7 +2557,7 @@ app.whenReady().then(async () => {
     // catalog 覆盖静态清单（每周自动刷新：淘汰下架旧型号、上新型号）
     return PROVIDERS.map((provider) => ({
       ...provider,
-      models: modelCatalog ? modelCatalog.modelsFor(provider.id, provider.models) : provider.models
+      models: normalizeProviderModels(provider, modelCatalog ? modelCatalog.modelsFor(provider.id, provider.models) : provider.models)
     }))
   })
 
@@ -1850,9 +2591,35 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     return modelConfigStore.publicConfig(role)
   })
+  ipcMain.handle('models:routing-status', (event) => {
+    assertTrustedSender(event)
+    const candidates = modelConfigStore.publicCandidates('chat')
+    return { ...modelPerformanceRouter.status(candidates), candidates }
+  })
+  ipcMain.handle('models:routing-settings', (event, input = {}) => {
+    assertTrustedSender(event)
+    const settings = modelPerformanceRouter.updateSettings({
+      preference: input.preference,
+      objective: input.objective,
+      mode: input.mode
+    })
+    const candidates = modelConfigStore.publicCandidates('chat')
+    return { ...modelPerformanceRouter.status(candidates), settings, candidates }
+  })
   ipcMain.handle('models:save', (event, config) => {
     assertTrustedSender(event)
     return modelConfigStore.save(config)
+  })
+  ipcMain.handle('models:disconnect', (event, input = {}) => {
+    assertTrustedSender(event)
+    return (async () => {
+      const providerId = String(input.providerId || '')
+      const candidate = modelConfigStore.publicCandidates(input.role || 'chat').find((item) => item.providerId === providerId && item.baseUrl === String(input.baseUrl || ''))
+      if (!candidate) return { disconnected: false, candidates: modelConfigStore.publicCandidates(input.role || 'chat') }
+      const approved = await ensurePersistentApproval({ action: 'credential', summary: `删除 ${candidate.providerName} 的本机加密凭证；以后如需使用必须重新粘贴 Key` })
+      if (!approved) return { disconnected: false, candidates: modelConfigStore.publicCandidates(input.role || 'chat') }
+      return { disconnected: true, candidates: modelConfigStore.disconnect(input.role || 'chat', providerId, String(input.baseUrl || '')) }
+    })()
   })
   ipcMain.handle('models:quick-switch', async (event, input = {}) => {
     assertTrustedSender(event)
@@ -2075,6 +2842,35 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     return rapidocrDownload.cancel()
   })
+  ipcMain.handle('unlimitedOcr:status', async (event, input = {}) => {
+    assertTrustedSender(event)
+    return unlimitedOcrService.status({ probe: input.probe === true })
+  })
+  ipcMain.handle('unlimitedOcr:save', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const candidateUrl = input.baseUrl === undefined
+        ? unlimitedOcrConfigStore.publicConfig().baseUrl
+        : String(input.baseUrl || '')
+      let remoteApproved = false
+      if (!isLoopbackEndpoint(candidateUrl)) {
+        remoteApproved = await ensurePersistentApproval({
+          action: 'cloud',
+          summary: '保存远端高级文档 OCR 服务地址；只有另行批准具体文档任务后，扫描页才会发送到该服务'
+        })
+        if (!remoteApproved) return { success: false, cancelled: true, status: unlimitedOcrConfigStore.publicConfig() }
+      }
+      if (input.clearApiKey === true) {
+        const approved = await ensurePersistentApproval({ action: 'credential', summary: '删除高级文档 OCR 的本机加密凭证' })
+        if (!approved) return { success: false, cancelled: true, status: unlimitedOcrConfigStore.publicConfig() }
+      }
+      const saved = unlimitedOcrConfigStore.save(input, { remoteApproved })
+      const status = input.enabled === true ? await unlimitedOcrService.status({ probe: true }) : { ...saved, ready: false, reason: '高级文档 OCR 未启用' }
+      return { success: input.enabled !== true || status.ready === true, status }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), status: unlimitedOcrConfigStore.publicConfig() }
+    }
+  })
   ipcMain.handle('onlineMedia:search', async (event, input = {}) => {
     assertTrustedSender(event)
     try {
@@ -2202,7 +2998,8 @@ app.whenReady().then(async () => {
           const result = await llmComplete({
             systemPrompt: PROMPTS[target],
             prompt: blocks[i],
-            timeoutMs: 120000
+            timeoutMs: 120000,
+            taskKind: 'document'
           })
           translated.push(result.text)
         }
@@ -2214,73 +3011,236 @@ app.whenReady().then(async () => {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
-  ipcMain.handle('subtitle:bilingual-generate', async (event, input = {}) => {
-    assertTrustedSender(event)
-    const mediaPath = String(input.path || '').trim()
-    if (!mediaPath || !fs.existsSync(mediaPath)) return { success: false, error: '没有可用的本地媒体文件' }
-    if (!userAuthorizedPaths.has(path.resolve(mediaPath)) && !isPathInsideRoots(mediaPath, [...authorizedFolders], { realpathSync: (value) => fs.realpathSync(value) })) {
-      return { success: false, error: '只允许处理你明确打开过或媒体库内的文件' }
+  const preparePersistentSubtitleTask = (input) => {
+    const resolvedMediaPath = assertAllowedPath(input.path)
+    const requestedTarget = ['中文', '英文'].includes(String(input.targetLang || '')) ? String(input.targetLang) : ''
+    const sourceTranscriptPath = path.join(path.dirname(resolvedMediaPath), `${path.parse(resolvedMediaPath).name}-AgentPlay原文.srt`)
+    const adjacent = findAdjacentSubtitle(resolvedMediaPath)
+    const subtitleSourcePath = adjacent || (fs.existsSync(sourceTranscriptPath) ? sourceTranscriptPath : '')
+    const cloudCandidates = String(input.engine || 'auto') === 'local'
+      ? []
+      : modelConfigStore.resolvedCandidates('chat').filter((candidate) => !isLocalModelConfig(candidate) && candidate.protocol !== 'cli')
+    const decision = cloudCandidates.length
+      ? selectModelForTaskPlan({ taskKind: 'subtitle-translation', requirements: { text: true }, candidates: cloudCandidates })
+      : { selected: null }
+    const config = decision.selected
+    const requiresKey = config?.requiresKey !== false
+    const cloudReady = Boolean(config && config.baseUrl && config.model && (!requiresKey || config.apiKey))
+    const modelRoute = cloudReady ? freezeTaskModelRoute(config, { taskKind: 'subtitle-translation' }) : null
+    return {
+      spec: {
+        sources: snapshotDocumentSources([resolvedMediaPath, ...(subtitleSourcePath ? [subtitleSourcePath] : [])]),
+        subtitleSourceKind: adjacent ? 'adjacent' : subtitleSourcePath ? 'transcript-cache' : '',
+        targetLang: requestedTarget,
+        engine: String(input.engine || 'auto'),
+        durationSeconds: Number(input.durationSeconds) || 0,
+        modelRoute
+      },
+      approval: modelRoute
+        ? { action: 'cloud', summary: `把字幕原文发送给 ${modelRoute.providerName} · ${modelRoute.model} 翻译成${requestedTarget || '目标语言'}；视频文件不会上传` }
+        : null
     }
-    const config = modelConfigStore.resolved('chat')
-    const requiresKey = config.requiresKey !== false
-    const cloudReady = Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey))
-    const offlineReady = offlineTranslate.availability().available
-    if (!cloudReady && !offlineReady) {
-      return { success: false, error: '翻译需要云端模型或离线翻译组件，请先在模型接入中心配置或下载' }
+  }
+  const executePersistentSubtitleTask = async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const sourcePaths = validateDocumentSources(task.spec.sources)
+    const mediaPath = sourcePaths[0]
+    const frozenSubtitlePath = sourcePaths[1] || ''
+    userAuthorizedPaths.add(mediaPath)
+    if (frozenSubtitlePath) userAuthorizedPaths.add(frozenSubtitlePath)
+    const requestId = task.id
+    const requestedTarget = ['中文', '英文'].includes(String(task.spec.targetLang || '')) ? String(task.spec.targetLang) : ''
+    const cachePathFor = (targetLang) => path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay${targetLang}.srt`)
+    const sourceTranscriptPath = path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay原文.srt`)
+    let sourceTranscriptSnapshot = task.checkpoint?.sourceTranscript || null
+    if (sourceTranscriptSnapshot) {
+      const [checkpointTranscriptPath] = validateDocumentSources([sourceTranscriptSnapshot])
+      if (path.resolve(checkpointTranscriptPath) !== path.resolve(sourceTranscriptPath)) {
+        throw new Error('字幕识别检查点与当前视频不匹配，请重新执行')
+      }
+      userAuthorizedPaths.add(checkpointTranscriptPath)
     }
-    // 双语生成可取消：controller 用渲染端已知的 requestId 注册，whisper 阶段直接可中止
-    const cancelKey = String(input.requestId || 'bilingual')
-    activeAnalysisRequests.get(cancelKey)?.abort()
-    const controller = new AbortController()
-    activeAnalysisRequests.set(cancelKey, controller)
-    const requestId = String(input.requestId || 'bilingual')
-    const sendStatus = (status) => {
-      if (!event.sender.isDestroyed()) event.sender.send('subtitle:bilingual-status', { requestId, status })
+    const readCached = (targetLang) => {
+      if (!targetLang) return null
+      const cachedPath = cachePathFor(targetLang)
+      if (!fs.existsSync(cachedPath)) return null
+      const cachedContent = fs.readFileSync(cachedPath, 'utf8')
+      const cachedEntries = parseSrt(cachedContent)
+      const hasTargetText = targetLang === '英文'
+        ? /[A-Za-z]/.test(cachedContent)
+        : /[\u3400-\u9fff]/.test(cachedContent)
+      if (!cachedEntries.length || !hasTargetText) return null
+      authorizeDerivedSubtitle(cachedPath)
+      return { success: true, srtPath: cachedPath, outputs: [cachedPath], count: cachedEntries.length, failed: 0, cached: true, engine: 'cache', targetLang }
+    }
+    const earlyCache = readCached(requestedTarget)
+    if (earlyCache) {
+      checkpoint({ stage: 'artifact-written', result: earlyCache, ...(sourceTranscriptSnapshot ? { sourceTranscript: sourceTranscriptSnapshot } : {}) })
+      return earlyCache
+    }
+    const mediaJobKey = subtitleMediaKey(mediaPath)
+    const existingMediaJob = activeSubtitleMediaJobs.get(mediaJobKey)
+    if (existingMediaJob) {
+      throw new Error('这个视频已有字幕任务正在识别或翻译，请等待当前任务完成；不会重复占用 CPU')
+    }
+    activeSubtitleMediaJobs.set(mediaJobKey, { requestId, cancelKey: requestId })
+    const reportStatus = (value) => {
+      log.info(`[中文字幕 ${requestId}] ${value}`)
+      status(value)
+    }
+    const failWithResult = (result) => {
+      checkpoint({ stage: 'blocked', result, ...(sourceTranscriptSnapshot ? { sourceTranscript: sourceTranscriptSnapshot } : {}) })
+      throw new Error(result.error || '字幕任务未完成')
+    }
+    const routeConfig = resolveTaskModelRoute(task.spec.modelRoute)
+    const resolveEngine = async (entries, targetLang) => {
+      if (routeConfig) {
+        return {
+        complete: ({ systemPrompt, prompt, signal: callSignal, timeoutMs }) => llmComplete({
+          systemPrompt,
+          prompt,
+          signal: callSignal,
+          timeoutMs,
+          modelConfig: routeConfig,
+          taskKind: 'subtitle-translation'
+        }),
+          label: `${routeConfig.providerName} · ${routeConfig.model}`,
+          providerId: routeConfig.providerId,
+          model: routeConfig.model,
+          offline: false
+        }
+      }
+      return pickTranslateEngine(entries, targetLang, 'local')
+    }
+    const translateAndWrite = async (entries, { fastPath = false } = {}) => {
+      const targetLang = chooseOppositeTarget(entries)
+      const sourceLang = targetLang === '英文' ? 'zh' : 'en'
+      const cached = readCached(targetLang)
+      if (cached) {
+        const result = { ...cached, sourceLang, fastPath }
+        checkpoint({ stage: 'artifact-written', result, ...(sourceTranscriptSnapshot ? { sourceTranscript: sourceTranscriptSnapshot } : {}) })
+        return result
+      }
+      const engine = await resolveEngine(entries, targetLang)
+      if (!engine) {
+        const localHint = targetLang === '英文' ? '中译英需要配置 Agnes 等云端模型' : '请配置 Agnes 等云端模型，或安装本地离线翻译组件'
+        const recovery = targetLang === '英文'
+          ? buildCloudTranslateRecovery({ entryCount: entries.length, targetLang })
+          : buildOfflineTranslateRecovery({ packBytes: translateDownload.packInfo().totalBytes, entryCount: entries.length, targetLang })
+        return failWithResult({ success: false, error: `没有可用的${targetLang}字幕翻译方式：${localHint}`, recovery })
+      }
+      reportStatus(`共 ${entries.length} 段，正在翻译成${targetLang}（${engine.label}）`)
+      const { translations, failed } = await translateEntries(entries, engine.complete, {
+        targetLang,
+        signal,
+        onProgress: ({ done, total, failed: failedCount }) => {
+          reportStatus(`正在翻译成${targetLang} ${done}/${total}${failedCount ? `（${failedCount} 段待重试）` : ''}`)
+        }
+      })
+      if (translations.size === 0) return failWithResult({ success: false, error: `翻译没有返回可用${targetLang}（${engine.label}），未写出无效字幕` })
+      const translatedSrt = buildTranslationOnlySrt(entries, translations, { targetLang })
+      const outputEntries = parseSrt(translatedSrt)
+      if (!outputEntries.length) return failWithResult({ success: false, error: '翻译结果无法排成有效字幕，未写出文件' })
+      const srtPath = cachePathFor(targetLang)
+      fs.writeFileSync(srtPath, translatedSrt, 'utf8')
+      authorizeDerivedSubtitle(srtPath)
+      reportStatus(`${targetLang}字幕已生成（每屏最多两行）`)
+      const result = { success: true, srtPath, outputs: [srtPath], count: outputEntries.length, sourceCount: entries.length, failed, fastPath, engine: engine.label, sourceLang, targetLang }
+      checkpoint({ stage: 'artifact-written', result, ...(sourceTranscriptSnapshot ? { sourceTranscript: sourceTranscriptSnapshot } : {}) })
+      return result
     }
     try {
-      // 有现成字幕（同名 srt/vtt/ass）时跳过语音识别，直接翻译，秒级出双语
-      const adjacent = findAdjacentSubtitle(mediaPath)
-      if (adjacent) {
-        sendStatus(`检测到现成字幕 ${path.basename(adjacent)}，跳过语音识别，直接翻译`)
-        const rawCues = parseSubtitleCues(fs.readFileSync(adjacent, 'utf8'), path.extname(adjacent))
+      if (task.spec.subtitleSourceKind && frozenSubtitlePath) {
+        reportStatus(`检测到现成字幕 ${path.basename(frozenSubtitlePath)}，跳过语音识别，直接翻译`)
+        const rawCues = parseSubtitleCues(fs.readFileSync(frozenSubtitlePath, 'utf8'), path.extname(frozenSubtitlePath))
         const entries = cuesToEntries(rawCues)
-        if (entries.length === 0) return { success: false, error: '现成字幕内容为空，无法翻译' }
-        const engine = pickTranslateEngine(entries)
-        if (!engine.offline && !cloudReady) return { success: false, error: '当前字幕不是英文为主，离线组件翻不了，请先配置云端模型' }
-        sendStatus(`共 ${entries.length} 句，正在逐批翻译（${engine.label}）`)
-        const { translations, failed } = await translateEntries(entries, engine.complete)
-        const bilingual = buildBilingualSrt(entries, translations)
-        const srtPath = path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay双语.srt`)
-        fs.writeFileSync(srtPath, bilingual, 'utf8')
-        sendStatus('双语字幕已生成')
-        return { success: true, srtPath, count: entries.length, failed, fastPath: true }
+        if (entries.length === 0) return failWithResult({ success: false, error: '现成字幕内容为空，无法翻译' })
+        return await translateAndWrite(entries, { fastPath: true })
+      }
+      if (sourceTranscriptSnapshot && fs.existsSync(sourceTranscriptPath)) {
+        const sourceTranscript = fs.readFileSync(sourceTranscriptPath, 'utf8')
+        const entries = parseSrt(sourceTranscript)
+        if (entries.length > 0) {
+          authorizeDerivedSubtitle(sourceTranscriptPath)
+          reportStatus(`检测到上次识别的原文字幕 ${path.basename(sourceTranscriptPath)}，跳过语音识别`)
+          return await translateAndWrite(entries, { fastPath: true })
+        }
       }
       const whisperStatus = transcriptionService.availability()
-      if (!whisperStatus.available) return { success: false, error: `${whisperStatus.reason}，请先下载转写组件`, needDownload: true }
-      sendStatus('正在离线识别语音（CPU，约为音频时长数倍）')
-      const transcription = await transcriptionService.transcribe({ sourcePath: mediaPath, lang: 'auto', timestamps: true, signal: controller.signal })
+      if (!whisperStatus.available) {
+        return failWithResult({
+          success: false,
+          error: `${whisperStatus.reason}，请先下载转写组件`,
+          needDownload: true,
+          recovery: buildWhisperRecovery({
+            packBytes: whisperDownload.packInfo().totalBytes,
+            durationSeconds: Number(task.spec.durationSeconds) || 0,
+            targetLang: requestedTarget || '中文'
+          })
+        })
+      }
+      reportStatus(buildTranscriptionStatus(task.spec.durationSeconds))
+      const transcription = await transcriptionService.transcribe({ sourcePath: mediaPath, lang: 'auto', timestamps: true, signal })
       const entries = parseSrt(transcription.text)
-      if (entries.length === 0) return { success: false, error: '没有识别到语音内容（可能是纯音乐或音量过低）' }
-      const engine = pickTranslateEngine(entries)
-      if (!engine.offline && !cloudReady) return { success: false, error: '识别出的内容不是英文为主，离线组件翻不了，请先配置云端模型' }
-      sendStatus(`识别到 ${entries.length} 句，正在逐批翻译（${engine.label}）`)
-      const { translations, failed } = await translateEntries(entries, engine.complete)
-      const bilingual = buildBilingualSrt(entries, translations)
-      const srtPath = path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay双语.srt`)
-      fs.writeFileSync(srtPath, bilingual, 'utf8')
-      sendStatus('双语字幕已生成')
-      return { success: true, srtPath, count: entries.length, failed }
+      if (entries.length === 0) return failWithResult({ success: false, error: '没有识别到语音内容（可能是纯音乐或音量过低）' })
+      if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+      const sourceTempPath = `${sourceTranscriptPath}.${process.pid}.${Date.now()}.tmp`
+      fs.writeFileSync(sourceTempPath, `${String(transcription.text || '').trim()}\n`, 'utf8')
+      fs.rmSync(sourceTranscriptPath, { force: true })
+      fs.renameSync(sourceTempPath, sourceTranscriptPath)
+      authorizeDerivedSubtitle(sourceTranscriptPath)
+      sourceTranscriptSnapshot = snapshotDocumentSources([sourceTranscriptPath])[0]
+      checkpoint({ stage: 'source-transcribed', sourceTranscript: sourceTranscriptSnapshot })
+      reportStatus(`识别到 ${entries.length} 段，正在判断翻译方向`)
+      return await translateAndWrite(entries)
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
+      if (signal.aborted || error?.name === 'AbortError') throw new DOMException('字幕翻译已停止', 'AbortError')
+      throw error
     } finally {
-      activeAnalysisRequests.delete(cancelKey)
+      if (activeSubtitleMediaJobs.get(mediaJobKey)?.requestId === requestId) activeSubtitleMediaJobs.delete(mediaJobKey)
+    }
+  }
+  persistentTaskRuntime.register('subtitle.generate', executePersistentSubtitleTask, { autoResume: true })
+  ipcMain.handle('subtitle:bilingual-generate', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'bilingual')
+    try {
+      const effectiveInput = { ...input }
+      const requestedEngine = String(input.engine || 'auto')
+      const candidateConfig = creativeConfig()
+      const requiresKey = candidateConfig.requiresKey !== false
+      const cloudCandidate = requestedEngine !== 'local' && !isLocalModelConfig(candidateConfig) && candidateConfig.protocol !== 'cli' && Boolean(candidateConfig.baseUrl && candidateConfig.model && (!requiresKey || candidateConfig.apiKey))
+      if (cloudCandidate && input.cloudApproved !== true) {
+        const route = freezeTaskModelRoute(candidateConfig)
+        const approved = await ensureCloudConsent(`把字幕原文发送给 ${route.providerName} · ${route.model} 翻译；视频文件不会上传`)
+        if (approved) effectiveInput.cloudApproved = true
+        else effectiveInput.engine = 'local'
+      }
+      const prepared = preparePersistentSubtitleTask(effectiveInput)
+      let task = persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'subtitle.generate',
+        workspaceTaskId: input.workspaceTaskId || `workspace-${requestId}`,
+        spec: prepared.spec,
+        approval: prepared.approval
+      })
+      if (task.state === 'waiting_approval') {
+        const approved = effectiveInput.cloudApproved === true || await ensureCloudConsent(task.approval.summary)
+        if (!approved) throw new Error('已取消：未授权发送云端')
+        task = persistentTaskRuntime.approve(task.approval.id, task.approval.token)
+      }
+      task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { ...(task.checkpoint?.result || {}), success: false, requestId, cancelled: task.state === 'cancelled', error: task.error || task.checkpoint?.result?.error || '字幕任务未完成' }
+      return { ...task.result, requestId }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
     }
   })
   ipcMain.handle('subtitle:bilingual-cancel', (event, requestId) => {
     assertTrustedSender(event)
     const controller = activeAnalysisRequests.get(String(requestId || ''))
     controller?.abort()
-    return Boolean(controller)
+    return persistentTaskRuntime.cancel(String(requestId || '')) || Boolean(controller)
   })
   // 轻量语言探测：抽前 12 秒音频转写判定 zh/en，给"要不要弹翻译提示"用
   ipcMain.handle('media:detect-language', async (event, filePath) => {
@@ -2295,19 +3255,19 @@ app.whenReady().then(async () => {
       return { lang: 'unknown', reason: error instanceof Error ? error.message : String(error) }
     }
   })
-  // 实时双语字幕：从当前播放位置起逐批翻译，渲染进程叠显（原文上、译文下）；译完自动存双语 srt（不覆盖已有文件）
+  // 实时翻译字幕：从当前位置逐批翻译，只显示目标语言；完成后保存为按阅读节奏重排的目标语言 SRT。
   ipcMain.handle('subtitle:live-start', async (event, input = {}) => {
     assertTrustedSender(event)
     const mediaPath = String(input.mediaPath || '').trim()
     if (!mediaPath || /^(https?|blob):/i.test(mediaPath) || !fs.existsSync(mediaPath)) {
       return { success: false, error: '实时翻译只支持本地媒体文件' }
     }
-    if (!userAuthorizedPaths.has(path.resolve(mediaPath)) && !isPathInsideRoots(mediaPath, [...authorizedFolders], { realpathSync: (value) => fs.realpathSync(value) })) {
+    if (!userAuthorizedPaths.has(path.resolve(mediaPath)) && !isPathInsideRoots(mediaPath, allowedRoots(), { realpathSync: (value) => fs.realpathSync(value) })) {
       return { success: false, error: '只允许处理你明确打开过或媒体库内的文件' }
     }
     const requestedSubtitle = String(input.subtitlePath || '').trim()
     const subtitlePath = requestedSubtitle && fs.existsSync(requestedSubtitle) ? requestedSubtitle : findAdjacentSubtitle(mediaPath)
-    if (!subtitlePath) return { success: false, error: '没有找到可翻译的字幕：请先加载字幕，或用“生成双语字幕”先识别' }
+    if (!subtitlePath) return { success: false, error: '没有找到可翻译的字幕：请先加载字幕，或用“自动翻译字幕”先识别' }
     // 显式指定的字幕文件与媒体文件同权校验，防止借字幕通道读任意文本送云端
     if (requestedSubtitle && !userAuthorizedPaths.has(path.resolve(subtitlePath)) && !isPathInsideRoots(subtitlePath, allowedRoots(), { realpathSync: (value) => fs.realpathSync(value) })) {
       return { success: false, error: '字幕文件不在授权范围内' }
@@ -2316,19 +3276,21 @@ app.whenReady().then(async () => {
     if (!['.srt', '.vtt', '.ass', '.ssa'].includes(ext)) return { success: false, error: '字幕格式不支持（仅 srt/vtt/ass/ssa）' }
     const rawCues = parseSubtitleCues(fs.readFileSync(subtitlePath, 'utf8'), ext)
     if (!rawCues.length) return { success: false, error: '字幕内容为空，无法翻译' }
-    const config = modelConfigStore.resolved('chat')
-    const requiresKey = config.requiresKey !== false
-    const cloudReady = Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey))
-    const engine = pickTranslateEngine(rawCues.map((text, order) => ({ index: order + 1, text: text.text })))
-    if (!engine.offline && !cloudReady) {
-      return { success: false, error: offlineTranslate.availability().available ? '当前字幕不是英文为主，离线组件翻不了，请先配置云端模型' : '实时翻译需要云端模型或离线翻译组件，请先在模型接入中心配置或下载' }
+    const sourceEntries = rawCues.map((text, order) => ({ index: order + 1, text: text.text }))
+    const requestedLiveTarget = ['中文', '英文'].includes(String(input.targetLang || '')) ? String(input.targetLang) : ''
+    const targetLang = requestedLiveTarget || chooseOppositeTarget(sourceEntries)
+    let engine = pickTranslateEngine(sourceEntries, targetLang, String(input.engine || 'auto'))
+    if (!engine) return { success: false, error: '没有可用的字幕翻译方式：请配置 Agnes 等云端模型，或安装本地离线翻译组件' }
+    if (!engine.offline) {
+      const approved = await ensureCloudConsent(`字幕原文将发送给 ${engine.label} 做实时${targetLang}翻译；视频文件本身不会上传。`)
+      if (!approved) engine = pickTranslateEngine(sourceEntries, targetLang, 'local')
+      if (!engine) return { success: false, error: '已取消云端发送，本机也没有可用的离线翻译组件' }
     }
     liveSubtitleSession?.controller.abort()
     const requestId = normalizeRequestId(input.requestId, 'live-sub')
     const controller = new AbortController()
     const cues = rawCues.map((cue, order) => ({ index: order + 1, startSeconds: cue.start, endSeconds: cue.end, text: cue.text }))
     const entries = cuesToEntries(rawCues)
-    const targetLang = String(input.targetLang || '中文').slice(0, 20)
     liveSubtitleSession = { requestId, controller, position: Number(input.currentTime) || 0 }
     const send = (payload) => {
       if (!event.sender.isDestroyed()) event.sender.send('subtitle:live-event', { requestId, ...payload })
@@ -2347,22 +3309,21 @@ app.whenReady().then(async () => {
         })
         let srtPath = null
         if (result.translations.size) {
-          const candidate = path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay双语.srt`)
+          const candidate = path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay${targetLang}.srt`)
           try {
-            if (!fs.existsSync(candidate)) {
-              fs.writeFileSync(candidate, buildBilingualSrt(entries, result.translations), 'utf8')
-            }
+            fs.writeFileSync(candidate, buildTranslationOnlySrt(entries, result.translations, { targetLang }), 'utf8')
+            authorizeDerivedSubtitle(candidate)
             srtPath = candidate
-          } catch (error) { log.error('实时双语字幕写盘失败', error) }
+          } catch (error) { log.error('实时翻译字幕写盘失败', error) }
         }
-        send({ type: 'finish', done: result.translations.size, failed: result.failed, total: cues.length, srtPath, cancelled: result.cancelled })
+        send({ type: 'finish', done: result.translations.size, failed: result.failed, total: cues.length, srtPath, targetLang, cancelled: result.cancelled })
       } catch (error) {
         send({ type: 'error', error: error instanceof Error ? error.message : String(error) })
       } finally {
         if (liveSubtitleSession?.requestId === requestId) liveSubtitleSession = null
       }
     })()
-    return { success: true, requestId, total: cues.length, subtitlePath, cues: cues.map((cue) => ({ index: cue.index, start: cue.startSeconds, end: cue.endSeconds, text: cue.text })) }
+    return { success: true, requestId, total: cues.length, subtitlePath, engine: engine.label, targetLang, cues: cues.map((cue) => ({ index: cue.index, start: cue.startSeconds, end: cue.endSeconds, text: cue.text })) }
   })
   ipcMain.handle('subtitle:live-seek', (event, input = {}) => {
     assertTrustedSender(event)
@@ -2460,6 +3421,7 @@ app.whenReady().then(async () => {
           const candidate = path.join(path.dirname(mediaPath), `${path.parse(mediaPath).name}-AgentPlay识别.srt`)
           try {
             if (!fs.existsSync(candidate)) fs.writeFileSync(candidate, cuesToSrt(result.cues), 'utf8')
+            authorizeDerivedSubtitle(candidate)
             srtPath = candidate
           } catch (error) { log.error('实时识别字幕写盘失败', error) }
         }
@@ -2477,6 +3439,7 @@ app.whenReady().then(async () => {
                 .map((cue, index) => ({ index: index + 1, start: cue.start, end: cue.end, text: cue.text }))
               if (!refinedCues.length) throw new Error('精修没有识别到内容')
               fs.writeFileSync(srtPath, cuesToSrt(refinedCues), 'utf8')
+              authorizeDerivedSubtitle(srtPath)
               send({ type: 'refined', srtPath, cueCount: refinedCues.length })
             } catch (refineError) {
               send({ type: 'refine-failed', error: refineError instanceof Error ? refineError.message : String(refineError) })
@@ -2536,46 +3499,34 @@ app.whenReady().then(async () => {
   ipcMain.handle('analysis:run', async (event, input = {}) => {
     assertTrustedSender(event)
     const requestId = normalizeRequestId(input.requestId, 'analysis')
-    activeAnalysisRequests.get(requestId)?.abort()
-    const controller = new AbortController()
-    activeAnalysisRequests.set(requestId, controller)
-    const sendStatus = (status) => {
-      if (!event.sender.isDestroyed()) event.sender.send('analysis:status', { requestId, status })
-    }
     try {
-      const config = modelConfigStore.resolved('chat')
-      const requiresKey = config.requiresKey !== false
-      const approved = await ensureCloudConsent('视频关键画面截图与口播字幕将发送给云端模型用于深度解剖。')
-      const result = await runChatAnalysis({
-        sourcePath: input.sourcePath,
-        mediaName: input.mediaName,
-        duration: input.duration,
-        instruction: input.instruction,
-        outputFormat: input.outputFormat,
-        cloudApproved: approved,
-        signal: controller.signal,
-        onStatus: sendStatus,
-        workspace: documentWorkspace,
-        complete: llmComplete,
-        completeVisionMulti: llmCompleteVisionMulti,
-        frames: videoFrames,
-        model: {
-          configured: Boolean(config.baseUrl && config.model && (!requiresKey || config.apiKey)),
-          local: isLocalModelConfig(config),
-          provider: config.providerName || config.providerId || '',
-          model: config.model || ''
-        }
+      const prepared = preparePersistentAnalysisTask(input)
+      let task = persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'analysis.run',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: prepared.spec,
+        approval: prepared.approval
       })
-      return { ...result, requestId }
-    } finally {
-      activeAnalysisRequests.delete(requestId)
+      if (task.state === 'waiting_approval') {
+        if (input.cloudApproved === true) {
+          task = persistentTaskRuntime.approve(task.approval.id, task.approval.token)
+        } else {
+          return { success: false, requiresApproval: true, requestId, approval: task.approval }
+        }
+      }
+      task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, requestId, error: task.error || '视频解剖未完成' }
+      return { ...task.result, requestId }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
     }
   })
   ipcMain.handle('analysis:cancel', (event, requestId) => {
     assertTrustedSender(event)
     const controller = activeAnalysisRequests.get(String(requestId || ''))
     controller?.abort()
-    return Boolean(controller)
+    return persistentTaskRuntime.cancel(String(requestId || '')) || Boolean(controller)
   })
   ipcMain.handle('studio:export-project', async (event, project = {}) => {
     assertTrustedSender(event)
@@ -2584,7 +3535,7 @@ app.whenReady().then(async () => {
     const safeName = String(project.mediaName || '视频').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.[^.]+$/, '')
     const result = await dialog.showSaveDialog(mainWindow, {
       defaultPath: path.join(app.getPath('documents'), `${safeName}-AI拉片项目.aiproj.json`),
-      filters: [{ name: 'AI播放器拉片项目', extensions: ['aiproj.json', 'json'] }]
+      filters: [{ name: 'AgentPlay 拉片项目', extensions: ['aiproj.json', 'json'] }]
     })
     if (result.canceled || !result.filePath) return { success: false, cancelled: true }
     fs.writeFileSync(result.filePath, serialized, 'utf8')
@@ -2617,64 +3568,183 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('studio:creative-plan', async (event, input = {}) => {
     assertTrustedSender(event)
-    return requestCreativePlan(modelConfigStore.resolved('chat'), input)
+    const config = cloudConfigForExplicitFeature()
+    const approved = await ensureCloudConsent('创作主题、拉片报告或素材说明将发送给云端模型，用于生成创作方案。')
+    if (!approved) return { success: false, cancelled: true, error: '已取消：未授权发送云端' }
+    return requestCreativePlan(config, input)
   })
   ipcMain.handle('studio:generate-image', async (event, input = {}) => {
     assertTrustedSender(event)
-    return generateImageAsset(creativeConfig(), {
+    const config = cloudConfigForExplicitFeature()
+    const approved = await ensurePersistentApproval({ action: 'paid', summary: `把生图提示词发送给 ${config.providerName || config.providerId} · ${config.model}；可能消耗你的云端额度或产生费用` })
+    if (!approved) return { success: false, cancelled: true, error: '已取消：未授权付费云端任务' }
+    return generateImageAsset(config, {
       ...input,
       outputDir: path.join(app.getPath('userData'), 'creative-assets', 'images')
     })
   })
+  const creativeTaskRoute = (taskKind, metricModel = '') => {
+    const cloudCandidates = modelConfigStore.resolvedCandidates('chat').filter((candidate) => (
+      !isLocalModelConfig(candidate) && candidate.protocol !== 'cli' && candidate.providerId === 'agnes'
+    ))
+    const decision = selectModelForTaskPlan({ taskKind, requirements: { text: true, providerId: 'agnes' }, candidates: cloudCandidates })
+    const config = decision.selected
+    const requiresKey = config?.requiresKey !== false
+    if (!config || !config.baseUrl || !config.model || (requiresKey && !config.apiKey)) {
+      throw new Error('AI 视频创作需要先在模型接入中心配置可用的 Agnes 云端模型与 API Key')
+    }
+    return freezeTaskModelRoute(config, { taskKind, metricModel })
+  }
+  const preparePersistentVideoGeneration = (input) => {
+    const prompt = String(input.prompt || '').trim().slice(0, 4000)
+    if (!prompt) throw new Error('视频提示词不能为空')
+    const imageBase64 = String(input.imageBase64 || '')
+    if (imageBase64.length > 12 * 1024 * 1024) throw new Error('图生视频参考图超过 12MB，请先压缩')
+    const videoModel = String(input.model || 'agnes-video-v2.0').slice(0, 200)
+    const modelRoute = creativeTaskRoute('creative-video', videoModel)
+    return {
+      spec: {
+        instruction: String(input.instruction || prompt).slice(0, 4000), prompt,
+        model: videoModel, duration: Math.max(1, Math.min(8, Number(input.duration) || 4)),
+        fps: Math.max(1, Math.min(60, Number(input.fps) || 24)), size: String(input.size || '1280x720').slice(0, 40),
+        ...(imageBase64 ? { imageBase64 } : {}), modelRoute
+      },
+      approval: { action: 'paid', summary: `把视频提示词发送给 ${modelRoute.providerName} · ${modelRoute.model} 生成视频；可能消耗你的云端额度或产生费用` }
+    }
+  }
+  const executePersistentVideoGeneration = async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const outputDir = path.join(app.getPath('userData'), 'creative-assets', 'videos')
+    const expectedPath = path.join(outputDir, `${task.id}.mp4`)
+    if (fs.existsSync(expectedPath) && fs.statSync(expectedPath).size > 0) {
+      const result = { success: true, outputPath: expectedPath, outputs: [expectedPath], bytes: fs.statSync(expectedPath).size, videoId: task.checkpoint?.videoId || '', numFrames: task.checkpoint?.numFrames || 0 }
+      checkpoint({ stage: 'artifact-written', result })
+      return result
+    }
+    status(task.checkpoint?.videoId ? '正在恢复云端视频任务' : '正在创建云端视频任务')
+    const config = resolveTaskModelRoute(task.spec.modelRoute)
+    const result = await generateVideoWithReceipt(config, {
+      prompt: task.spec.prompt, model: task.spec.model, duration: task.spec.duration, fps: task.spec.fps,
+      size: task.spec.size, imageBase64: task.spec.imageBase64, id: task.id, signal, outputDir,
+      resumeVideoId: task.checkpoint?.videoId,
+      onCheckpoint: (remote) => checkpoint(remote)
+    })
+    const completed = { ...result, outputs: [result.outputPath] }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    return completed
+  }
+  const preparePersistentRecut = (input) => {
+    const mediaName = String(input.mediaName || '视频').trim().slice(0, 80) || '视频'
+    const reportText = String(input.reportText || '').slice(0, 3000)
+    const modelRoute = creativeTaskRoute('creative-planning')
+    return {
+      spec: {
+        instruction: '生成重构短片', reportText, mediaName,
+        count: Math.max(2, Math.min(4, Number(input.count) || 3)),
+        seconds: Math.max(2, Math.min(8, Number(input.seconds) || 4)), modelRoute
+      },
+      approval: { action: 'paid', summary: `把拉片报告发送给 ${modelRoute.providerName} · ${modelRoute.model} 并生成多个 AI 视频镜头；可能多次消耗云端额度或产生费用` }
+    }
+  }
+  const executePersistentRecut = async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const config = resolveTaskModelRoute(task.spec.modelRoute)
+    const reportText = String(task.spec.reportText || '')
+    const mediaName = String(task.spec.mediaName || '视频')
+    const count = Number(task.spec.count) || 3
+    const seconds = Number(task.spec.seconds) || 4
+    let shots = Array.isArray(task.checkpoint?.shots) ? task.checkpoint.shots.map(String) : []
+    if (!shots.length) {
+      status('正在把报告浓缩成镜头脚本')
+      const shotPlan = await llmComplete({
+        systemPrompt: '你是短视频导演，只返回 JSON。', modelConfig: config,
+        prompt: `根据这份视频拉片报告，为《${mediaName}》设计 ${count} 个重构镜头，每个镜头一句中文画面提示词（适合 AI 生视频：具象场景、动作、光线；不要人物正脸特写，不要画面文字）。返回 {"shots":["提示词1","提示词2","提示词3"]}，正好 ${count} 条。\n\n报告：\n${reportText || `主题：${mediaName}`}`,
+        timeoutMs: 90000, signal, taskKind: 'creative-planning'
+      })
+      const planJson = JSON.parse(/\{[\s\S]*\}/.exec(shotPlan.text || '')?.[0] || '{}')
+      shots = (Array.isArray(planJson.shots) ? planJson.shots : []).map((shot) => String(shot || '').trim()).filter(Boolean).slice(0, count)
+      if (!shots.length) throw new Error('镜头脚本生成失败，请重试')
+      checkpoint({ stage: 'shots-planned', shots })
+    }
+    const clipPaths = Array.isArray(task.checkpoint?.clipPaths) ? [...task.checkpoint.clipPaths] : []
+    const clipJobs = Array.isArray(task.checkpoint?.clipJobs) ? [...task.checkpoint.clipJobs] : []
+    const outputDir = path.join(app.getPath('userData'), 'creative-assets', 'videos')
+    for (let index = 0; index < shots.length; index += 1) {
+      if (clipPaths[index] && fs.existsSync(clipPaths[index]) && fs.statSync(clipPaths[index]).size > 0) continue
+      status(`正在生成镜头 ${index + 1}/${shots.length}（每个约 1-2 分钟）`)
+      const clip = await generateVideoWithReceipt(config, {
+        prompt: shots[index], duration: seconds, id: `${task.id}-clip-${index + 1}`, signal, outputDir,
+        resumeVideoId: clipJobs[index]?.videoId,
+        onCheckpoint: (remote) => {
+          clipJobs[index] = { ...clipJobs[index], ...remote }
+          checkpoint({ stage: 'clip-remote-created', shots, clipPaths, clipJobs })
+        }
+      })
+      clipPaths[index] = clip.outputPath
+      clipJobs[index] = { ...clipJobs[index], videoId: clip.videoId, outputPath: clip.outputPath }
+      checkpoint({ stage: 'clips-generated', shots, clipPaths, clipJobs })
+    }
+    status('正在拼接成片')
+    if (!videoFrames.availability().available) throw new Error('缺少 ffmpeg 组件（随 yt-dlp 组件包提供）')
+    const safeName = mediaName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.[^.]+$/, '')
+    const outputPath = path.join(app.getPath('documents'), 'AgentPlay 输出', `${safeName}-AgentPlay重构短片-${task.id}.mp4`)
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+      const result = { success: true, outputPath, outputs: [outputPath], shots, clips: clipPaths.length }
+      checkpoint({ stage: 'artifact-written', result, shots, clipPaths, clipJobs })
+      return result
+    }
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+    const listFile = path.join(app.getPath('temp'), `recut-list-${task.id}.txt`)
+    try {
+      fs.writeFileSync(listFile, clipPaths.map((clipPath) => `file '${String(clipPath).replace(/\\/g, '/')}'`).join('\n'), 'utf8')
+      await videoFrames.run(['-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', outputPath], { timeoutMs: 300000, signal })
+    } finally {
+      if (fs.existsSync(listFile)) fs.rmSync(listFile, { force: true })
+    }
+    const result = { success: true, outputPath, outputs: [outputPath], shots, clips: clipPaths.length }
+    checkpoint({ stage: 'artifact-written', result, shots, clipPaths, clipJobs })
+    return result
+  }
+  persistentTaskRuntime.register('creative.video-generate', executePersistentVideoGeneration, { autoResume: true })
+  persistentTaskRuntime.register('creative.recut-short', executePersistentRecut, { autoResume: true })
+  const runCreativeTask = async (requestId, type, workspaceTaskId, prepared) => {
+    let task = persistentTaskRuntime.enqueue({ id: requestId, type, workspaceTaskId, spec: prepared.spec, approval: prepared.approval })
+    if (task.state === 'waiting_approval') {
+      const approved = await ensurePersistentApproval(task.approval)
+      if (!approved) {
+        persistentTaskRuntime.cancel(requestId)
+        return { success: false, requestId, cancelled: true, error: '已取消：未授权付费云端任务' }
+      }
+      task = persistentTaskRuntime.approve(task.approval.id, task.approval.token)
+    }
+    task = await persistentTaskRuntime.run(requestId)
+    if (task.state !== 'completed') return { success: false, requestId, cancelled: task.state === 'cancelled', error: task.error || '创作任务未完成' }
+    return { ...task.result, requestId }
+  }
   ipcMain.handle('studio:generate-video', async (event, input = {}) => {
     assertTrustedSender(event)
-    return generateVideoAsset(creativeConfig(), {
-      ...input,
-      outputDir: path.join(app.getPath('userData'), 'creative-assets', 'videos')
-    })
+    const requestId = normalizeRequestId(input.requestId, 'video-gen')
+    try {
+      return await runCreativeTask(requestId, 'creative.video-generate', input.workspaceTaskId || `workspace-${requestId}`, preparePersistentVideoGeneration(input))
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   // 拉片重构短片：报告 → AI 镜头脚本 → 逐镜头生视频 → ffmpeg 拼接成片（视频→报告→新成片闭环）
   ipcMain.handle('studio:recut-short', async (event, input = {}) => {
     assertTrustedSender(event)
-    const reportText = String(input.reportText || '').slice(0, 3000)
-    const mediaName = String(input.mediaName || '视频').slice(0, 80)
-    const count = Math.max(2, Math.min(4, Number(input.count) || 3))
-    const seconds = Math.max(2, Math.min(8, Number(input.seconds) || 4))
-    const send = (stage) => {
-      if (!event.sender.isDestroyed()) event.sender.send('studio:recut-progress', { requestId: input.requestId, stage })
-    }
+    const requestId = normalizeRequestId(input.requestId, 'recut')
     try {
-      send('正在把报告浓缩成镜头脚本')
-      const shotPlan = await llmComplete({
-        systemPrompt: '你是短视频导演，只返回 JSON。',
-        prompt: `根据这份视频拉片报告，为《${mediaName}》设计 ${count} 个重构镜头，每个镜头一句中文画面提示词（适合 AI 生视频：具象场景、动作、光线；不要人物正脸特写，不要画面文字）。返回 {"shots":["提示词1","提示词2","提示词3"]}，正好 ${count} 条。\n\n报告：\n${reportText || `主题：${mediaName}`}`,
-        timeoutMs: 90000
-      })
-      const planJson = JSON.parse(/\{[\s\S]*\}/.exec(shotPlan.text || '')?.[0] || '{}')
-      const shots = (Array.isArray(planJson.shots) ? planJson.shots : []).map((shot) => String(shot || '').trim()).filter(Boolean).slice(0, count)
-      if (!shots.length) throw new Error('镜头脚本生成失败，请重试')
-      const clipPaths = []
-      for (let index = 0; index < shots.length; index += 1) {
-        send(`正在生成镜头 ${index + 1}/${shots.length}（每个约 1-2 分钟）`)
-        const clip = await generateVideoAsset(creativeConfig(), {
-          prompt: shots[index], duration: seconds, id: `recut-${Date.now()}-${index + 1}`,
-          outputDir: path.join(app.getPath('userData'), 'creative-assets', 'videos')
-        })
-        clipPaths.push(clip.outputPath)
-      }
-      send('正在拼接成片')
-      if (!videoFrames.availability().available) throw new Error('缺少 ffmpeg 组件（随 yt-dlp 组件包提供）')
-      const listFile = path.join(app.getPath('temp'), `recut-list-${Date.now()}.txt`)
-      fs.writeFileSync(listFile, clipPaths.map((clipPath) => `file '${clipPath.replace(/\\/g, '/')}'`).join('\n'), 'utf8')
-      const safeName = mediaName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.[^.]+$/, '')
-      const outputPath = path.join(app.getPath('documents'), 'AgentPlay 输出', `${safeName}-AgentPlay重构短片-${Date.now()}.mp4`)
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true })
-      await videoFrames.run(['-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', outputPath], { timeoutMs: 300000 })
-      fs.rmSync(listFile, { force: true })
-      return { success: true, outputPath, shots, clips: clipPaths.length }
+      return await runCreativeTask(requestId, 'creative.recut-short', input.workspaceTaskId || `workspace-${requestId}`, preparePersistentRecut(input))
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
     }
+  })
+  ipcMain.handle('studio:task-cancel', (event, requestId) => {
+    assertTrustedSender(event)
+    const controller = activeCreativeTasks.get(String(requestId || ''))
+    controller?.abort()
+    return persistentTaskRuntime.cancel(String(requestId || '')) || Boolean(controller)
   })
   ipcMain.handle('studio:generate-voice', async (event, input = {}) => {
     assertTrustedSender(event)
@@ -2685,9 +3755,11 @@ app.whenReady().then(async () => {
         ? path.join(process.resourcesPath, 'bin', 'win', 'ai-player-voice.exe')
         : path.join(__dirname, '..', 'resources', 'bin', 'win', 'ai-player-voice.exe')
     }
-    return input.engine === 'cloud'
-      ? synthesizeCloudVoice(creativeConfig(), request)
-      : synthesizeSystemVoice(request)
+    if (input.engine !== 'cloud') return synthesizeSystemVoice(request)
+    const config = cloudConfigForExplicitFeature()
+    const approved = await ensurePersistentApproval({ action: 'paid', summary: `把配音文案发送给 ${config.providerName || config.providerId} · ${config.model}；可能消耗你的云端额度或产生费用` })
+    if (!approved) return { success: false, cancelled: true, error: '已取消：未授权付费云端任务' }
+    return synthesizeCloudVoice(config, request)
   })
   ipcMain.handle('studio:select-asset', async (event, kind) => {
     assertTrustedSender(event)
@@ -2862,9 +3934,41 @@ app.whenReady().then(async () => {
   ipcMain.handle('wifi:stop', (event) => {
     assertTrustedSender(event);
     wifiTransfer?.stop(); return true })
-  ipcMain.handle('tmdb:search', (_e, name, apiKey) => { assertTrustedSender(_e); return searchMovie(name, apiKey || process.env.TMDB_API_KEY) })
-  ipcMain.handle('subtitle:search', (_e, name, apiKey) => { assertTrustedSender(_e); return searchSubtitle(name, apiKey || process.env.OPENSUBTITLES_API_KEY) })
-  ipcMain.handle('subtitle:download', (_e, fileId, apiKey) => { assertTrustedSender(_e); return downloadSubtitle(fileId, apiKey || process.env.OPENSUBTITLES_API_KEY) })
+  const serviceCredentialStatus = () => {
+    const status = serviceCredentialStore.publicStatus()
+    const environment = {
+      tmdb: Boolean(process.env.TMDB_API_KEY),
+      opensubtitles: Boolean(process.env.OPENSUBTITLES_API_KEY)
+    }
+    return {
+      ...status,
+      services: Object.fromEntries(Object.entries(status.services).map(([service, value]) => [service, {
+        ...value,
+        hasKey: value.hasKey || environment[service],
+        source: value.hasKey ? 'system' : environment[service] ? 'environment' : 'none'
+      }]))
+    }
+  }
+  const serviceKey = (service) => serviceCredentialStore.get(service)
+    || (service === 'tmdb' ? process.env.TMDB_API_KEY : process.env.OPENSUBTITLES_API_KEY)
+    || ''
+  ipcMain.handle('serviceCredentials:status', (event) => {
+    assertTrustedSender(event)
+    return serviceCredentialStatus()
+  })
+  ipcMain.handle('serviceCredentials:save', (event, input) => {
+    assertTrustedSender(event)
+    serviceCredentialStore.save(input)
+    return serviceCredentialStatus()
+  })
+  ipcMain.handle('tmdb:search', (_e, name) => { assertTrustedSender(_e); return searchMovie(name, serviceKey('tmdb')) })
+  ipcMain.handle('subtitle:search', (_e, name) => { assertTrustedSender(_e); return searchSubtitle(name, serviceKey('opensubtitles')) })
+  ipcMain.handle('subtitle:download', async (_e, fileId) => {
+    assertTrustedSender(_e)
+    const result = await downloadSubtitle(fileId, serviceKey('opensubtitles'))
+    if (result.success && result.path) authorizeDerivedSubtitle(result.path)
+    return result
+  })
   ipcMain.handle('media:analyze', (_e, dir) => {
     assertTrustedSender(_e)
     try {
@@ -2874,13 +3978,24 @@ app.whenReady().then(async () => {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
-  ipcMain.handle('media:dedup', (_e, dir) => {
-    assertTrustedSender(_e)
+  ipcMain.handle('media:dedup', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const request = typeof input === 'string' ? { dir: input } : input
+    const dir = request.dir || request.directoryPath
+    const requestId = normalizeRequestId(request.requestId, 'media-dedup')
     try {
-      const files = analyzeDir(dir ? assertAllowedPath(dir) : defaultVideoDir())
-      return findDuplicates(files)
+      const rootPath = dir ? assertAllowedPath(dir) : defaultVideoDir()
+      persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'media.dedup',
+        workspaceTaskId: request.workspaceTaskId,
+        spec: { root: frozenDirectoryRoot(rootPath) }
+      })
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, requestId, cancelled: task.state === 'cancelled', error: task.error || '重复文件检查未完成', duplicates: [], filesScanned: 0 }
+      return { ...task.result, requestId }
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error), duplicates: [], filesScanned: 0 }
     }
   })
   ipcMain.handle('media:suggest', (_e, dir) => {
@@ -2920,13 +4035,42 @@ app.whenReady().then(async () => {
   ipcMain.handle('receiver:stop', (event) => {
     assertTrustedSender(event);
     dlnaReceiver?.stop(); return true })
-  ipcMain.handle('plugin:list', (event) => { assertTrustedSender(event); return listPlugins() })
+  ipcMain.handle('plugin:list', (event) => { assertTrustedSender(event); return pluginService?.refresh() || [] })
+  ipcMain.handle('plugin:refresh', (event) => { assertTrustedSender(event); return pluginService?.refresh() || [] })
+  ipcMain.handle('plugin:install', async (event) => {
+    assertTrustedSender(event)
+    const selection = await dialog.showOpenDialog(mainWindow, {
+      title: '选择 AgentPlay 插件包文件夹',
+      properties: ['openDirectory']
+    })
+    if (selection.canceled || !selection.filePaths[0]) return { cancelled: true, plugins: pluginService?.refresh() || [] }
+    try {
+      return { success: true, plugins: pluginService.installFromDirectory(selection.filePaths[0]) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), plugins: pluginService?.refresh() || [] }
+    }
+  })
+  ipcMain.handle('plugin:setEnabled', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      return { success: true, plugins: pluginService.setEnabled(String(input.id || ''), input.enabled === true, input.permissions) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), plugins: pluginService?.refresh() || [] }
+    }
+  })
+  ipcMain.handle('plugin:remove', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      return { success: true, plugins: pluginService.remove(String(input.id || ''), input.confirmed === true) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), plugins: pluginService?.refresh() || [] }
+    }
+  })
   ipcMain.handle('plugin:openFolder', async (event) => {
     assertTrustedSender(event)
     const { shell } = require('electron')
-    const { PLUGIN_DIR } = require('./plugin-service')
-    fs.mkdirSync(PLUGIN_DIR, { recursive: true })
-    const error = await shell.openPath(PLUGIN_DIR)
+    fs.mkdirSync(pluginService.rootDir, { recursive: true })
+    const error = await shell.openPath(pluginService.rootDir)
     return error ? { success: false, error } : { success: true }
   })
   ipcMain.handle('cast:scan', (event) => { assertTrustedSender(event); return castService.scan() })
@@ -3002,6 +4146,19 @@ app.whenReady().then(async () => {
     const { shell } = require('electron')
     shell.showItemInFolder(path.resolve(String(filePath || '')))
     return true
+  })
+  ipcMain.handle('system:verifyPaths', (event, filePaths) => {
+    assertTrustedSender(event)
+    return (Array.isArray(filePaths) ? filePaths : []).slice(0, 20).map((filePath) => {
+      const original = String(filePath || '')
+      try {
+        const resolved = assertAllowedPath(original, { denyExecutable: true })
+        const stat = fs.statSync(resolved)
+        return { path: original, exists: stat.isFile(), bytes: stat.isFile() ? stat.size : 0 }
+      } catch (error) {
+        return { path: original, exists: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    })
   })
   ipcMain.handle('system:openPath', async (_e, filePath) => {
     assertTrustedSender(_e)
@@ -3106,6 +4263,9 @@ app.whenReady().then(async () => {
     }
   })()
 
+  // 注册完所有执行器和 IPC 后再恢复；长任务在后台继续，渲染进程可通过 list/event 回接状态。
+  void persistentTaskRuntime.startRecoverable().catch((error) => log.error('持久任务恢复失败', error))
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -3126,6 +4286,8 @@ app.on('before-quit', () => {
   // 统一收尸：分析/下载/实时字幕/镜像/转写，退出不留孤儿进程
   for (const controller of activeAnalysisRequests.values()) controller.abort()
   for (const controller of activeMediaDownloads.values()) controller.abort()
+  for (const controller of activeMediaTasks.values()) controller.abort()
+  for (const controller of activeCreativeTasks.values()) controller.abort()
   try { liveSubtitleSession?.stop?.() } catch { /* 忽略 */ }
   try { mirrorReceiver?.stop() } catch { /* 忽略 */ }
   if (mirrorCaptureTimer) clearInterval(mirrorCaptureTimer)

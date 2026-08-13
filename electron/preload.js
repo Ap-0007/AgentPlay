@@ -1,5 +1,5 @@
 // preload: 暴露桌面端原生 API 给渲染进程
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 const openFileSubscribers = new Set()
 const pendingOpenFiles = []
@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   isElectron: true,
   version: ipcRenderer.sendSync('app:version'),
   ai: {
-    chat: (messages, context, requestId) => ipcRenderer.invoke('ai:chat', messages, context, requestId),
+    chat: (messages, context, requestId, agentOptions) => ipcRenderer.invoke('ai:chat', messages, context, requestId, agentOptions),
     cancel: (requestId) => ipcRenderer.invoke('ai:cancel', requestId),
     onStream: (cb) => {
       const handler = (_event, payload) => cb(payload)
@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     selectFiles: () => ipcRenderer.invoke('documents:select-files'),
     plan: (input) => ipcRenderer.invoke('documents:plan', input),
     attachPaths: (filePaths) => ipcRenderer.invoke('documents:attach-paths', filePaths),
+    previewText: (filePath) => ipcRenderer.invoke('documents:preview-text', filePath),
     history: () => ipcRenderer.invoke('documents:history'),
     run: (input) => ipcRenderer.invoke('documents:run', input),
     cancel: (requestId) => ipcRenderer.invoke('documents:cancel', requestId),
@@ -91,6 +92,9 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   models: {
     providers: () => ipcRenderer.invoke('models:providers'),
     config: (role = 'chat') => ipcRenderer.invoke('models:config', role),
+    routingStatus: () => ipcRenderer.invoke('models:routing-status'),
+    routingSettings: (input) => ipcRenderer.invoke('models:routing-settings', input),
+    disconnect: (input) => ipcRenderer.invoke('models:disconnect', input),
     save: (config) => ipcRenderer.invoke('models:save', config),
     list: (config) => ipcRenderer.invoke('models:list', config),
     test: (config) => ipcRenderer.invoke('models:test', config),
@@ -105,6 +109,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   mediaBatch: {
     run: (input) => ipcRenderer.invoke('media:batch', input),
+    cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId),
     onProgress: (cb) => {
       const handler = (_event, payload) => cb(payload)
       ipcRenderer.on('media:batch-progress', handler)
@@ -112,7 +117,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     }
   },
   mediaTools: {
-    compress: (input) => ipcRenderer.invoke('media:compress', input)
+    compress: (input) => ipcRenderer.invoke('media:compress', input),
+    cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId)
   },
   guide: {
     annotate: (question) => ipcRenderer.invoke('guide:annotate', question),
@@ -132,7 +138,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     scan: (dir) => ipcRenderer.invoke('files:scan', dir),
     defaultDir: () => ipcRenderer.invoke('files:defaultDir'),
     readText: (filePath) => ipcRenderer.invoke('files:readText', filePath),
-    readDataUrl: (filePath) => ipcRenderer.invoke('files:readDataUrl', filePath)
+    readDataUrl: (filePath) => ipcRenderer.invoke('files:readDataUrl', filePath),
+    getPathForFile: (file) => webUtils.getPathForFile(file)
   },
   sync: {
     url: () => ipcRenderer.invoke('sync:url'),
@@ -156,7 +163,11 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     allowFirewall: () => ipcRenderer.invoke('cast:allow-firewall')
   },
   tmdb: {
-    search: (name, apiKey) => ipcRenderer.invoke('tmdb:search', name, apiKey)
+    search: (name) => ipcRenderer.invoke('tmdb:search', name)
+  },
+  serviceCredentials: {
+    status: () => ipcRenderer.invoke('serviceCredentials:status'),
+    save: (input) => ipcRenderer.invoke('serviceCredentials:save', input)
   },
   wifi: {
     url: () => ipcRenderer.invoke('wifi:url'),
@@ -169,11 +180,21 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   plugin: {
     list: () => ipcRenderer.invoke('plugin:list'),
+    refresh: () => ipcRenderer.invoke('plugin:refresh'),
+    install: () => ipcRenderer.invoke('plugin:install'),
+    setEnabled: (input) => ipcRenderer.invoke('plugin:setEnabled', input),
+    remove: (input) => ipcRenderer.invoke('plugin:remove', input),
     openFolder: () => ipcRenderer.invoke('plugin:openFolder')
   },
   media: {
     analyze: (dir) => ipcRenderer.invoke('media:analyze', dir),
-    dedup: (dir) => ipcRenderer.invoke('media:dedup', dir),
+    dedup: (input) => ipcRenderer.invoke('media:dedup', input),
+    cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId),
+    onDedupProgress: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('media:dedup-progress', handler)
+      return () => ipcRenderer.removeListener('media:dedup-progress', handler)
+    },
     suggest: (dir) => ipcRenderer.invoke('media:suggest', dir)
   },
   studio: {
@@ -186,6 +207,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     generateImage: (input) => ipcRenderer.invoke('studio:generate-image', input),
     generateVideo: (input) => ipcRenderer.invoke('studio:generate-video', input),
     recutShort: (input) => ipcRenderer.invoke('studio:recut-short', input),
+    cancelTask: (requestId) => ipcRenderer.invoke('studio:task-cancel', requestId),
     onRecutProgress: (cb) => {
       const handler = (_event, payload) => cb(payload)
       ipcRenderer.on('studio:recut-progress', handler)
@@ -243,8 +265,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     save: (dataUrl, suggestedName) => ipcRenderer.invoke('screenshot:save', dataUrl, suggestedName)
   },
   subtitle: {
-    search: (name, apiKey) => ipcRenderer.invoke('subtitle:search', name, apiKey),
-    download: (fileId, apiKey) => ipcRenderer.invoke('subtitle:download', fileId, apiKey)
+    search: (name) => ipcRenderer.invoke('subtitle:search', name),
+    download: (fileId) => ipcRenderer.invoke('subtitle:download', fileId)
   },
   transcribe: {
     status: () => ipcRenderer.invoke('transcribe:status'),
@@ -292,6 +314,17 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('media:download-status', handler)
     }
   },
+  taskRuntime: {
+    list: () => ipcRenderer.invoke('taskRuntime:list'),
+    approve: (input) => ipcRenderer.invoke('taskRuntime:approve', input),
+    resume: (input) => ipcRenderer.invoke('taskRuntime:resume', input),
+    cancel: (id) => ipcRenderer.invoke('taskRuntime:cancel', id),
+    onEvent: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('task-runtime:event', handler)
+      return () => ipcRenderer.removeListener('task-runtime:event', handler)
+    }
+  },
   onlineMedia: {
     search: (input) => ipcRenderer.invoke('onlineMedia:search', input),
     files: (input) => ipcRenderer.invoke('onlineMedia:files', input),
@@ -324,6 +357,10 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('rapidocrPack:progress', handler)
     }
   },
+  unlimitedOcr: {
+    status: (input = {}) => ipcRenderer.invoke('unlimitedOcr:status', input),
+    save: (input) => ipcRenderer.invoke('unlimitedOcr:save', input)
+  },
   translatePack: {
     status: () => ipcRenderer.invoke('translatePack:status'),
     download: () => ipcRenderer.invoke('translatePack:download'),
@@ -336,6 +373,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   subtitleBilingual: {
     generate: (input) => ipcRenderer.invoke('subtitle:bilingual-generate', input),
+    cancel: (requestId) => ipcRenderer.invoke('subtitle:bilingual-cancel', requestId),
     onStatus: (cb) => {
       const handler = (_event, payload) => cb(payload)
       ipcRenderer.on('subtitle:bilingual-status', handler)
@@ -366,7 +404,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   system: {
     openPath: (filePath) => ipcRenderer.invoke('system:openPath', filePath),
-    showInFolder: (filePath) => ipcRenderer.invoke('system:showInFolder', filePath)
+    showInFolder: (filePath) => ipcRenderer.invoke('system:showInFolder', filePath),
+    verifyPaths: (filePaths) => ipcRenderer.invoke('system:verifyPaths', filePaths)
   },
   print: {
     file: (filePath) => ipcRenderer.invoke('print:file', filePath),
@@ -384,6 +423,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     setPictureMode: (mode) => ipcRenderer.invoke('mpv:picture-mode', mode),
     loadSubtitle: (p) => ipcRenderer.invoke('mpv:subtitle', p),
     setSubtitleVisible: (v) => ipcRenderer.invoke('mpv:subtitle-visible', v),
+    setSubtitlePosition: (position) => ipcRenderer.invoke('mpv:subtitle-position', position),
     stop: () => ipcRenderer.invoke('mpv:stop'),
     screenshot: (suggestedName) => ipcRenderer.invoke('mpv:screenshot', suggestedName),
     setPlayerArea: (rect) => ipcRenderer.send('mpv:playerArea', rect),
@@ -402,4 +442,4 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   }
 })
 
-console.log('[preload] AI播放器 desktop API 已注入（含 mpv player）')
+console.log('[preload] AgentPlay desktop API 已注入（含 mpv player）')

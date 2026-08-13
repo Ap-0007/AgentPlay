@@ -76,14 +76,28 @@ function fileNameFor(parsed, contentType) {
   return sanitizeFileName(decoded + (extByType[contentType] || '.mp4'))
 }
 
-async function downloadRemoteMedia(url, { destDir, onProgress, signal, fetchImpl, dnsLookup } = {}) {
+async function downloadRemoteMedia(url, { destDir, onProgress, onCheckpoint, checkpoint, signal, fetchImpl, dnsLookup } = {}) {
   const fetcher = fetchImpl || globalThis.fetch
   if (!fetcher) throw new Error('当前环境缺少下载能力')
-  let current = String(url || '').trim()
+  let current = String(checkpoint?.finalUrl || url || '').trim()
   let response = null
+  let resumeTempPath = ''
+  let resumeReceived = 0
+  if (checkpoint?.tempPath) {
+    const candidate = path.resolve(String(checkpoint.tempPath))
+    const root = path.resolve(destDir) + path.sep
+    if (candidate.startsWith(root) && candidate.endsWith('.agentplay.part') && fs.existsSync(candidate)) {
+      resumeTempPath = candidate
+      resumeReceived = fs.statSync(candidate).size
+    }
+  }
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     await assertUrlAllowed(current, { dnsLookup })
-    response = await fetcher(current, { redirect: 'manual', signal })
+    response = await fetcher(current, {
+      redirect: 'manual',
+      signal,
+      ...(resumeReceived > 0 ? { headers: { Range: `bytes=${resumeReceived}-` } } : {})
+    })
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get('location')
       if (!location) throw new Error(`链接返回 ${response.status} 但没有跳转地址`)
@@ -99,14 +113,25 @@ async function downloadRemoteMedia(url, { destDir, onProgress, signal, fetchImpl
   if (contentType && !contentType.startsWith('video/') && !contentType.startsWith('audio/') && contentType !== 'application/octet-stream') {
     throw new Error(`链接内容不是音视频（${contentType}）；站点链接（B站/YouTube/抖音）请等 yt-dlp 组件，或直接给视频文件直链`)
   }
-  const total = Number(response.headers.get('content-length')) || 0
+  const contentLength = Number(response.headers.get('content-length')) || 0
+  const contentRange = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(String(response.headers.get('content-range') || ''))
+  const acceptedResume = response.status === 206 && resumeReceived > 0 && Number(contentRange?.[1]) === resumeReceived
+  const total = contentRange?.[3] && contentRange[3] !== '*'
+    ? Number(contentRange[3])
+    : contentLength + (acceptedResume ? resumeReceived : 0)
   if (total > MAX_BYTES) throw new Error('文件超过 2GB 下载上限')
   const parsed = new URL(current)
   fs.mkdirSync(destDir, { recursive: true })
-  const finalPath = path.join(destDir, fileNameFor(parsed, contentType))
-  const tempPath = `${finalPath}.${process.pid}.part`
-  const out = fs.createWriteStream(tempPath)
-  let received = 0
+  const checkpointFinalPath = checkpoint?.finalPath ? path.resolve(String(checkpoint.finalPath)) : ''
+  const destRoot = path.resolve(destDir) + path.sep
+  const finalPath = acceptedResume && checkpointFinalPath.startsWith(destRoot)
+    ? checkpointFinalPath
+    : path.join(destDir, fileNameFor(parsed, contentType))
+  const tempPath = acceptedResume ? resumeTempPath : `${finalPath}.agentplay.part`
+  if (!acceptedResume && fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true })
+  const out = fs.createWriteStream(tempPath, { flags: acceptedResume ? 'a' : 'w' })
+  let received = acceptedResume ? resumeReceived : 0
+  onCheckpoint?.({ received, total, tempPath, finalPath, finalUrl: current })
   try {
     const reader = response.body.getReader()
     for (;;) {
@@ -117,6 +142,7 @@ async function downloadRemoteMedia(url, { destDir, onProgress, signal, fetchImpl
       if (received > MAX_BYTES) throw new Error('文件超过 2GB 下载上限')
       out.write(Buffer.from(value))
       onProgress?.({ received, total })
+      onCheckpoint?.({ received, total, tempPath, finalPath, finalUrl: current })
     }
     await new Promise((resolve, reject) => { out.end((error) => (error ? reject(error) : resolve())) })
     if (total && received !== total) throw new Error(`下载不完整（${received}/${total} 字节）`)
@@ -124,7 +150,6 @@ async function downloadRemoteMedia(url, { destDir, onProgress, signal, fetchImpl
     return { outputPath: finalPath, bytes: received, finalUrl: current }
   } catch (error) {
     try { out.destroy() } catch { /* 已关闭 */ }
-    try { fs.rmSync(tempPath, { force: true }) } catch { /* 临时文件不存在 */ }
     throw error
   }
 }

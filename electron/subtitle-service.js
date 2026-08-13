@@ -9,7 +9,7 @@ async function searchSubtitle(name, apiKey) {
       'https://api.opensubtitles.com/api/v1/subtitles?query=' +
         encodeURIComponent(name) +
         '&languages=zh,en',
-      { headers: { 'Api-Key': apiKey, 'User-Agent': 'AIPlayer/1.0' }, signal: AbortSignal.timeout(10000) }
+      { headers: { 'Api-Key': apiKey, 'User-Agent': 'AgentPlay/1.0' }, signal: AbortSignal.timeout(10000) }
     )
     if (!resp.ok) return { success: false, error: `OpenSubtitles API ${resp.status}` }
     const data = await resp.json()
@@ -38,7 +38,7 @@ async function downloadSubtitle(fileId, apiKey) {
       method: 'POST',
       headers: {
         'Api-Key': apiKey,
-        'User-Agent': 'AIPlayer/1.0',
+        'User-Agent': 'AgentPlay/1.0',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ file_id: Number(fileId) }),

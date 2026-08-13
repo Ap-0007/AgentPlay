@@ -6,187 +6,38 @@ const path = require('path')
 const { normalizeConfig } = require('./model-providers')
 const { safeFetch } = require('./safe-fetch')
 const { ColibriAdapter } = require('./adapters/colibri-adapter')
+const { listAgentTools, getAgentTool, executeAgentTool, listAgentSkillInstructions } = require('./agent-tool-registry')
+const { AgentRunLedger } = require('./agent-run-ledger')
+const agentRuntimePolicyPromise = import('./agent-runtime-policy.mjs')
 
-const TOOLS = [
-  {
-    type: 'function',
-    function: {
-      name: 'pause',
-      description: '暂停播放',
-      parameters: { type: 'object', properties: {} }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'resume',
-      description: '继续播放',
-      parameters: { type: 'object', properties: {} }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'seek',
-      description: '跳转到指定秒数',
-      parameters: {
-        type: 'object',
-        properties: { seconds: { type: 'number', description: '目标秒数' } },
-        required: ['seconds']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'seek_relative',
-      description: '相对当前位置快进或后退',
-      parameters: {
-        type: 'object',
-        properties: { seconds: { type: 'number', description: '正数快进，负数后退' } },
-        required: ['seconds']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'set_volume',
-      description: '设置音量（0-100）',
-      parameters: {
-        type: 'object',
-        properties: { level: { type: 'number', description: '音量 0-100' } },
-        required: ['level']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'set_subtitle',
-      description: '开关字幕',
-      parameters: {
-        type: 'object',
-        properties: { visible: { type: 'boolean', description: 'true显示 false隐藏' } }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'adjust_volume',
-      description: '相对当前音量调高或调低',
-      parameters: {
-        type: 'object',
-        properties: { delta: { type: 'number', description: '音量变化量，正数调高，负数调低' } },
-        required: ['delta']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'set_mute',
-      description: '开启或取消静音',
-      parameters: {
-        type: 'object',
-        properties: { muted: { type: 'boolean' } },
-        required: ['muted']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'set_speed',
-      description: '设置播放倍速（0.25-4）',
-      parameters: {
-        type: 'object',
-        properties: { rate: { type: 'number' } },
-        required: ['rate']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'adjust_speed',
-      description: '相对当前倍速加快或减慢',
-      parameters: {
-        type: 'object',
-        properties: { delta: { type: 'number' } },
-        required: ['delta']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'set_picture_mode',
-      description: '设置画面呈现方式',
-      parameters: {
-        type: 'object',
-        properties: { mode: { type: 'string', enum: ['original', 'fit', 'fill', 'stretch'] } },
-        required: ['mode']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'set_window_preset',
-      description: '设置播放器窗口大小',
-      parameters: {
-        type: 'object',
-        properties: { preset: { type: 'string', enum: ['original', 'half', 'fill', 'fullscreen'] } },
-        required: ['preset']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'screenshot',
-      description: '截取当前视频画面并让用户选择保存位置',
-      parameters: { type: 'object', properties: {} }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'print_file',
-      description: '打印图片或PDF文件',
-      parameters: {
-        type: 'object',
-        properties: { file_path: { type: 'string', description: '文件路径' } },
-        required: ['file_path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'summarize_video',
-      description: '总结当前视频内容',
-      parameters: { type: 'object', properties: {} }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'load_subtitle',
-        description: '加载字幕文件（srt/ass/vtt）',
-        parameters: {
-          type: 'object',
-          properties: { file_path: { type: 'string', description: '字幕文件路径' } },
-          required: ['file_path']
-        }
-      }
-    }
-  ]
-
-const SYSTEM_PROMPT = `你是"AI播放器"的 Agent 助手。用户用自然语言控制播放器，你调用工具执行。
+const SYSTEM_PROMPT = `你是 AgentPlay 的 Agent 助手。用户用自然语言控制播放器，你调用工具执行。
 可用工具：暂停/继续、绝对或相对跳转、音量/静音、倍速、字幕、画面模式、窗口模式、截图、加载字幕、打印、视频摘要。摘要工具返回 transcript 时，必须基于 transcript 给出简洁摘要和章节；工具明确失败时不得编造内容。用中文简洁回复。`
+
+function friendlyModelError(error, config = {}) {
+  const message = String(error?.message || error || '')
+  if (!/exceed(?:s|ed)?\s+(?:the\s+)?available context|exceed_context_size|context (?:size|window)|上下文.{0,8}(?:超过|超限)/i.test(message)) return message
+  const counts = [...message.matchAll(/(\d+)\s*tokens?/gi)].map((match) => Number(match[1]))
+  const requested = counts[0] || '超出限制'
+  const limit = counts[1] || '有限'
+  const label = [config.providerName, config.model].filter(Boolean).join('（') + (config.providerName && config.model ? '）' : '')
+  return `当前${label || '模型'}一次最多处理约 ${limit} tokens，本次请求约 ${requested} tokens。AgentPlay 将改用分段处理；如果仍失败，可在模型接入中心选择大上下文云模型。`
+}
+
+function openAIRequestBody(body, config = {}) {
+  const isDeepSeek = config.providerId === 'deepseek' || /^https:\/\/api\.deepseek\.com(?:\/|$)/i.test(config.baseUrl || config.base || '')
+  if (!isDeepSeek || !['enabled', 'disabled'].includes(config.thinkingMode)) return body
+  return { ...body, thinking: { type: config.thinkingMode } }
+}
+
+async function resolveRuntime(mode, tools = null, taskPrompt = SYSTEM_PROMPT) {
+  const policy = await agentRuntimePolicyPromise
+  const pluginEnabled = tools === null
+  const availableTools = pluginEnabled ? listAgentTools() : tools
+  const runtime = policy.resolveAgentRuntime(mode, availableTools)
+  const skills = pluginEnabled ? listAgentSkillInstructions() : ''
+  const combinedPrompt = skills ? `${taskPrompt}\n\n[已启用的本地 Skill]\n${skills}` : taskPrompt
+  return { ...runtime, systemPrompt: policy.buildAgentSystemPrompt(combinedPrompt, runtime.mode) }
+}
 
 function durationFromText(text, fallback = null) {
   const hour = text.match(/(\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(?:小时|时)/)
@@ -216,7 +67,8 @@ class AgentEngine {
     } else if (process.env.DEEPSEEK_API_KEY) {
       this.apiBase = 'https://api.deepseek.com/v1'
       this.apiKey = process.env.DEEPSEEK_API_KEY
-      this.model = 'deepseek-chat'
+      this.model = 'deepseek-v4-flash'
+      this.thinkingMode = 'disabled'
     } else if (process.env.VOLCENGINE_API_KEY) {
       this.apiBase = 'https://ark.cn-beijing.volces.com/api/v3'
       this.apiKey = process.env.VOLCENGINE_API_KEY
@@ -238,10 +90,10 @@ class AgentEngine {
       return { ...config, base: config.baseUrl, key: config.apiKey }
     }
     if (!apiKey || apiKey === this.apiKey) {
-      return { base: this.apiBase, baseUrl: this.apiBase, key: apiKey || this.apiKey, model: this.model, protocol: 'openai', providerId: 'environment', localOnly: /^http:\/\/(?:localhost|127\.0\.0\.1)(?::|\/)/i.test(this.apiBase || ''), capabilities: { tools: true, streaming: false } }
+      return { base: this.apiBase, baseUrl: this.apiBase, key: apiKey || this.apiKey, model: this.model, thinkingMode: this.thinkingMode, protocol: 'openai', providerId: 'environment', localOnly: /^http:\/\/(?:localhost|127\.0\.0\.1)(?::|\/)/i.test(this.apiBase || ''), capabilities: { tools: true, streaming: false } }
     }
     if (apiKey.startsWith('sk-')) {
-      return { base: 'https://api.deepseek.com/v1', baseUrl: 'https://api.deepseek.com/v1', key: apiKey, model: 'deepseek-chat', protocol: 'openai', providerId: 'deepseek', capabilities: { tools: true, streaming: false } }
+      return { ...normalizeConfig({ providerId: 'deepseek', apiKey }), base: 'https://api.deepseek.com/v1', key: apiKey }
     }
     return {
       base: 'https://ark.cn-beijing.volces.com/api/v3',
@@ -254,13 +106,14 @@ class AgentEngine {
     }
   }
 
-  async chatAnthropic(messages, config, context) {
+  async chatAnthropic(messages, config, context, runtime, ledger) {
     let msgs = messages.map((message) => ({
       role: message.role === 'assistant' ? 'assistant' : 'user',
       content: String(message.content || '')
     }))
     const toolResults = []
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < runtime.maxToolTurns; i++) {
+      if (!ledger.beginTurn()) return { text: '[达到本次任务时间预算]', toolResults }
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 30000)
       let response
@@ -275,13 +128,13 @@ class AgentEngine {
           body: JSON.stringify({
             model: config.model,
             max_tokens: 2048,
-            system: SYSTEM_PROMPT,
+            system: runtime.systemPrompt,
             messages: msgs,
-            tools: TOOLS.map((tool) => ({
+            ...(runtime.tools.length > 0 ? { tools: runtime.tools.map((tool) => ({
               name: tool.function.name,
               description: tool.function.description,
               input_schema: tool.function.parameters
-            }))
+            })) } : {})
           }),
           signal: controller.signal
         })
@@ -298,7 +151,9 @@ class AgentEngine {
       msgs.push({ role: 'assistant', content: blocks })
       const results = []
       for (const call of calls) {
-        const result = await this.executeTool(call.name, call.input || {}, context)
+        const result = runtime.canUseTool(call.name)
+          ? await this.executeTool(call.name, call.input || {}, context, ledger)
+          : { success: false, error: `当前${runtime.label}模式不允许工具 ${call.name}` }
         toolResults.push({ tool: call.name, args: call.input || {}, result })
         results.push({ type: 'tool_result', tool_use_id: call.id, content: JSON.stringify(result) })
       }
@@ -307,13 +162,14 @@ class AgentEngine {
     return { text: '[达到最大工具调用次数]', toolResults }
   }
 
-  async chatGemini(messages, config, context) {
+  async chatGemini(messages, config, context, runtime, ledger) {
     let contents = messages.map((message) => ({
       role: message.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: String(message.content || '') }]
     }))
     const toolResults = []
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < runtime.maxToolTurns; i++) {
+      if (!ledger.beginTurn()) return { text: '[达到本次任务时间预算]', toolResults }
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 30000)
       let response
@@ -322,13 +178,13 @@ class AgentEngine {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            systemInstruction: { parts: [{ text: runtime.systemPrompt }] },
             contents,
-            tools: [{ functionDeclarations: TOOLS.map((tool) => ({
+            ...(runtime.tools.length > 0 ? { tools: [{ functionDeclarations: runtime.tools.map((tool) => ({
               name: tool.function.name,
               description: tool.function.description,
               parameters: tool.function.parameters
-            })) }]
+            })) }] } : {})
           }),
           signal: controller.signal
         })
@@ -347,7 +203,9 @@ class AgentEngine {
       const functionParts = []
       for (const part of calls) {
         const call = part.functionCall
-        const result = await this.executeTool(call.name, call.args || {}, context)
+        const result = runtime.canUseTool(call.name)
+          ? await this.executeTool(call.name, call.args || {}, context, ledger)
+          : { success: false, error: `当前${runtime.label}模式不允许工具 ${call.name}` }
         toolResults.push({ tool: call.name, args: call.args || {}, result })
         functionParts.push({ functionResponse: { name: call.name, response: result } })
       }
@@ -409,63 +267,18 @@ class AgentEngine {
     return null
   }
 
-  // 执行工具（连接 mpv）
-  async executeTool(name, args, context = null) {
-    switch (name) {
-      case 'pause':
-        return { success: true, action: 'pause', desc: '已暂停' }
-      case 'resume':
-        return { success: true, action: 'resume', desc: '继续播放' }
-      case 'seek':
-        return { success: true, action: 'seek', value: Math.max(0, Number(args.seconds) || 0), desc: `跳转到 ${Math.max(0, Number(args.seconds) || 0)} 秒` }
-      case 'seek_relative': {
-        const delta = Number(args.seconds) || 0
-        const duration = Number(context?.duration) || Infinity
-        const target = Math.max(0, Math.min(duration, (Number(context?.currentTime) || 0) + delta))
-        return { success: true, action: 'seek', value: target, desc: `${delta >= 0 ? '快进' : '后退'} ${Math.abs(delta)} 秒` }
-      }
-      case 'set_volume':
-        return { success: true, action: 'set_volume', value: Math.max(0, Math.min(100, Number(args.level) || 0)), desc: `音量设为 ${Math.max(0, Math.min(100, Number(args.level) || 0))}` }
-      case 'adjust_volume': {
-        const value = Math.max(0, Math.min(100, (Number(context?.volume) || 0) + (Number(args.delta) || 0)))
-        return { success: true, action: 'set_volume', value, desc: `音量设为 ${value}` }
-      }
-      case 'set_mute': {
-        const muted = Boolean(args.muted)
-        const value = muted ? 0 : Math.max(1, Math.min(100, Number(context?.lastAudibleVolume) || 80))
-        return { success: true, action: 'set_volume', value, desc: muted ? '已静音' : '已取消静音' }
-      }
-      case 'set_speed': {
-        const rate = Math.max(0.25, Math.min(4, Number(args.rate) || 1))
-        return { success: true, action: 'set_speed', value: rate, desc: `播放速度设为 ${rate} 倍` }
-      }
-      case 'adjust_speed': {
-        const rate = Math.max(0.25, Math.min(4, (Number(context?.playbackRate) || 1) + (Number(args.delta) || 0)))
-        return { success: true, action: 'set_speed', value: rate, desc: `播放速度设为 ${rate} 倍` }
-      }
-      case 'set_picture_mode': {
-        const mode = ['original', 'fit', 'fill', 'stretch'].includes(args.mode) ? args.mode : 'fit'
-        const names = { original: '原始比例', fit: '完整显示', fill: '裁剪铺满', stretch: '拉伸铺满' }
-        return { success: true, action: 'set_picture_mode', value: mode, desc: `画面设为${names[mode]}` }
-      }
-      case 'set_window_preset': {
-        const preset = ['original', 'half', 'fill', 'fullscreen'].includes(args.preset) ? args.preset : 'original'
-        const names = { original: '原始窗口', half: '二分之一窗口', fill: '铺满窗口', fullscreen: '全屏窗口' }
-        return { success: true, action: 'set_window_preset', value: preset, desc: `已切换为${names[preset]}` }
-      }
-      case 'screenshot':
-        return { success: true, action: 'screenshot', desc: '已打开截图保存' }
-      case 'set_subtitle':
-        return { success: true, action: 'set_subtitle', value: args.visible, desc: args.visible ? '字幕已开' : '字幕已关' }
-      case 'summarize_video':
-        return this.prepareSummary(context)
-      case 'print_file':
-        return { success: true, action: 'print_file', value: args.file_path, desc: '已打开打印任务' }
-      case 'load_subtitle':
-        return { success: true, action: 'load_subtitle', value: args.file_path, desc: '字幕已加载' }
-      default:
-        return { error: '未知工具: ' + name }
+  // 工具定义、校验、成本与基础执行收敛到 registry；ledger 记录预算和证据。
+  async executeTool(name, args, context = null, ledger = null) {
+    const tool = getAgentTool(name)
+    const ticket = ledger?.beginTool(tool || { name, description: name }, args || {})
+    if (ticket && !ticket.allowed) {
+      return { success: false, error: ticket.error, tool: name, verified: false, budgetExceeded: true }
     }
+    const result = await executeAgentTool(name, args, context, {
+      summarize: (summaryContext) => this.prepareSummary(summaryContext)
+    })
+    ledger?.finishTool(ticket?.step, result)
+    return result
   }
 
   prepareSummary(context) {
@@ -503,15 +316,17 @@ class AgentEngine {
   // 无工具调用的通用文本生成入口。文档工作台使用独立 system prompt，
   // 避免把文档任务误路由成暂停、快进等播放器指令。
   async completeText(messages, apiKey = null, options = {}) {
+    const runtime = await resolveRuntime(options.mode, [], String(options.systemPrompt || '你是 AgentPlay 助手。'))
+    const systemPrompt = runtime.systemPrompt
     // 订阅账号后端（Codex CLI / Claude Code）：不经 resolveProvider 的网络栈，走只读子进程
     const cliProviderId = typeof apiKey === 'object' && apiKey !== null ? apiKey.providerId : null
     if (cliProviderId === 'codex-chatgpt' || cliProviderId === 'claude-code') {
       const { completeViaCodex, completeViaClaude } = require('./cli-model-service')
       const model = typeof apiKey === 'object' && apiKey !== null ? apiKey.model : null
       const result = cliProviderId === 'codex-chatgpt'
-        ? await completeViaCodex({ messages, systemPrompt: options.systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs, onStatus: options.onStatus })
-        : await completeViaClaude({ messages, systemPrompt: options.systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs })
-      return { text: result.text, provider: cliProviderId, model: model || 'default' }
+        ? await completeViaCodex({ messages, systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs, onStatus: options.onStatus })
+        : await completeViaClaude({ messages, systemPrompt, model, signal: options.signal, timeoutMs: options.timeoutMs })
+      return { text: result.text, provider: cliProviderId, model: model || 'default', usage: null }
     }
     const resolved = this.resolveProvider(apiKey)
     const { base, key, model, protocol, providerId, requiresKey = true } = resolved
@@ -519,7 +334,6 @@ class AgentEngine {
       throw new Error('尚未配置可用模型，请先到“功能 → 模型接入中心”保存连接')
     }
 
-    const systemPrompt = String(options.systemPrompt || '你是 AgentPlay 助手。')
     const normalized = messages.map((message) => ({
       role: message.role === 'assistant' ? 'assistant' : 'user',
       content: String(message.content || '')
@@ -535,7 +349,7 @@ class AgentEngine {
         onStatus: options.onStatus
       })
       if (!result.text) throw new Error(result.cancelled ? '生成已取消' : '模型没有返回内容')
-      return { text: result.text, provider: providerId, model }
+      return { text: result.text, provider: providerId, model, usage: result.usage || null }
     }
 
     const controller = new AbortController()
@@ -568,16 +382,16 @@ class AgentEngine {
         response = await safeFetch(resolved, `${base}/chat/completions`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({
+          body: JSON.stringify(openAIRequestBody({
             model,
             messages: [{ role: 'system', content: systemPrompt }, ...normalized],
-            max_tokens: providerId === 'bundled-lite' ? 1536 : 4096,
+            max_tokens: Math.max(1, Number(options.maxTokens) || (providerId === 'bundled-lite' ? 1536 : 4096)),
             temperature: 0.2
-          }),
+          }, resolved)),
           signal: controller.signal
         })
       }
-      if (!response.ok) throw new Error(`模型 API ${response.status}: ${(await response.text()).slice(0, 1000)}`)
+      if (!response.ok) throw new Error(friendlyModelError(`模型 API ${response.status}: ${(await response.text()).slice(0, 1000)}`, resolved))
       const data = await response.json()
       const text = protocol === 'anthropic'
         ? (data.content || []).filter((block) => block.type === 'text').map((block) => block.text).join('\n')
@@ -585,7 +399,7 @@ class AgentEngine {
           ? (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || '').join('\n')
           : data.choices?.[0]?.message?.content
       if (!text) throw new Error('模型没有返回内容')
-      return { text, provider: providerId, model }
+      return { text, provider: providerId, model, usage: data.usage || data.usageMetadata || null }
     } catch (error) {
       if (controller.signal.aborted) throw new Error(options.signal?.aborted ? '生成已取消' : '文档生成超时')
       throw error
@@ -612,6 +426,8 @@ class AgentEngine {
   }
 
   async completeVisionMultiOnce({ prompt, imageDataUrls = [], labels = [], apiKey = null, systemPrompt, signal, timeoutMs, maxTokens = 4096 } = {}) {
+    const runtime = await resolveRuntime('work', [], systemPrompt || '你是 AgentPlay 的图片理解助手。')
+    const resolvedSystemPrompt = runtime.systemPrompt
     const resolved = this.resolveProvider(apiKey)
     const { base, key, model, protocol, requiresKey = true } = resolved
     if (!base || !model || (!key && requiresKey)) {
@@ -645,7 +461,7 @@ class AgentEngine {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
           body: JSON.stringify({
-            model, max_tokens: maxTokens, system: systemPrompt || '你是 AgentPlay 的图片理解助手。',
+            model, max_tokens: maxTokens, system: resolvedSystemPrompt,
             messages: [{ role: 'user', content }]
           }),
           signal: controller.signal
@@ -660,7 +476,7 @@ class AgentEngine {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt || '你是 AgentPlay 的图片理解助手。' }] },
+            systemInstruction: { parts: [{ text: resolvedSystemPrompt }] },
             contents: [{ role: 'user', parts }]
           }),
           signal: controller.signal
@@ -676,15 +492,15 @@ class AgentEngine {
         response = await safeFetch(resolved, `${base}/chat/completions`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({
+          body: JSON.stringify(openAIRequestBody({
             model,
             messages: [
-              { role: 'system', content: systemPrompt || '你是 AgentPlay 的图片理解助手。' },
+              { role: 'system', content: resolvedSystemPrompt },
               { role: 'user', content }
             ],
             max_tokens: maxTokens,
             temperature: 0.2
-          }),
+          }, resolved)),
           signal: controller.signal
         })
       }
@@ -696,7 +512,7 @@ class AgentEngine {
           ? (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || '').join('\n')
           : data.choices?.[0]?.message?.content
       if (!text) throw new Error('视觉模型没有返回内容')
-      return { text, provider: resolved.providerId, model }
+      return { text, provider: resolved.providerId, model, usage: data.usage || data.usageMetadata || null }
     } catch (error) {
       if (controller.signal.aborted) throw new Error(signal?.aborted ? '图片理解已取消' : '图片理解超时')
       throw error
@@ -712,62 +528,83 @@ class AgentEngine {
   }
 
   async chat(messages, apiKey = null, context = null, options = {}) {
+    const runtime = await resolveRuntime(options.mode)
+    const ledger = new AgentRunLedger({
+      requestId: options.requestId,
+      mode: runtime.mode,
+      maxTurns: runtime.maxToolTurns,
+      maxToolCalls: runtime.maxToolCalls,
+      maxElapsedMs: runtime.maxElapsedMs
+    })
+    const finish = (result) => ({
+      ...result,
+      mode: runtime.mode,
+      run: ledger.finish({
+        cancelled: result?.cancelled === true,
+        failed: /^\[(?:网络错误|API 错误|订阅后端错误|Colibri 错误)/.test(String(result?.text || ''))
+      })
+    })
     const latestText = messages.length > 0 ? String(messages[messages.length - 1].content || '') : ''
     const local = this.localCommand(latestText)
     if (local) {
-      const result = await this.executeTool(local[0], local[1], context)
-      return { text: result.desc, toolResults: [{ tool: local[0], args: local[1], result }] }
+      if (!runtime.canUseTool(local[0])) {
+        return finish({ text: `当前为${runtime.label}模式：${runtime.description}。`, toolResults: [] })
+      }
+      ledger.beginTurn()
+      const result = await this.executeTool(local[0], local[1], context, ledger)
+      return finish({ text: result.desc || result.error, toolResults: [{ tool: local[0], args: local[1], result }] })
     }
 
     // 订阅账号后端（Codex CLI / Claude Code）：没有 URL 可言，走只读子进程纯对话（无工具协议）
     const cliProviderId = typeof apiKey === 'object' && apiKey !== null ? apiKey.providerId : null
     if (cliProviderId === 'codex-chatgpt' || cliProviderId === 'claude-code') {
       try {
-        const result = await this.completeText(messages, apiKey, { signal: options.signal, timeoutMs: 180000, onStatus: options.onStatus })
+        const result = await this.completeText(messages, apiKey, { signal: options.signal, timeoutMs: 180000, onStatus: options.onStatus, systemPrompt: SYSTEM_PROMPT, mode: runtime.mode })
         options.onDelta?.(result.text)
-        return { text: result.text, toolResults: [] }
+        return finish({ text: result.text, toolResults: [] })
       } catch (error) {
-        return { text: `[订阅后端错误] ${error instanceof Error ? error.message : String(error)}`, toolResults: [] }
+        return finish({ text: `[订阅后端错误] ${error instanceof Error ? error.message : String(error)}`, toolResults: [] })
       }
     }
 
     const resolved = this.resolveProvider(apiKey)
     const { base, key, model, protocol, providerId, capabilities = {}, requiresKey = true } = resolved
     if (!key && requiresKey) {
-      return {
+      return finish({
         text: '[未配置 API Key] 请从“功能 → 模型接入中心”选择厂商、型号并保存连接。',
         toolResults: []
-      }
+      })
     }
 
-    if (protocol === 'anthropic') return this.chatAnthropic(messages, { ...resolved, base, key, model }, context)
-    if (protocol === 'gemini') return this.chatGemini(messages, { ...resolved, base, key, model }, context)
+    if (protocol === 'anthropic') return finish(await this.chatAnthropic(messages, { ...resolved, base, key, model }, context, runtime, ledger))
+    if (protocol === 'gemini') return finish(await this.chatGemini(messages, { ...resolved, base, key, model }, context, runtime, ledger))
 
-    if (providerId === 'colibri') {
+    if (providerId === 'colibri' && runtime.tools.length === 0) {
       try {
         options.onStatus?.('queued')
         const result = await this.colibri.generate({
           config: resolved,
-          messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
-          tools: TOOLS,
+          messages: [{ role: 'system', content: runtime.systemPrompt }, ...messages],
+          tools: runtime.tools,
           signal: options.signal,
           onDelta: options.onDelta,
           onStatus: options.onStatus
         })
         if (result.cancelled && !result.text) result.text = '[已取消生成]'
-        return result
+        return finish(result)
       } catch (error) {
-        return { text: `[Colibri 错误] ${error instanceof Error ? error.message : String(error)}`, toolResults: [] }
+        return finish({ text: `[Colibri 错误] ${error instanceof Error ? error.message : String(error)}`, toolResults: [] })
       }
     }
 
-    const systemPrompt = SYSTEM_PROMPT
+    const systemPrompt = runtime.systemPrompt
     let msgs = [{ role: 'system', content: systemPrompt }, ...messages]
     const toolResults = []
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < runtime.maxToolTurns; i++) {
+      if (!ledger.beginTurn()) return finish({ text: '[达到本次任务时间预算]', toolResults })
       // 外层取消信号贯穿工具循环：面板"停止"不再只停个壳
-      if (options.signal?.aborted) return { text: '[已取消]', toolResults }
+      if (options.signal?.aborted) return finish({ text: '[已取消]', toolResults, cancelled: true })
       const controller = new AbortController()
       const onOuterAbort = () => controller.abort()
       options.signal?.addEventListener('abort', onOuterAbort, { once: true })
@@ -782,16 +619,16 @@ class AgentEngine {
           body.temperature = 0.2
           body.top_p = 0.8
         }
-        if (capabilities.tools !== false) body.tools = TOOLS
+        if (capabilities.tools !== false && runtime.tools.length > 0) body.tools = runtime.tools
         resp = await safeFetch(resolved, `${base}/chat/completions`, {
           method: 'POST',
           headers,
-          body: JSON.stringify(body),
+          body: JSON.stringify(openAIRequestBody(body, resolved)),
           signal: controller.signal
         })
       } catch (e) {
-        if (options.signal?.aborted) return { text: '[已取消]', toolResults }
-        return { text: `[网络错误] ${e instanceof Error ? e.message : String(e)}`, toolResults }
+        if (options.signal?.aborted) return finish({ text: '[已取消]', toolResults, cancelled: true })
+        return finish({ text: `[网络错误] ${e instanceof Error ? e.message : String(e)}`, toolResults })
       } finally {
         clearTimeout(timer)
         options.signal?.removeEventListener('abort', onOuterAbort)
@@ -799,28 +636,30 @@ class AgentEngine {
 
       if (!resp.ok) {
         const errText = await resp.text()
-        return { text: `[API 错误 ${resp.status}] ${errText}`, toolResults }
+        return finish({ text: `[API 错误 ${resp.status}] ${errText}`, toolResults })
       }
 
       const data = await resp.json()
       const msg = data.choices[0].message
 
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        return { text: msg.content || '(无回复)', toolResults }
+        return finish({ text: msg.content || '(无回复)', toolResults })
       }
 
       msgs.push(msg)
       for (const tc of msg.tool_calls) {
         let args = {}
         try { args = JSON.parse(tc.function.arguments || '{}') } catch {}
-        const result = await this.executeTool(tc.function.name, args, context)
+        const result = runtime.canUseTool(tc.function.name)
+          ? await this.executeTool(tc.function.name, args, context, ledger)
+          : { success: false, error: `当前${runtime.label}模式不允许工具 ${tc.function.name}` }
         toolResults.push({ tool: tc.function.name, args, result })
         msgs.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) })
       }
     }
 
-    return { text: '[达到最大工具调用次数]', toolResults }
+    return finish({ text: '[达到最大工具调用次数]', toolResults })
   }
 }
 
-module.exports = { AgentEngine }
+module.exports = { AgentEngine, friendlyModelError, openAIRequestBody }

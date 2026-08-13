@@ -100,7 +100,7 @@ test('subtitle chain prefers offline engine and exposes pack download IPC', () =
   assert.match(main, /pickTranslateEngine/)
   assert.match(main, /ipcMain\.handle\('translatePack:status'/)
   assert.match(main, /ipcMain\.handle\('translatePack:download'/)
-  assert.match(main, /translateEntries\(entries, engine\.complete\)/)
+  assert.match(main, /translateEntries\(entries, engine\.complete, \{[\s\S]{0,180}targetLang,[\s\S]{0,120}signal,[\s\S]{0,120}onProgress:/)
   assert.match(main, /complete: engine\.complete, signal: controller\.signal, targetLang/)
   assert.match(preload, /ipcRenderer\.invoke\('translatePack:download'\)/)
   assert.match(preload, /translatePack:status/)

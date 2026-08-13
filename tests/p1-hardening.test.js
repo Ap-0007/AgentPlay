@@ -84,15 +84,15 @@ test('quit cleanup state is declared in the same outer scope as before-quit', ()
 
 test('chat tool loop honours the outer abort signal', () => {
   const llm = source('electron/llm-service.js')
-  assert.match(llm, /options\.signal\?\.aborted\) return \{ text: '\[已取消\]'/)
+  assert.match(llm, /options\.signal\?\.aborted\) return finish\(\{ text: '\[已取消\]'/)
   assert.match(llm, /onOuterAbort/)
 })
 
 test('bilingual generation is cancellable and whispers with a signal', () => {
   const main = source('electron/main.js')
   assert.ok(main.includes("ipcMain.handle('subtitle:bilingual-cancel'"))
-  assert.match(main, /transcriptionService\.transcribe\(\{ sourcePath: mediaPath, lang: 'auto', timestamps: true, signal: controller\.signal \}/)
-  assert.match(main, /activeAnalysisRequests\.set\(cancelKey, controller\)/)
+  assert.match(main, /transcriptionService\.transcribe\(\{ sourcePath: mediaPath, lang: 'auto', timestamps: true, signal \}/)
+  assert.match(main, /persistentTaskRuntime\.cancel\(String\(requestId \|\| ''\)\)/)
 })
 
 test('wifi upload lands via rename or thread-pool copy, never sync copy', () => {

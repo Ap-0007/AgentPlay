@@ -16,7 +16,7 @@ test('document verb flag is detected case-insensitively and only as a full argum
   assert.equal(hasDocumentVerbFlag(['C:\\docs\\a.docx']), false)
   assert.equal(hasDocumentVerbFlag(['--agentplay-documents=x']), false)
   assert.equal(hasDocumentVerbFlag(['--agentplay-documents']), true)
-  assert.equal(hasDocumentVerbFlag(['C:\\app\\AI播放器.exe', ' --AGENTPLAY-DOCUMENTS ']), true)
+  assert.equal(hasDocumentVerbFlag(['C:\\app\\AgentPlay.exe', ' --AGENTPLAY-DOCUMENTS ']), true)
 })
 
 test('document verb extraction only accepts existing files after the flag', () => {
@@ -56,7 +56,7 @@ test('document formats are valid player inputs, so the verb guard in main.js is 
     // .docx is part of ALL_EXTS (media library documents), so without the
     // hasDocumentVerbFlag guard a verb launch would be sent to the player.
     assert.equal(extractExternalMediaPaths([docxPath]).length, 1)
-    const argv = ['C:\\app\\AI播放器.exe', '--agentplay-documents', docxPath]
+    const argv = ['C:\\app\\AgentPlay.exe', '--agentplay-documents', docxPath]
     assert.equal(hasDocumentVerbFlag(argv), true)
     assert.deepEqual(extractDocumentVerbPaths(argv), [path.resolve(docxPath)])
   } finally {

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const executableArg = process.argv.slice(2).find((value) => value.startsWith('--exe='))
 const mediaArg = process.argv.slice(2).find((value) => !value.startsWith('--'))
-const executable = executableArg ? path.resolve(executableArg.slice('--exe='.length)) : path.join(root, 'release', 'win-unpacked', 'AI播放器.exe')
+const executable = executableArg ? path.resolve(executableArg.slice('--exe='.length)) : path.join(root, 'release', 'win-unpacked', 'AgentPlay.exe')
 import os from 'node:os'
 const srcMedia = mediaArg || 'D:/Ai工具升级/测试视频-120秒.mp4'
 const mediaPath = path.join(os.tmpdir(), 'autohide-' + Date.now() + path.extname(srcMedia))

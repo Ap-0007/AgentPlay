@@ -46,7 +46,7 @@ class DlnaReceiver {
       'HTTP/1.1 200 OK',
       'CACHE-CONTROL: max-age=1800',
       'LOCATION: http://' + ip + ':' + this.port + '/device.xml',
-      'SERVER: AIPlayer/1.0 UPnP/1.1',
+      'SERVER: AgentPlay/1.0 UPnP/1.1',
       'ST: urn:schemas-upnp-org:device:MediaRenderer:1',
       'USN: ' + this.udn + '::urn:schemas-upnp-org:device:MediaRenderer:1',
       '',
@@ -114,8 +114,8 @@ class DlnaReceiver {
   <specVersion><major>1</major><minor>0</minor></specVersion>
   <device>
     <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
-    <friendlyName>AI播放器</friendlyName>
-    <manufacturer>AIPlayer</manufacturer>
+    <friendlyName>AgentPlay</friendlyName>
+    <manufacturer>AgentPlay</manufacturer>
     <UDN>${this.udn}</UDN>
     <serviceList>
       <service>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="120" y1="96" x2="890" y2="930" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E7F3FF"/>
+    </linearGradient>
+    <linearGradient id="bird" x1="230" y1="250" x2="820" y2="800" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#27D3F5"/>
+      <stop offset="0.52" stop-color="#2EA7F2"/>
+      <stop offset="1" stop-color="#3978F6"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#4A86C7" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect x="36" y="36" width="952" height="952" rx="238" fill="url(#tile)" filter="url(#shadow)"/>
+  <rect x="37" y="37" width="950" height="950" rx="237" stroke="#D8E9F8" stroke-width="2"/>
+  <g transform="translate(19 20) scale(46)">
+    <path d="M4 13c5.2-.1 8.8-2.7 13.5-8-1.2 5-3.4 9.5-8.7 12.4L4 19l1.6-4.2L4 13Zm5.8-3.2L5.4 5.7l6 .9"
+      stroke="#45BFF4" stroke-opacity="0.15" stroke-width="3.35" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4 13c5.2-.1 8.8-2.7 13.5-8-1.2 5-3.4 9.5-8.7 12.4L4 19l1.6-4.2L4 13Zm5.8-3.2L5.4 5.7l6 .9"
+      stroke="url(#bird)" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

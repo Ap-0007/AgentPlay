@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url)
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const asar = require(path.join(root, 'node_modules', '.pnpm', '@electron+asar@3.4.1', 'node_modules', '@electron', 'asar'))
 const sevenZip = path.join(root, 'node_modules', '.pnpm', '7zip-bin@5.2.0', 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe')
-const standard = path.join(root, 'release', `AI播放器标准版安装包-${pkg.version}.exe`)
+const standard = path.join(root, 'release', `AgentPlay-标准版安装包-${pkg.version}.exe`)
 
 function sha256(filePath) {
   const hash = crypto.createHash('sha256')

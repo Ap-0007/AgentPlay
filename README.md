@@ -1,19 +1,19 @@
-# AgentPlay（AI播放器）
+# AgentPlay
 
 AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的基础上，提供字幕、翻译、拉片、深度解剖、原创重构、成片渲染、模型接入与受控的电脑操作能力。
 
-开源项目与未来仓库统一使用 `AgentPlay`。Windows 0.7.x 继续保留 `ai-player` 内部包名、“AI播放器”产品名与可执行文件名，以兼容已有用户数据、安装路径和“打开方式”注册；正式改名必须经过带数据与旧关联迁移的版本升级，不能只改文件名。
+开源项目、桌面端、Web/PWA、Android、浏览器扩展和安装包统一使用 `AgentPlay` 名称与飞鸽标识。为兼容已有安装和用户数据，内部包名仍为 `ai-player`、应用标识仍为 `com.aiplayer.app`；品牌升级不得清空模型、历史任务、授权设置或“打开方式”注册。
 
-> 当前源码候选版本：`0.7.6`；公开稳定版为 `0.7.5`。Windows 11 x64 候选包必须通过安装包、真实 EXE、视频加载与链接下载验收后才能发布；macOS、Linux、Android、iOS 尚未完成同等级端到端验证。请以 [MULTIPLATFORM.md](MULTIPLATFORM.md) 为准，不把“代码存在”或“CI 配置存在”当作已交付。
+> 当前源码候选版本：`0.8.0`；公开稳定版为 `0.7.6`。Windows 11 x64 候选包必须通过安装包、真实 EXE、视频加载与链接下载验收后才能发布；macOS、Linux、Android、iOS 尚未完成同等级端到端验证。请以 [MULTIPLATFORM.md](MULTIPLATFORM.md) 为准，不把“代码存在”或“CI 配置存在”当作已交付。
 
 尚未完成的产品深化、跨平台验证和发布顺序统一记录在 [ROADMAP.md](ROADMAP.md)；版本变化见 [CHANGELOG.md](CHANGELOG.md)，维护者发布门禁见 [RELEASING.md](RELEASING.md)。
 
 ## 下载
 
-以下仍是公开稳定版；本地 `0.7.6` 候选包未经签名且尚未发布到 GitHub Release。
+以下仍是公开稳定版；本地 `0.8.0` 候选包未经签名且尚未发布到 GitHub Release。
 
-- [AgentPlay 0.7.5 发布页](https://github.com/wg5759/AgentPlay/releases/tag/v0.7.5)
-- [Windows x64 标准版](https://github.com/wg5759/AgentPlay/releases/download/v0.7.5/AgentPlay-Setup-0.7.5.exe)：不内置模型，SHA-256 `170FF78CA27C080EF6D329C8C71D07B8AA6A73E8AC4BD510158501FEEB7C5DF3`
+- [AgentPlay 0.7.6 发布页](https://github.com/wg5759/AgentPlay/releases/tag/v0.7.6)
+- [Windows x64 标准版](https://github.com/wg5759/AgentPlay/releases/download/v0.7.6/AgentPlay-0.7.6-Windows-x64-Standard.exe)：不内置模型，SHA-256 `B6680A6AE570268D4BA81D5E74CC3DE2D626063FBADCF7387467606F7F63E8CF`
 
 当前版本未购买 Authenticode 代码签名证书，Windows SmartScreen 可能提示“未知发布者”。请只从上述官方 Release 下载并核对 SHA-256。
 
@@ -24,21 +24,25 @@ AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的
 - 字幕发现与加载、语音识别/翻译入口，以及外挂字幕工作流。
 - 拉片标记、证据化深度解剖、片段裁剪重排和项目恢复。
 - AI 成片方案、新镜头素材接入、旁白、系统配音、字幕包装、音乐混音和 MP4 渲染。
-- 模型中心：主流云模型、自定义 OpenAI 兼容接口、Ollama、LM Studio、vLLM、llama.cpp 等本地服务。
+- AI 使用方式：日常只需选择“智能选择 / 只在本机 / 优先效果”；厂商、型号、地址和真实任务评测收进高级设置。已批准的文档、拉片、字幕与创作任务冻结模型身份，重启恢复时不会悄悄换模型。
+- 模型中心：支持主流云模型、自定义 OpenAI 兼容接口、Ollama、LM Studio、vLLM、llama.cpp 等本地服务；Key 先选择来源再仅向该服务验证，并由系统安全存储加密。
 - 局域网投送、设备同步、DLNA 分享/接收；全部默认关闭，由用户显式开启。
 - 可选本地 Qwen2.5-0.5B Q4_0 轻量模型（模型接入中心一键下载组件，含断点续传与 SHA-256 校验），播放器控制仍走本地规则，不让小模型阻塞基础操作。
 - AI 文档工作台：文字输入或语音输入统一驱动文档任务；支持文本/DOCX生成与转换、XLSX清理去重和公式写入、基于 JSZip/Open XML 的确定性 PPTX 生成、PDF合并拆分。所有结果默认另存，复杂内容任务在发送给云端模型前要求用户明确同意。
+- 高级扫描文档解析：硬件合格的用户可自行部署 Unlimited-OCR，再通过高级设置接入 OpenAI-compatible 本机服务；模型权重不进入 AgentPlay 安装包，服务不可用时明确回退本机 OCR。详见 [可选接入说明](docs/UNLIMITED_OCR.md)。
 - 链接视频：B站、YouTube、抖音、X 与 Facebook 统一进入站点下载链；每个识别链接都保留“仅下载”和“下载并拉片”两个选择。需要登录态的平台通过站点登录或导入 Cookies，失败时明确提示，不伪造下载成功。
+- 模型无关 Agent Runtime：Agnes、OpenAI、Claude、Gemini、本地模型与订阅 CLI 共用“问答 / 规划 / 执行 / 自动”四种模式；工具调用受权限和预算约束，任务中心展示真实步骤、证据回执与成果文件校验。
+- 专业视频拉片报告固定为“视频讲了什么”和“专业视听拆解与 AI 复刻”两部分；关键帧覆盖全片，低质量结果经过门禁和一次自动修复，无法确认的摄影参数明确标记为专业估计。
 
 ## Windows 版本与本地 AI
 
-自下一版本起只发布标准版一个安装包。需要离线模型的用户在“模型接入中心”一键下载本地 AI 组件（约 426MB，含 Qwen2.5-0.5B Q4_0 与 llama.cpp 运行时；断点续传、SHA-256 校验、可随时取消），下载完成后离线可用。0.6.1 及更早版本曾提供内置模型的“本地 AI 版”安装包。
+自 0.7.6 起只发布标准版一个安装包。需要离线模型的用户在“模型接入中心”一键下载本地 AI 组件（约 426MB，含 Qwen2.5-0.5B Q4_0 与 llama.cpp 运行时；断点续传、SHA-256 校验、可随时取消），下载完成后离线可用。0.6.1 及更早版本曾提供内置模型的“本地 AI 版”安装包。
 
 模型、密钥和服务能力彼此独立。未配置模型时，正常播放、窗口比例、右键菜单和本地快捷控制仍应工作。
 
 ## Code signing policy
 
-Free code signing provided by SignPath.io, certificate by SignPath Foundation（自首个签名版本起生效；此前版本继续以 SHA-256 校验）。
+未来若通过开源项目资格审核，计划采用：Free code signing provided by SignPath.io, certificate by SignPath Foundation。当前申请已于 2026-07-23 因公开采用与社区可见度证据不足被拒，所有现有版本仍未签名，继续以官方 Release 与 SHA-256 校验为准。
 
 - Committers and reviewers: [wg5759](https://github.com/wg5759)
 - Approvers: [wg5759](https://github.com/wg5759)
@@ -56,6 +60,8 @@ Free code signing provided by SignPath.io, certificate by SignPath Foundation（
 ## 本地开发
 
 需要 Node.js 20+ 与 pnpm。
+
+第三方扩展采用不执行任意代码的声明式插件与 Skill 接口。清单、权限模型、示例和安装生命周期见 [插件与 Skill 开发文档](docs/PLUGINS_AND_SKILLS.md)。
 
 ```powershell
 pnpm install
@@ -89,10 +95,10 @@ pnpm release:public:verify
 
 ## 开源边界
 
-项目自有源代码按 [Apache License 2.0](LICENSE) 开放。第三方组件和模型继续受各自许可约束，参见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。Apache-2.0 不授予“AgentPlay”“AI播放器”名称、蜂鸟图标或其他品牌标识的使用权，参见 [TRADEMARKS.md](TRADEMARKS.md)。
+项目自有源代码按 [Apache License 2.0](LICENSE) 开放。第三方组件和模型继续受各自许可约束，参见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。Apache-2.0 不授予 `AgentPlay` 名称、飞鸽标识或其他品牌资产的使用权，参见 [TRADEMARKS.md](TRADEMARKS.md)。
 
 - 播放器界面、Electron 主进程、模型接入、字幕、拉片、深度解剖、原创重构与安全门禁等项目自研代码全部开放，不保留隐藏的闭源功能模块。
 - 仓库不提交安装包、大模型权重、第三方原生二进制、代码签名证书、用户媒体或 API Key；这些内容受体积、安全或各自许可证约束，不等于项目自研代码闭源。
-- `AgentPlay` 名称、蜂鸟图标和官方发行版视觉识别保留品牌权利。允许修改和分发代码，但衍生版本不能冒充 AgentPlay 官方版本。
+- `AgentPlay` 名称、飞鸽标识和官方发行版视觉识别保留品牌权利。允许修改和分发代码，但衍生版本不能冒充 AgentPlay 官方版本。
 
 参与开发请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请阅读 [SECURITY.md](SECURITY.md)。
