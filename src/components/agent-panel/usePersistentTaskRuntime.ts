@@ -19,7 +19,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isCreative = isVideoGeneration || isRecut
       const isBatch = runtimeTask.type === 'media.batch'
       const isCompress = runtimeTask.type === 'media.compress'
-      const isTrim = runtimeTask.type === 'media.edit-trim'
+      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove'
       const isDedup = runtimeTask.type === 'media.dedup'
       const isDownload = String(runtimeTask.type || '').startsWith('download.')
       const dedupRoot = runtimeTask.spec?.root as { path?: string } | undefined
@@ -54,10 +54,11 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       } else if (isBatch) {
         kind = 'media'; label = batchKind === 'transcribe' ? `批量转写 ${sourceNames.length} 个文件` : `批量压缩 ${sourceNames.length} 个视频`
         instruction = batchKind === 'transcribe' ? '全部转写' : '全部压缩'; source = sourceNames.join('、'); retry = null
-      } else if (isTrim) {
+      } else if (isTimelineEdit) {
         const start = Number(trimDecision?.timeline?.startSeconds) || 0
         const end = Number(trimDecision?.timeline?.endSeconds) || 0
-        kind = 'media'; label = `保留 ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || `保留第${start}秒到第${end}秒`); source = firstSourcePath
+        const removesSegment = runtimeTask.type === 'media.edit-remove'
+        kind = 'media'; label = `${removesSegment ? '删除' : '保留'} ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || `${removesSegment ? '删除' : '保留'}第${start}秒到第${end}秒`); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isCompress) {
         kind = 'media'; label = compressMode === 'remux' ? '转码为 MP4' : `压缩到 ${Number(runtimeTask.spec?.targetMb) || 25}MB`
@@ -75,14 +76,14 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
             : isSubtitle ? '字幕生成完成（已从检查点恢复）'
               : isCreative ? '创作任务完成（已从检查点恢复）'
                 : isBatch ? `批量${batchKind === 'transcribe' ? '转写' : '压缩'}完成（已从检查点恢复）`
-                  : isTrim ? '视频剪辑完成（已从冻结时间线恢复）'
+                  : isTimelineEdit ? '视频剪辑完成（已从冻结时间线恢复）'
                     : isCompress ? `${compressMode === 'remux' ? '转码' : '压缩'}完成（已从检查点恢复）`
                     : isDedup ? '重复文件检查完成（已从哈希检查点恢复）' : '视频下载完成（已从检查点恢复）'
         store.updateTask(runtimeTask.workspaceTaskId, {
           phase: 'completed', status: '', error: '', outputs: outputPaths, summary: String(runtimeTask.result?.summary || fallbackSummary),
           quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
         })
-        if ((isDownload || isCreative || isTrim) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
+        if ((isDownload || isCreative || isTimelineEdit) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
           surfacedOutputs.add(runtimeTask.id)
           window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: outputPaths[0] }))
         }

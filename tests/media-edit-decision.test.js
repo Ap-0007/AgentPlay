@@ -57,3 +57,25 @@ test('only an explicit undo or redo command becomes an edit-history action', () 
     assert.equal(compileEditHistoryAction(instruction), null, instruction)
   }
 })
+
+test('an explicit remove-range command compiles to one removed timeline segment', () => {
+  const decision = compileEditDecisionList({
+    instruction: '删除第4秒到第20秒',
+    sourcePath: 'D:\\Videos\\source.mp4'
+  })
+
+  assert.deepEqual(decision, {
+    schemaVersion: 1,
+    kind: 'media.remove-segment',
+    instruction: '删除第4秒到第20秒',
+    source: { path: 'D:\\Videos\\source.mp4', name: 'source.mp4' },
+    timeline: { startSeconds: 4, endSeconds: 20, removedDurationSeconds: 16 },
+    operations: [{ type: 'remove', sourceStartSeconds: 4, sourceEndSeconds: 20 }],
+    output: { container: 'mp4', overwrite: false, suffix: '删除版-00m04s-00m20s' },
+    verification: { removedDurationSeconds: 16, toleranceSeconds: 0.2 }
+  })
+
+  for (const instruction of ['能不能删除第4秒到第20秒？', '不要删除第4秒到第20秒', '比如删除第4秒到第20秒', '删除视频']) {
+    assert.equal(compileEditDecisionList({ instruction, sourcePath: 'D:\\Videos\\source.mp4' }), null, instruction)
+  }
+})

@@ -23,7 +23,9 @@ if (!frames.availability().available) throw new Error(`FFmpeg 不可用：${binD
 const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-edit-real')
 fs.mkdirSync(evidenceDir, { recursive: true })
 const outputPath = path.join(evidenceDir, 'trim-4s-20s.mp4')
+const removedOutputPath = path.join(evidenceDir, 'trim-4s-20s-remove-4s-8s.mp4')
 if (fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true })
+if (fs.existsSync(removedOutputPath)) fs.rmSync(removedOutputPath, { force: true })
 
 function quickFingerprint(filePath) {
   const stat = fs.statSync(filePath)
@@ -43,10 +45,18 @@ function quickFingerprint(filePath) {
 const sourceBefore = { bytes: fs.statSync(sourcePath).size, fingerprint: quickFingerprint(sourcePath) }
 const decision = compileEditDecisionList({ instruction: '我想要第四秒到第20秒的这段视频', sourcePath })
 if (!decision) throw new Error('明确剪辑指令未生成决策')
-const result = await new MediaEditService({ frames }).trim({ sourcePath, outputPath, decision })
+const service = new MediaEditService({ frames })
+const result = await service.trim({ sourcePath, outputPath, decision })
 const sourceAfter = { bytes: fs.statSync(sourcePath).size, fingerprint: quickFingerprint(sourcePath) }
 if (sourceBefore.bytes !== sourceAfter.bytes || sourceBefore.fingerprint !== sourceAfter.fingerprint) throw new Error('源视频被修改')
 if (Math.abs(result.durationSeconds - 16) > 0.2) throw new Error(`成品时长不合格：${result.durationSeconds}`)
+const trimBeforeDelete = { bytes: fs.statSync(outputPath).size, fingerprint: quickFingerprint(outputPath) }
+const removeDecision = compileEditDecisionList({ instruction: '删除第4秒到第8秒', sourcePath: outputPath })
+if (!removeDecision || removeDecision.kind !== 'media.remove-segment') throw new Error('明确删除片段指令未生成决策')
+const removeResult = await service.removeSegment({ sourcePath: outputPath, outputPath: removedOutputPath, decision: removeDecision })
+const trimAfterDelete = { bytes: fs.statSync(outputPath).size, fingerprint: quickFingerprint(outputPath) }
+if (trimBeforeDelete.bytes !== trimAfterDelete.bytes || trimBeforeDelete.fingerprint !== trimAfterDelete.fingerprint) throw new Error('继续编辑覆盖了上一版本')
+if (Math.abs(removeResult.durationSeconds - 12) > 0.2) throw new Error(`删除片段后的成品时长不合格：${removeResult.durationSeconds}`)
 
 const receipt = {
   passed: true,
@@ -55,8 +65,12 @@ const receipt = {
   sourceBefore,
   sourceAfter,
   decision,
-  result
+  result,
+  removeDecision,
+  removeResult,
+  trimBeforeDelete,
+  trimAfterDelete
 }
 const receiptPath = path.join(evidenceDir, 'receipt.json')
 fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-process.stdout.write(`${JSON.stringify({ passed: true, outputPath, receiptPath, durationSeconds: result.durationSeconds, sourceUnchanged: true }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ passed: true, outputPath, removedOutputPath, receiptPath, durationSeconds: result.durationSeconds, removedDurationSeconds: removeResult.durationSeconds, sourceUnchanged: true, priorVersionUnchanged: true }, null, 2)}\n`)

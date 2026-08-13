@@ -144,6 +144,36 @@ class VideoFrameService {
     }
   }
 
+  async probeHasAudio(sourcePath, { signal } = {}) {
+    if (!this.ffprobePath || !fs.existsSync(this.ffprobePath)) throw new Error('缺少 ffprobe 组件')
+    const child = this.spawnImpl(this.ffprobePath, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=index', '-of', 'csv=p=0', sourcePath], { windowsHide: true, shell: false })
+    let out = ''
+    await new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (fn, value) => {
+        if (settled) return
+        settled = true
+        signal?.removeEventListener('abort', onAbort)
+        fn(value)
+      }
+      const onAbort = () => {
+        try { child.kill() } catch { /* 已退出 */ }
+        finish(reject, new Error('已取消'))
+      }
+      if (signal) {
+        if (signal.aborted) {
+          onAbort()
+          return
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+      child.stdout?.on('data', (chunk) => { out += chunk.toString('utf8') })
+      child.once('error', (error) => finish(reject, error))
+      child.once('exit', (code) => code === 0 ? finish(resolve) : finish(reject, new Error(`ffprobe 退出码 ${code}`)))
+    })
+    return out.trim().length > 0
+  }
+
   // 抽取关键帧：scene-change 优先，产出不足或去重塌缩都退均匀采样；返回 [{ path, tSec, label }]
   async extract({ sourcePath, durationSec = 0, outDir, budget, signal } = {}) {
     if (!this.availability().available) return []

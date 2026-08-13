@@ -18,6 +18,7 @@ const TOOL_SPECS = [
   { name: 'batch_transcribe', description: '把当前已添加的音视频附件批量转写为字幕文件', parameters: {}, category: 'media', risk: 'local-write', cost: 4 },
   { name: 'compress_video', description: '压缩或转封装当前本地视频', parameters: { target_mb: { type: 'number', description: '压缩目标大小，单位 MB' }, mode: { type: 'string', enum: ['compress', 'remux'] } }, category: 'media', risk: 'local-write', cost: 4 },
   { name: 'trim_video', description: '把当前本地视频精确剪出一个时间段并另存为新文件', parameters: { start_seconds: { type: 'number', description: '保留片段的开始秒数' }, end_seconds: { type: 'number', description: '保留片段的结束秒数，必须大于开始秒数' } }, required: ['start_seconds', 'end_seconds'], category: 'media', risk: 'local-write', cost: 4 },
+  { name: 'remove_video_segment', description: '从当前本地视频中精确删除一个时间段，自动拼接前后内容并另存为新文件', parameters: { start_seconds: { type: 'number', description: '删除片段的开始秒数' }, end_seconds: { type: 'number', description: '删除片段的结束秒数，必须大于开始秒数' } }, required: ['start_seconds', 'end_seconds'], category: 'media', risk: 'local-write', cost: 4 },
   { name: 'undo_media_edit', description: '撤销当前视频项目的上一步编辑并打开上一版本，不删除任何版本文件', parameters: {}, category: 'media', risk: 'control', cost: 1 },
   { name: 'redo_media_edit', description: '重做当前视频项目刚才撤销的编辑并打开下一版本', parameters: {}, category: 'media', risk: 'control', cost: 1 },
   { name: 'find_duplicates', description: '扫描媒体库并按文件内容查找重复文件，不会删除文件', parameters: {}, category: 'media', risk: 'read-only', cost: 4 },
@@ -189,6 +190,13 @@ async function executeAgentTool(name, rawArgs = {}, context = null, handlers = {
         const endSeconds = Number(args.end_seconds)
         if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) throw new Error('剪辑结束时间必须大于开始时间')
         result = { success: true, action: 'start_trim_video', value: { startSeconds, endSeconds }, desc: '已交给可恢复的精确剪辑工作流' }
+        break
+      }
+      case 'remove_video_segment': {
+        const startSeconds = Number(args.start_seconds)
+        const endSeconds = Number(args.end_seconds)
+        if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) throw new Error('删除结束时间必须大于开始时间')
+        result = { success: true, action: 'start_remove_video_segment', value: { startSeconds, endSeconds }, desc: '已交给可恢复的删除片段工作流' }
         break
       }
       case 'undo_media_edit': result = { success: true, action: 'start_edit_history', value: { direction: 'undo' }, desc: '已交给编辑项目撤销工作流' }; break

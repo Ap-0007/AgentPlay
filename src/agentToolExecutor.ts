@@ -84,6 +84,7 @@ export async function applyAgentToolResult(tool: string, result: AgentToolAction
       case 'start_batch_transcribe':
       case 'start_compress_video':
       case 'start_trim_video':
+      case 'start_remove_video_segment':
       case 'start_edit_history':
       case 'start_duplicate_scan':
         window.dispatchEvent(new CustomEvent('ai-player-agent-media-task', {

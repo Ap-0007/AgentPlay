@@ -44,3 +44,103 @@ test('trim re-encodes the exact range, atomically saves a new file and probes it
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('remove-segment joins the retained head and tail with continuous video and audio timelines', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-remove-segment-'))
+  try {
+    const sourcePath = path.join(dir, 'source.mp4')
+    const outputPath = path.join(dir, 'source-AgentPlay删除版.mp4')
+    fs.writeFileSync(sourcePath, Buffer.from('original-video'))
+    const original = fs.readFileSync(sourcePath)
+    let runArgs = []
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (filePath) => filePath === sourcePath ? 30 : 14.03,
+      probeHasAudio: async () => true,
+      run: async (args) => {
+        runArgs = args
+        fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+      }
+    }
+    const service = new MediaEditService({ frames })
+    const decision = compileEditDecisionList({ instruction: '删除第4秒到第20秒', sourcePath })
+
+    const result = await service.removeSegment({ sourcePath, outputPath, decision })
+
+    assert.equal(result.success, true)
+    assert.equal(result.expectedDurationSeconds, 14)
+    assert.equal(result.durationSeconds, 14.03)
+    assert.deepEqual(result.timelineReceipt, [
+      { operation: '删除片段', sourceRange: '00:04.000 → 00:20.000', outputRange: '未进入成片' },
+      { operation: '保留片段', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:00.000 → 00:04.000' },
+      { operation: '保留片段', sourceRange: '00:20.000 → 00:30.000', outputRange: '00:04.000 → 00:14.000' }
+    ])
+    assert.deepEqual(fs.readFileSync(sourcePath), original)
+    assert.ok(fs.statSync(outputPath).size > 1024)
+    const filter = runArgs[runArgs.indexOf('-filter_complex') + 1]
+    assert.match(filter, /\[0:v:0\]trim=start=0\.000:end=4\.000,setpts=PTS-STARTPTS\[v0\]/)
+    assert.match(filter, /\[0:v:0\]trim=start=20\.000,setpts=PTS-STARTPTS\[v1\]/)
+    assert.match(filter, /\[v0\]\[v1\]concat=n=2:v=1:a=0/)
+    assert.match(filter, /\[a0\]\[a1\]concat=n=2:v=0:a=1/)
+    assert.notEqual(runArgs.at(-1), outputPath, 'ffmpeg must write a temporary artifact before atomic rename')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('remove-segment recovery re-probes an existing artifact instead of encoding again', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-remove-recovery-'))
+  try {
+    const sourcePath = path.join(dir, 'source.mp4')
+    const outputPath = path.join(dir, 'removed.mp4')
+    fs.writeFileSync(sourcePath, Buffer.from('original-video'))
+    fs.writeFileSync(outputPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    let runCount = 0
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (filePath) => filePath === sourcePath ? 30 : 14.03,
+      probeHasAudio: async () => true,
+      run: async () => { runCount += 1 }
+    }
+    const service = new MediaEditService({ frames })
+    const decision = compileEditDecisionList({ instruction: '删除第4秒到第20秒', sourcePath })
+
+    const result = await service.verify({ sourcePath, outputPath, decision })
+
+    assert.equal(result.expectedDurationSeconds, 14)
+    assert.equal(result.durationSeconds, 14.03)
+    assert.equal(result.timelineReceipt[0].operation, '删除片段')
+    assert.equal(runCount, 0)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('remove-segment supports a silent video and drops stale chapter timestamps', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-remove-silent-'))
+  try {
+    const sourcePath = path.join(dir, 'silent.mp4')
+    const outputPath = path.join(dir, 'silent-removed.mp4')
+    fs.writeFileSync(sourcePath, Buffer.from('silent-video'))
+    let runArgs = []
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (filePath) => filePath === sourcePath ? 10 : 5.02,
+      probeHasAudio: async () => false,
+      run: async (args) => {
+        runArgs = args
+        fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+      }
+    }
+    const decision = compileEditDecisionList({ instruction: '删除第0秒到第5秒', sourcePath })
+    const result = await new MediaEditService({ frames }).removeSegment({ sourcePath, outputPath, decision })
+
+    assert.equal(result.durationSeconds, 5.02)
+    assert.equal(result.timelineReceipt.length, 2)
+    assert.ok(runArgs.includes('-an'))
+    assert.equal(runArgs[runArgs.indexOf('-map_chapters') + 1], '-1', 'old chapter timestamps are invalid after deleting timeline material')
+    assert.doesNotMatch(runArgs[runArgs.indexOf('-filter_complex') + 1], /\[0:a:0\]/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

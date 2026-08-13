@@ -9,6 +9,7 @@ const NUMBER_TOKEN = String.raw`(?:\d+(?:\.\d+)?|[零〇一二两三四五六七
 const TIME_TOKEN = String.raw`(?:\d{1,3}:\d{2}(?:\.\d+)?|第?\s*${NUMBER_TOKEN}\s*(?:分(?:钟)?(?:\s*${NUMBER_TOKEN}\s*秒)?|秒|s))`
 const RANGE_PATTERN = new RegExp(`(${TIME_TOKEN})\\s*(?:到|至|—|–|-|~|～)\\s*(${TIME_TOKEN})`, 'i')
 const DIRECT_EDIT_PATTERN = /(?:保留|留下|截取|截出|剪出|剪辑|裁剪|取出)/
+const REMOVE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)/
 const SEGMENT_REQUEST_PATTERN = /(?:我(?:只)?想要|我要|给我|替我)[\s\S]*(?:这|那)?(?:一)?段(?:视频|片段)/
 const CONSULTATION_PATTERN = /(?:能不能|可不可以|是否|怎么|如何|支不支持|能做到|可以吗|行吗|\?|？)/
 const NEGATION_PATTERN = /(?:不要|别把|别剪|无需|不用|取消|不想)/
@@ -70,13 +71,30 @@ function compileEditDecisionList({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim()
   const source = String(sourcePath || '').trim()
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return null
-  if ((!DIRECT_EDIT_PATTERN.test(text) && !SEGMENT_REQUEST_PATTERN.test(text)) || CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return null
+  const removesRange = REMOVE_EDIT_PATTERN.test(text)
+  if ((!DIRECT_EDIT_PATTERN.test(text) && !SEGMENT_REQUEST_PATTERN.test(text) && !removesRange) || CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return null
   const range = RANGE_PATTERN.exec(text)
   if (!range) return null
   const startSeconds = parseTimeSeconds(range[1])
   const endSeconds = parseTimeSeconds(range[2])
   if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) return null
   const durationSeconds = Number((endSeconds - startSeconds).toFixed(3))
+  if (removesRange) {
+    return {
+      schemaVersion: 1,
+      kind: 'media.remove-segment',
+      instruction: text,
+      source: { path: source, name: path.basename(source) },
+      timeline: { startSeconds, endSeconds, removedDurationSeconds: durationSeconds },
+      operations: [{ type: 'remove', sourceStartSeconds: startSeconds, sourceEndSeconds: endSeconds }],
+      output: {
+        container: 'mp4',
+        overwrite: false,
+        suffix: `删除版-${formatSeconds(startSeconds)}-${formatSeconds(endSeconds)}`
+      },
+      verification: { removedDurationSeconds: durationSeconds, toleranceSeconds: 0.2 }
+    }
+  }
   return {
     schemaVersion: 1,
     kind: 'media.trim',

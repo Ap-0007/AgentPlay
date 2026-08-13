@@ -20,6 +20,7 @@ const installedFfmpeg = path.join(process.env.APPDATA || path.join(os.homedir(),
 const stagedFfmpeg = path.join(profileDir, 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
 const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-edit-packaged')
 const instruction = '我想要第四秒到第20秒的这段视频'
+const removeInstruction = '删除第4秒到第8秒'
 
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 
@@ -195,6 +196,37 @@ try {
         ? { duration: video.duration, currentSrc: video.currentSrc }
         : null
     }, '对话重做并打开成片', 30000)
+    const removePlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(removeInstruction)}, sourcePath: task.result.outputPath })
+    if (!removePlan.matched || removePlan.decision?.kind !== 'media.remove-segment') throw new Error('安装态删除片段计划不合格')
+    await sendText(${JSON.stringify(removeInstruction)})
+    const removeTask = await waitFor(async () => {
+      const tasks = await window.aiPlayer.taskRuntime.list()
+      const candidate = [...tasks].reverse().find((item) => item.type === 'media.edit-remove')
+      return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
+    }, '删除片段任务完成')
+    if (removeTask.state !== 'completed') throw new Error(removeTask.error || removeTask.status || '删除片段任务未完成')
+    const removePreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 12) <= 0.2
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '自动预览删除片段成片', 30000)
+    if (removeTask.result?.projectCapsule?.versionCount !== 3 || removeTask.result?.projectCapsule?.canUndo !== true) throw new Error('删除片段没有进入同一编辑项目')
+    if (!Array.isArray(removeTask.result?.timelineReceipt) || removeTask.result.timelineReceipt.length !== 3) throw new Error('删除片段没有返回完整时间线映射')
+    await sendText(undoInstruction)
+    const removeUndoPreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 16) <= 0.2 && document.body.innerText.includes('项目版本：2/3')
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '撤销删除并回到上一成片', 30000)
+    await sendText(redoInstruction)
+    const removeRedoPreview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 12) <= 0.2 && document.body.innerText.includes('项目版本：3/3')
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '重做删除并回到新成片', 30000)
     const bodyText = document.body.innerText
     return {
       version: window.aiPlayer.version,
@@ -207,7 +239,12 @@ try {
       undoPreview,
       redoPlan,
       redoPreview,
-      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：源片') && bodyText.includes('项目版本：1/2') && bodyText.includes('项目版本：2/2')
+      removePlan,
+      removeTask,
+      removePreview,
+      removeUndoPreview,
+      removeRedoPreview,
+      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：') && bodyText.includes('删除片段：源片') && bodyText.includes('未进入成片') && bodyText.includes('项目版本：3/3')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -222,16 +259,24 @@ try {
   if (!pageResult.uiReceiptVisible) throw new Error('对话框没有显示时间线与原文件回执')
   if (Math.abs(Number(pageResult.undoPreview?.duration) - Number(pageResult.originalDuration)) > 0.2) throw new Error('安装态撤销没有回到原片')
   if (Math.abs(Number(pageResult.redoPreview?.duration) - 16) > 0.2) throw new Error('安装态重做没有回到成片')
+  const removedOutputPath = pageResult.removeTask?.result?.outputPath
+  if (!removedOutputPath || !fs.existsSync(removedOutputPath)) throw new Error('安装态删除片段任务没有真实成果文件')
+  if (Math.abs(Number(pageResult.removeTask.result.durationSeconds) - 12) > 0.2) throw new Error('安装态删除片段成品时长不合格')
+  if (pageResult.removeTask.quality?.passed !== true || pageResult.removeTask.quality?.score !== 100) throw new Error('安装态删除片段质量门未通过')
+  if (Math.abs(Number(pageResult.removeUndoPreview?.duration) - 16) > 0.2) throw new Error('安装态撤销删除没有回到上一成片')
+  if (Math.abs(Number(pageResult.removeRedoPreview?.duration) - 12) > 0.2) throw new Error('安装态重做删除没有回到新成片')
   const persistedOutputPath = path.join(evidenceDir, 'packaged-trim-4s-20s.mp4')
   fs.copyFileSync(outputPath, persistedOutputPath)
+  const persistedRemovedOutputPath = path.join(evidenceDir, 'packaged-trim-then-remove-4s-8s.mp4')
+  fs.copyFileSync(removedOutputPath, persistedRemovedOutputPath)
   const projectStatePath = path.join(profileDir, 'media-edit-projects', 'media-edit-projects-v1.json')
   if (!fs.existsSync(projectStatePath)) throw new Error('安装态没有持久化编辑项目状态')
   const persistedProjectStatePath = path.join(evidenceDir, 'media-edit-projects-v1.json')
   fs.copyFileSync(projectStatePath, persistedProjectStatePath)
-  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, persistedOutputPath, persistedProjectStatePath, screenshotPath, pageResult }
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, removedOutputBytes: fs.statSync(removedOutputPath).size, persistedOutputPath, persistedRemovedOutputPath, persistedProjectStatePath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, qualityScore: pageResult.task.quality.score, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, removedDurationSeconds: pageResult.removeTask.result.durationSeconds, qualityScore: pageResult.task.quality.score, removeQualityScore: pageResult.removeTask.quality.score, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration, removeUndoDurationSeconds: pageResult.removeUndoPreview.duration, removeRedoDurationSeconds: pageResult.removeRedoPreview.duration }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

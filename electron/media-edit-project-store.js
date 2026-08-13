@@ -88,12 +88,32 @@ class MediaEditProjectStore {
     }
   }
 
-  recordTrim({ taskId, sourcePath, outputPath, decision } = {}) {
+  recordEdit({ taskId, sourcePath, outputPath, decision, repairing = false } = {}) {
     this.assertReady()
     const taskKey = String(taskId || '').trim()
     if (!taskKey) throw new Error('剪辑任务标识不能为空')
     const existingTask = this.state.projects.find((project) => project.versions.some((version) => version.taskId === taskKey))
-    if (existingTask) return this.capsule(existingTask)
+    if (existingTask) {
+      const versionIndex = existingTask.versions.findIndex((version) => version.taskId === taskKey)
+      const version = existingTask.versions[versionIndex]
+      const source = this.snapshot(sourcePath)
+      const previousVersion = existingTask.versions[versionIndex - 1]
+      if (!previousVersion || path.resolve(previousVersion.artifact.path) !== path.resolve(source.path)) throw new Error('同一剪辑任务的源版本发生冲突')
+      this.validate(previousVersion.artifact)
+      const output = this.snapshot(outputPath)
+      if (path.resolve(version.artifact.path) !== path.resolve(output.path)) throw new Error('同一剪辑任务的输出位置发生冲突')
+      if (JSON.stringify(version.decision) !== JSON.stringify(decision || null)) throw new Error('同一剪辑任务的冻结决策发生冲突')
+      if (!repairing) this.validate(version.artifact)
+      else {
+        version.artifact = output
+        version.kind = decision?.kind === 'media.remove-segment' ? 'remove-segment' : 'trim'
+        version.decision = JSON.parse(JSON.stringify(decision || null))
+      }
+      existingTask.cursor = versionIndex
+      existingTask.updatedAt = this.now()
+      this.persist()
+      return this.capsule(existingTask)
+    }
 
     const source = this.snapshot(sourcePath)
     const output = this.snapshot(outputPath)
@@ -117,7 +137,7 @@ class MediaEditProjectStore {
     project.versions.push({
       id: `version-${this.idFactory()}`,
       taskId: taskKey,
-      kind: 'trim',
+      kind: decision?.kind === 'media.remove-segment' ? 'remove-segment' : 'trim',
       artifact: output,
       decision: JSON.parse(JSON.stringify(decision || null)),
       createdAt: now
@@ -127,6 +147,10 @@ class MediaEditProjectStore {
     this.state.projects = this.state.projects.slice(-100)
     this.persist()
     return this.capsule(project)
+  }
+
+  recordTrim(input = {}) {
+    return this.recordEdit(input)
   }
 
   navigate({ currentPath, direction } = {}) {

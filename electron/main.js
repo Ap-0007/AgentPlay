@@ -1145,7 +1145,7 @@ app.whenReady().then(async () => {
       const actualOutput = actualValue ? path.resolve(actualValue) : ''
       if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
       action = '清理不合格的任务自产物并重新压缩'
-    } else if (type === 'media.edit-trim') {
+    } else if (type === 'media.edit-trim' || type === 'media.edit-remove') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
       const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
@@ -1886,7 +1886,25 @@ app.whenReady().then(async () => {
       ? await mediaEditService.verify({ sourcePath, outputPath, decision: task.spec.decision, signal })
       : await mediaEditService.trim({ sourcePath, outputPath, decision: task.spec.decision, signal })
     validateMediaSources(task.spec.sources)
-    const projectCapsule = mediaEditProjects.recordTrim({ taskId: task.id, sourcePath, outputPath, decision: task.spec.decision })
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision: task.spec.decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return completed
+  }, { autoResume: true })
+
+  persistentTaskRuntime.register('media.edit-remove', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.remove-segment') throw new Error('冻结的删除片段决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的删除片段决策与源视频不一致')
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
+    status(`正在删除 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒并重建连续时间线`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
+      : await mediaEditService.removeSegment({ sourcePath, outputPath, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
     const completed = { ...result, projectCapsule }
     checkpoint({ stage: 'artifact-written', result: completed })
     userAuthorizedPaths.add(path.resolve(outputPath))
@@ -2032,10 +2050,10 @@ app.whenReady().then(async () => {
       const sourcePath = assertAllowedPath(input.sourcePath)
       if (!videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
       const decision = compileEditDecisionList({ instruction: input.instruction, sourcePath })
-      if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”' }
+      if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”或“删除第4秒到第8秒”' }
       persistentTaskRuntime.enqueue({
         id: requestId,
-        type: 'media.edit-trim',
+        type: decision.kind === 'media.remove-segment' ? 'media.edit-remove' : 'media.edit-trim',
         workspaceTaskId: input.workspaceTaskId,
         spec: {
           instruction: decision.instruction,

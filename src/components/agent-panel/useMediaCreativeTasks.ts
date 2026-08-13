@@ -18,6 +18,7 @@ type TrimInput = {
   sourcePath: string
   startSeconds: number
   endSeconds: number
+  operation?: 'trim' | 'remove'
 }
 
 type MediaCreativeTaskOptions = {
@@ -223,27 +224,31 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     if (!sourcePath || /^(https?|blob):/i.test(sourcePath) || !window.aiPlayer?.mediaTools?.planEdit) return false
     let startSeconds = override?.startSeconds || 0
     let endSeconds = override?.endSeconds || 0
+    let removesSegment = override?.operation === 'remove'
     if (!override) {
       try {
         const plan = await window.aiPlayer.mediaTools.planEdit({ instruction: text, sourcePath })
-        if (!plan?.matched || plan.decision?.kind !== 'media.trim') return false
-        startSeconds = Number(plan.decision.timeline.startSeconds)
-        endSeconds = Number(plan.decision.timeline.endSeconds)
+        const decision = plan?.decision
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment'].includes(decision.kind)) return false
+        removesSegment = decision.kind === 'media.remove-segment'
+        startSeconds = Number(decision.timeline.startSeconds)
+        endSeconds = Number(decision.timeline.endSeconds)
       } catch {
         return false
       }
     }
     if (busyRef.current) return true
-    const input: TrimInput = { instruction: text, sourcePath, startSeconds, endSeconds }
+    const input: TrimInput = { instruction: text, sourcePath, startSeconds, endSeconds, operation: removesSegment ? 'remove' : 'trim' }
     trimInputRef.current = input
     busyRef.current = true
     if (!override) {
       addMessage('user', text)
       setInputText('')
     }
+    const actionLabel = removesSegment ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
-      kind: 'media', label: `保留 ${startSeconds}–${endSeconds} 秒`, phase: 'running',
-      status: '正在按原画面比例精确剪辑，并核验成品时长…', instruction: text, source: sourcePath,
+      kind: 'media', label: actionLabel, phase: 'running',
+      status: removesSegment ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: text, source: sourcePath,
       retry: { kind: 'trim', instruction: text, sourcePath }
     })
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -252,14 +257,14 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     try {
       const result = await window.aiPlayer.mediaTools.trim({ sourcePath, instruction: text, requestId, workspaceTaskId: executionTaskIdRef.current })
       if (!result?.success || !result.outputPath) throw new Error(result?.error || '视频剪辑失败')
-      const receipt = result.timelineReceipt?.[0]
+      const timeline = (result.timelineReceipt || []).map((item) => `${item.operation}：源片 ${item.sourceRange}；成片 ${item.outputRange}`).join('\n')
       const summary = result.summary || `已生成 ${Number(result.durationSeconds || 0).toFixed(3)} 秒新视频；原文件未改动`
       const capsule = result.projectCapsule
       const projectHint = capsule
         ? `\n编辑项目：第 ${capsule.cursor + 1}/${capsule.versionCount} 版；可直接说“撤销刚才的剪辑”。`
         : ''
       completeExecutionTask({ outputs: [result.outputPath], summary })
-      addMessage('agent', `${summary}${receipt ? `\n时间线：源片 ${receipt.sourceRange}；成片 ${receipt.outputRange}` : ''}${projectHint}\n成果：${result.outputPath}`)
+      addMessage('agent', `${summary}${timeline ? `\n时间线：\n${timeline}` : ''}${projectHint}\n成果：${result.outputPath}`)
       window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
       return true
     } catch (error) {
@@ -379,6 +384,12 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         void runTrimTask(`保留第${startSeconds}秒到第${endSeconds}秒`)
         return
       }
+      if (detail.action === 'start_remove_video_segment') {
+        const startSeconds = Math.max(0, Number(detail.value?.startSeconds) || 0)
+        const endSeconds = Math.max(0, Number(detail.value?.endSeconds) || 0)
+        void runTrimTask(`删除第${startSeconds}秒到第${endSeconds}秒`)
+        return
+      }
       if (detail.action === 'start_edit_history') {
         void runEditHistoryTask(detail.value?.direction === 'redo' ? '重做刚才撤销的剪辑' : '撤销刚才的剪辑')
         return
@@ -426,13 +437,15 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     if (retry.kind === 'trim' && retry.sourcePath && retry.instruction) {
       const planAndRetry = async () => {
         const plan = await window.aiPlayer?.mediaTools?.planEdit({ instruction: retry.instruction || '', sourcePath: retry.sourcePath || '' })
-        if (!plan?.matched || plan.decision?.kind !== 'media.trim') {
-          addMessage('agent', '[错误] 原剪辑指令已无法还原成唯一时间线，请从原视频重新说明要保留的时间段。')
+        const decision = plan?.decision
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment'].includes(decision.kind)) {
+          addMessage('agent', '[错误] 原剪辑指令已无法还原成唯一时间线，请从原视频重新说明要保留或删除的时间段。')
           return
         }
         void runTrimTask(retry.instruction || '', {
           instruction: retry.instruction || '', sourcePath: retry.sourcePath || '',
-          startSeconds: plan.decision.timeline.startSeconds, endSeconds: plan.decision.timeline.endSeconds
+          startSeconds: decision.timeline.startSeconds, endSeconds: decision.timeline.endSeconds,
+          operation: decision.kind === 'media.remove-segment' ? 'remove' : 'trim'
         })
       }
       void planAndRetry()

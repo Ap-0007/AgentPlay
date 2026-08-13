@@ -106,3 +106,48 @@ test('redo survives an app restart and an alternate edit replaces the abandoned 
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('a removed-segment result enters the same project and remains undoable', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const store = new MediaEditProjectStore({ rootDir: path.join(root, 'state') })
+    const capsule = store.recordEdit({
+      taskId: 'remove-1',
+      sourcePath,
+      outputPath,
+      decision: { schemaVersion: 1, kind: 'media.remove-segment', timeline: { startSeconds: 4, endSeconds: 20, removedDurationSeconds: 16 } }
+    })
+
+    assert.equal(capsule.currentPath, outputPath)
+    assert.equal(capsule.versionCount, 2)
+    assert.equal(store.navigate({ currentPath: outputPath, direction: 'undo' }).currentPath, sourcePath)
+    const persisted = JSON.parse(fs.readFileSync(path.join(root, 'state', 'media-edit-projects-v1.json'), 'utf8'))
+    assert.equal(persisted.projects[0].versions[1].kind, 'remove-segment')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a repeated task validates its recorded artifact and only an explicit quality repair may refresh it', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const stateDir = path.join(root, 'state')
+    const decision = { schemaVersion: 1, kind: 'media.remove-segment', timeline: { startSeconds: 4, endSeconds: 20, removedDurationSeconds: 16 } }
+    const store = new MediaEditProjectStore({ rootDir: stateDir })
+    const first = store.recordEdit({ taskId: 'remove-repair', sourcePath, outputPath, decision })
+    fs.appendFileSync(outputPath, Buffer.from('failed-quality-artifact'))
+
+    assert.throws(
+      () => store.recordEdit({ taskId: 'remove-repair', sourcePath, outputPath, decision }),
+      /编辑版本文件已发生变化/
+    )
+
+    const repaired = store.recordEdit({ taskId: 'remove-repair', sourcePath, outputPath, decision, repairing: true })
+    assert.equal(repaired.versionId, first.versionId, 'quality repair must update the same task version instead of duplicating history')
+    assert.equal(repaired.versionCount, 2)
+    const restarted = new MediaEditProjectStore({ rootDir: stateDir })
+    assert.equal(restarted.navigate({ currentPath: outputPath, direction: 'undo' }).currentPath, sourcePath)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

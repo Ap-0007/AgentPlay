@@ -94,3 +94,27 @@ test('media trim quality requires a verified timeline and duration receipt', () 
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('removed-segment media uses the same artifact, duration, timeline and project quality gate', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-remove-segment-'))
+  try {
+    const output = path.join(dir, 'removed.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const quality = evaluateTaskResult('media.edit-remove', {
+      success: true,
+      outputs: [output],
+      durationSeconds: 14.03,
+      expectedDurationSeconds: 14,
+      timelineReceipt: [
+        { operation: '删除片段', sourceRange: '00:04.000 → 00:20.000', outputRange: '未进入成片' },
+        { operation: '保留片段', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:00.000 → 00:04.000' }
+      ],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }, { decision: { kind: 'media.remove-segment', verification: { toleranceSeconds: 0.2 } } })
+
+    assert.equal(quality.passed, true)
+    assert.equal(quality.score, 100)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
