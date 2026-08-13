@@ -577,6 +577,8 @@ interface AiPlayerAPI {
     onProgress: (cb: (event: { requestId?: string; done: number; total: number; name: string }) => void) => () => void
   }
   mediaTools?: {
+    planEdit: (input: { instruction: string; sourcePath: string }) => Promise<{ matched: boolean; decision?: { schemaVersion: 1; kind: 'media.trim'; timeline: { startSeconds: number; endSeconds: number; durationSeconds: number }; output: { overwrite: false; suffix: string } }; error?: string }>
+    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; summary?: string; error?: string }>
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
     cancel: (requestId: string) => Promise<boolean>
   }

@@ -17,6 +17,7 @@ const TOOL_SPECS = [
   { name: 'load_subtitle', description: '加载字幕文件（srt/ass/vtt）', parameters: { file_path: { type: 'string', description: '字幕文件路径' } }, required: ['file_path'], category: 'file', risk: 'control', cost: 1 },
   { name: 'batch_transcribe', description: '把当前已添加的音视频附件批量转写为字幕文件', parameters: {}, category: 'media', risk: 'local-write', cost: 4 },
   { name: 'compress_video', description: '压缩或转封装当前本地视频', parameters: { target_mb: { type: 'number', description: '压缩目标大小，单位 MB' }, mode: { type: 'string', enum: ['compress', 'remux'] } }, category: 'media', risk: 'local-write', cost: 4 },
+  { name: 'trim_video', description: '把当前本地视频精确剪出一个时间段并另存为新文件', parameters: { start_seconds: { type: 'number', description: '保留片段的开始秒数' }, end_seconds: { type: 'number', description: '保留片段的结束秒数，必须大于开始秒数' } }, required: ['start_seconds', 'end_seconds'], category: 'media', risk: 'local-write', cost: 4 },
   { name: 'find_duplicates', description: '扫描媒体库并按文件内容查找重复文件，不会删除文件', parameters: {}, category: 'media', risk: 'read-only', cost: 4 },
   { name: 'advanced_document_ocr', description: '用已配置的高级文档解析服务处理当前扫描 PDF；服务不可用时自动回退本机 OCR', parameters: {}, category: 'document', risk: 'local-write', cost: 4 }
 ]
@@ -181,6 +182,13 @@ async function executeAgentTool(name, rawArgs = {}, context = null, handlers = {
       case 'load_subtitle': result = { success: true, action: 'load_subtitle', value: String(args.file_path), desc: '已请求加载字幕' }; break
       case 'batch_transcribe': result = { success: true, action: 'start_batch_transcribe', value: {}, desc: '已交给可恢复的批量转写工作流' }; break
       case 'compress_video': result = { success: true, action: 'start_compress_video', value: { targetMb: Math.max(5, Math.min(500, Number(args.target_mb) || 25)), mode: args.mode === 'remux' ? 'remux' : 'compress' }, desc: '已交给可恢复的视频处理工作流' }; break
+      case 'trim_video': {
+        const startSeconds = Number(args.start_seconds)
+        const endSeconds = Number(args.end_seconds)
+        if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) throw new Error('剪辑结束时间必须大于开始时间')
+        result = { success: true, action: 'start_trim_video', value: { startSeconds, endSeconds }, desc: '已交给可恢复的精确剪辑工作流' }
+        break
+      }
       case 'find_duplicates': result = { success: true, action: 'start_duplicate_scan', value: {}, desc: '已交给可恢复的重复文件扫描工作流' }; break
       case 'advanced_document_ocr': result = { success: true, action: 'start_advanced_document_ocr', value: {}, desc: '已交给可恢复的文档处理工作流' }; break
     }

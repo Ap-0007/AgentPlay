@@ -59,3 +59,30 @@ test('video artifacts require a real supported container signature', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('media trim quality requires a verified timeline and duration receipt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-trim-'))
+  try {
+    const output = path.join(dir, 'trimmed.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const spec = { decision: { timeline: { durationSeconds: 16 }, verification: { toleranceSeconds: 0.2 } } }
+    const passed = evaluateTaskResult('media.edit-trim', {
+      success: true,
+      outputs: [output],
+      durationSeconds: 16.04,
+      expectedDurationSeconds: 16,
+      timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }]
+    }, spec)
+    assert.equal(passed.passed, true)
+    assert.ok(passed.checks.some((item) => item.id === 'duration-receipt' && item.passed))
+
+    const failed = evaluateTaskResult('media.edit-trim', {
+      success: true, outputs: [output], durationSeconds: 14.8, expectedDurationSeconds: 16, timelineReceipt: []
+    }, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'DURATION_MISMATCH'))
+    assert.ok(failed.reasons.some((item) => item.code === 'TIMELINE_RECEIPT_MISSING'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

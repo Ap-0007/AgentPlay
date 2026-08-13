@@ -83,6 +83,7 @@ export async function applyAgentToolResult(tool: string, result: AgentToolAction
       }
       case 'start_batch_transcribe':
       case 'start_compress_video':
+      case 'start_trim_video':
       case 'start_duplicate_scan':
         window.dispatchEvent(new CustomEvent('ai-player-agent-media-task', {
           detail: { action: result.action, value: result.value || {} }

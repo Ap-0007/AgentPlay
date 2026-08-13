@@ -117,6 +117,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     }
   },
   mediaTools: {
+    planEdit: (input) => ipcRenderer.invoke('media:edit-plan', input),
+    trim: (input) => ipcRenderer.invoke('media:trim', input),
     compress: (input) => ipcRenderer.invoke('media:compress', input),
     cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId)
   },

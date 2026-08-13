@@ -1,0 +1,202 @@
+import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const valueArg = (name) => process.argv.find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1) || ''
+const executable = path.resolve(valueArg('--exe') || path.join(root, 'release', 'win-unpacked', 'AgentPlay.exe'))
+const originalSource = path.resolve(valueArg('--source') || '')
+if (!fs.existsSync(executable)) throw new Error(`缺少待验收 EXE：${executable}`)
+if (!originalSource || !fs.existsSync(originalSource)) throw new Error('用 --source=<绝对视频路径> 指定至少 20 秒的真实视频')
+
+const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-packaged-edit-'))
+const sourceDir = path.join(profileDir, 'media')
+const sourcePath = path.join(sourceDir, path.basename(originalSource))
+const installedFfmpeg = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ai-player', 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
+const stagedFfmpeg = path.join(profileDir, 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
+const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-edit-packaged')
+const instruction = '我想要第四秒到第20秒的这段视频'
+
+function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
+
+async function freePort() {
+  const server = net.createServer()
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+  const address = server.address()
+  const port = typeof address === 'object' && address ? address.port : 0
+  await new Promise((resolve) => server.close(resolve))
+  if (!port) throw new Error('无法分配调试端口')
+  return port
+}
+
+function quickFingerprint(filePath) {
+  const stat = fs.statSync(filePath)
+  const size = Math.min(128 * 1024, stat.size)
+  const fd = fs.openSync(filePath, 'r')
+  const first = Buffer.alloc(size)
+  const last = Buffer.alloc(size)
+  try {
+    fs.readSync(fd, first, 0, size, 0)
+    fs.readSync(fd, last, 0, size, Math.max(0, stat.size - size))
+  } finally { fs.closeSync(fd) }
+  return { bytes: stat.size, sha256: crypto.createHash('sha256').update(first).update(last).update(String(stat.size)).digest('hex') }
+}
+
+async function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null) return true
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { child.off('exit', onExit); resolve(false) }, timeoutMs)
+    const onExit = () => { clearTimeout(timer); resolve(true) }
+    child.once('exit', onExit)
+  })
+}
+
+async function openSession() {
+  const port = await freePort()
+  const child = spawn(executable, [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profileDir}`,
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    sourcePath
+  ], { cwd: path.dirname(executable), windowsHide: true, shell: false })
+  let page
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    if (child.exitCode !== null) throw new Error(`候选应用提前退出：${child.exitCode}`)
+    try {
+      const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+      page = pages.find((item) => item.type === 'page')
+      if (page?.webSocketDebuggerUrl) break
+    } catch {}
+    await delay(250)
+  }
+  if (!page?.webSocketDebuggerUrl) throw new Error('候选应用未开放调试页面')
+  const websocket = new WebSocket(page.webSocketDebuggerUrl)
+  const pending = new Map()
+  let nextId = 0
+  websocket.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data)
+    if (!message.id || !pending.has(message.id)) return
+    const waiter = pending.get(message.id)
+    pending.delete(message.id)
+    if (message.error) waiter.reject(new Error(message.error.message))
+    else waiter.resolve(message.result)
+  })
+  await new Promise((resolve, reject) => {
+    websocket.addEventListener('open', resolve, { once: true })
+    websocket.addEventListener('error', reject, { once: true })
+  })
+  const command = (method, params = {}) => {
+    const id = ++nextId
+    websocket.send(JSON.stringify({ id, method, params }))
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }))
+  }
+  const evaluate = async (expression, awaitPromise = false) => {
+    const response = await command('Runtime.evaluate', { expression, awaitPromise, returnByValue: true })
+    if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text || '页面执行失败')
+    return response.result?.value
+  }
+  await command('Runtime.enable')
+  await command('Page.enable')
+  return { child, websocket, command, evaluate }
+}
+
+async function closeSession(session) {
+  try { await Promise.race([session.command('Browser.close'), delay(1500)]) } catch {}
+  await waitForExit(session.child, 8000)
+  if (session.child.exitCode === null) { session.child.kill(); await waitForExit(session.child, 5000) }
+  try { session.websocket.close() } catch {}
+}
+
+function cleanup() {
+  const resolved = path.resolve(profileDir)
+  const tempRoot = `${path.resolve(os.tmpdir())}${path.sep}`
+  if (!resolved.startsWith(tempRoot) || !path.basename(resolved).startsWith('agentplay-packaged-edit-')) throw new Error(`拒绝清理非验收目录：${resolved}`)
+  try { if (fs.lstatSync(stagedFfmpeg).isSymbolicLink()) fs.unlinkSync(stagedFfmpeg) } catch {}
+  fs.rmSync(resolved, { recursive: true, force: true })
+}
+
+let session
+try {
+  if (!fs.existsSync(path.join(installedFfmpeg, 'bin', 'ffmpeg.exe'))) throw new Error(`缺少已安装 FFmpeg：${installedFfmpeg}`)
+  fs.mkdirSync(sourceDir, { recursive: true })
+  fs.copyFileSync(originalSource, sourcePath)
+  fs.mkdirSync(path.dirname(stagedFfmpeg), { recursive: true })
+  fs.symlinkSync(installedFfmpeg, stagedFfmpeg, 'junction')
+  fs.mkdirSync(evidenceDir, { recursive: true })
+  const sourceBefore = quickFingerprint(sourcePath)
+  session = await openSession()
+  const pageResult = await session.evaluate(`(async () => {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const waitFor = async (probe, label, timeoutMs = 120000) => {
+      const started = Date.now()
+      while (Date.now() - started < timeoutMs) {
+        const value = await probe()
+        if (value) return value
+        await wait(100)
+      }
+      throw new Error('等待超时：' + label)
+    }
+    await waitFor(() => document.readyState === 'complete' && window.aiPlayer?.mediaTools?.trim, '桌面桥接就绪', 60000)
+    await waitFor(() => {
+      const input = document.querySelector('.agent-composer input[type="text"]')
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return input && video && video.readyState >= 1 ? { input, video } : null
+    }, '本地视频与对话框就绪', 60000)
+    const explicitPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(instruction)}, sourcePath: ${JSON.stringify(sourcePath)} })
+    const consultationPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: '能不能截取第4秒到第20秒？', sourcePath: ${JSON.stringify(sourcePath)} })
+    if (!explicitPlan.matched || consultationPlan.matched) throw new Error('安装态意图边界不合格')
+    const input = document.querySelector('.agent-composer input[type="text"]')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    setter.call(input, ${JSON.stringify(instruction)})
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(instruction)} }))
+    await wait(120)
+    const send = document.querySelector('button[aria-label="发送"]')
+    if (!send) throw new Error('没有找到发送按钮')
+    send.click()
+    const task = await waitFor(async () => {
+      const tasks = await window.aiPlayer.taskRuntime.list()
+      const candidate = [...tasks].reverse().find((item) => item.type === 'media.edit-trim')
+      return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
+    }, '剪辑任务完成')
+    if (task.state !== 'completed') throw new Error(task.error || task.status || '剪辑任务未完成')
+    const preview = await waitFor(() => {
+      const video = document.querySelector('video[data-ai-player-video="true"]')
+      return video && Number.isFinite(video.duration) && Math.abs(video.duration - 16) <= 0.2
+        ? { duration: video.duration, currentSrc: video.currentSrc }
+        : null
+    }, '自动预览剪辑成片', 30000)
+    const bodyText = document.body.innerText
+    return {
+      version: window.aiPlayer.version,
+      explicitPlan,
+      consultationMatched: consultationPlan.matched,
+      task,
+      preview,
+      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：源片')
+    }
+  })()`, true)
+  const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
+  const screenshotPath = path.join(evidenceDir, 'conversation-result.png')
+  fs.writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64'))
+  const sourceAfter = quickFingerprint(sourcePath)
+  const outputPath = pageResult.task?.result?.outputPath
+  if (!outputPath || !fs.existsSync(outputPath)) throw new Error('安装态任务没有真实成果文件')
+  if (sourceBefore.bytes !== sourceAfter.bytes || sourceBefore.sha256 !== sourceAfter.sha256) throw new Error('安装态剪辑修改了源视频')
+  if (Math.abs(Number(pageResult.task.result.durationSeconds) - 16) > 0.2) throw new Error('安装态成品时长不合格')
+  if (pageResult.task.quality?.passed !== true) throw new Error('安装态任务质量门未通过')
+  if (!pageResult.uiReceiptVisible) throw new Error('对话框没有显示时间线与原文件回执')
+  const persistedOutputPath = path.join(evidenceDir, 'packaged-trim-4s-20s.mp4')
+  fs.copyFileSync(outputPath, persistedOutputPath)
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, persistedOutputPath, screenshotPath, pageResult }
+  const receiptPath = path.join(evidenceDir, 'receipt.json')
+  fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, qualityScore: pageResult.task.quality.score }, null, 2)}\n`)
+} finally {
+  if (session) await closeSession(session)
+  cleanup()
+}

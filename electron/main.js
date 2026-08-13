@@ -67,6 +67,8 @@ const { LocalAiDownloadService } = require('./local-ai-download-service')
 const { PersistentTaskRuntime } = require('./persistent-task-runtime')
 const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = require('./persistent-document-task')
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
+const { compileEditDecisionList } = require('./media-edit-decision')
+const { MediaEditService } = require('./media-edit-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -634,6 +636,7 @@ const videoFrames = new VideoFrameService({
   ffmpegPath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffmpeg.exe'),
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
+const mediaEditService = new MediaEditService({ frames: videoFrames })
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
   manifest: TRANSLATE_PACK,
@@ -1140,6 +1143,13 @@ app.whenReady().then(async () => {
       const actualOutput = actualValue ? path.resolve(actualValue) : ''
       if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
       action = '清理不合格的任务自产物并重新压缩'
+    } else if (type === 'media.edit-trim') {
+      const frozenValue = String(task.spec?.outputPath || '')
+      const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
+      const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
+      const actualOutput = actualValue ? path.resolve(actualValue) : ''
+      if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
+      action = '清理不合格的剪辑产物并从冻结时间线重新执行'
     } else if (type === 'media.dedup') {
       action = '保留哈希缓存并重新汇总扫描结果'
     } else if (type.startsWith('download.')) {
@@ -1863,6 +1873,23 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.edit-trim', async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.trim') throw new Error('冻结的剪辑决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑决策与源视频不一致')
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
+    status(`正在剪辑 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verify({ sourcePath, outputPath, decision: task.spec.decision, signal })
+      : await mediaEditService.trim({ sourcePath, outputPath, decision: task.spec.decision, signal })
+    validateMediaSources(task.spec.sources)
+    checkpoint({ stage: 'artifact-written', result })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return result
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.dedup', async ({ task, signal, checkpoint, status }) => {
     const root = validateFrozenDirectoryRoot(task.spec.root)
     const hashCache = task.checkpoint?.hashCache && typeof task.checkpoint.hashCache === 'object' ? { ...task.checkpoint.hashCache } : {}
@@ -1954,6 +1981,44 @@ app.whenReady().then(async () => {
       return { ...task.result, requestId }
     } catch (error) {
       return { success: false, requestId, error: error instanceof Error ? error.message : String(error), results: [], kind }
+    }
+  })
+
+  // 明确时间段剪辑：先冻结唯一时间线，再由主进程另存、探测并回执；询问/否定/举例不会进入写文件路径。
+  ipcMain.handle('media:edit-plan', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const sourcePath = assertAllowedPath(input.sourcePath)
+      const decision = compileEditDecisionList({ instruction: input.instruction, sourcePath })
+      return decision ? { matched: true, decision } : { matched: false }
+    } catch (error) {
+      return { matched: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('media:trim', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'media-edit-trim')
+    try {
+      const sourcePath = assertAllowedPath(input.sourcePath)
+      if (!videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
+      const decision = compileEditDecisionList({ instruction: input.instruction, sourcePath })
+      if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”' }
+      persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'media.edit-trim',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: {
+          instruction: decision.instruction,
+          decision,
+          sources: snapshotMediaSources([sourcePath]),
+          outputPath: plannedMediaOutput(sourcePath, decision.output.suffix, '.mp4', requestId)
+        }
+      })
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, matched: true, requestId, cancelled: task.state === 'cancelled', error: task.error || '视频剪辑未完成' }
+      return { ...task.result, matched: true, requestId }
+    } catch (error) {
+      return { success: false, matched: true, requestId, error: error instanceof Error ? error.message : String(error) }
     }
   })
 

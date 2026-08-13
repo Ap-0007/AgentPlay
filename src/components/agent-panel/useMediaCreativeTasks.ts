@@ -13,6 +13,12 @@ type CompressInput = {
   targetMb: number
   mode: 'compress' | 'remux'
 }
+type TrimInput = {
+  instruction: string
+  sourcePath: string
+  startSeconds: number
+  endSeconds: number
+}
 
 type MediaCreativeTaskOptions = {
   busyRef: CurrentRef<boolean>
@@ -49,6 +55,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   const recutInputRef = useRef<RecutOffer | null>(null)
   const batchInputRef = useRef<BatchInput>({ instruction: '', targets: [] })
   const compressInputRef = useRef<CompressInput>({ instruction: '', sourcePath: '', targetMb: 25, mode: 'compress' })
+  const trimInputRef = useRef<TrimInput>({ instruction: '', sourcePath: '', startSeconds: 0, endSeconds: 0 })
   const videoGenInstructionRef = useRef('')
   const dedupInstructionRef = useRef('')
 
@@ -182,6 +189,59 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     }
   }
 
+  const runTrimTask = async (text: string, override?: TrimInput): Promise<boolean> => {
+    if (!text) return false
+    const sourcePath = override?.sourcePath || usePlayerStore.getState().videoSrc
+    if (!sourcePath || /^(https?|blob):/i.test(sourcePath) || !window.aiPlayer?.mediaTools?.planEdit) return false
+    let startSeconds = override?.startSeconds || 0
+    let endSeconds = override?.endSeconds || 0
+    if (!override) {
+      try {
+        const plan = await window.aiPlayer.mediaTools.planEdit({ instruction: text, sourcePath })
+        if (!plan?.matched || plan.decision?.kind !== 'media.trim') return false
+        startSeconds = Number(plan.decision.timeline.startSeconds)
+        endSeconds = Number(plan.decision.timeline.endSeconds)
+      } catch {
+        return false
+      }
+    }
+    if (busyRef.current) return true
+    const input: TrimInput = { instruction: text, sourcePath, startSeconds, endSeconds }
+    trimInputRef.current = input
+    busyRef.current = true
+    if (!override) {
+      addMessage('user', text)
+      setInputText('')
+    }
+    executionTaskIdRef.current = startTask({
+      kind: 'media', label: `保留 ${startSeconds}–${endSeconds} 秒`, phase: 'running',
+      status: '正在按原画面比例精确剪辑，并核验成品时长…', instruction: text, source: sourcePath,
+      retry: { kind: 'trim', instruction: text, sourcePath }
+    })
+    const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    pendingTaskRef.current = 'trim'
+    bindCancelableRequest(requestId)
+    try {
+      const result = await window.aiPlayer.mediaTools.trim({ sourcePath, instruction: text, requestId, workspaceTaskId: executionTaskIdRef.current })
+      if (!result?.success || !result.outputPath) throw new Error(result?.error || '视频剪辑失败')
+      const receipt = result.timelineReceipt?.[0]
+      const summary = result.summary || `已生成 ${Number(result.durationSeconds || 0).toFixed(3)} 秒新视频；原文件未改动`
+      completeExecutionTask({ outputs: [result.outputPath], summary })
+      addMessage('agent', `${summary}${receipt ? `\n时间线：源片 ${receipt.sourceRange}；成片 ${receipt.outputRange}` : ''}\n成果：${result.outputPath}`)
+      window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
+      return true
+    } catch (error) {
+      if (executionWasCancelled()) return true
+      const message = error instanceof Error ? error.message : String(error)
+      failExecutionTask(message)
+      addMessage('agent', `[错误] ${message}`)
+      return true
+    } finally {
+      releaseCancelableRequest(requestId)
+      busyRef.current = false
+    }
+  }
+
   const runCompressTask = async (text: string, override?: CompressInput) => {
     if (!text || busyRef.current) return
     const sourcePath = override?.sourcePath || usePlayerStore.getState().videoSrc
@@ -270,7 +330,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
 
   useEffect(() => {
     const onAgentMediaTask = (event: Event) => {
-      const detail = (event as CustomEvent<{ action?: string; value?: { targetMb?: number; mode?: 'compress' | 'remux' } }>).detail || {}
+      const detail = (event as CustomEvent<{ action?: string; value?: { targetMb?: number; mode?: 'compress' | 'remux'; startSeconds?: number; endSeconds?: number } }>).detail || {}
       if (detail.action === 'start_batch_transcribe') {
         void runBatchTask('全部转写')
         return
@@ -279,6 +339,12 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         const mode = detail.value?.mode === 'remux' ? 'remux' : 'compress'
         const targetMb = Math.max(5, Number(detail.value?.targetMb) || 25)
         void runCompressTask(mode === 'remux' ? '转码成 mp4' : `压缩到 ${targetMb}MB`)
+        return
+      }
+      if (detail.action === 'start_trim_video') {
+        const startSeconds = Math.max(0, Number(detail.value?.startSeconds) || 0)
+        const endSeconds = Math.max(0, Number(detail.value?.endSeconds) || 0)
+        void runTrimTask(`保留第${startSeconds}秒到第${endSeconds}秒`)
         return
       }
       if (detail.action === 'start_duplicate_scan') void runDedupTask('重复文件检查')
@@ -307,6 +373,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         if (!compressInputRef.current.sourcePath) return false
         void runCompressTask(compressInputRef.current.instruction, compressInputRef.current)
         return true
+      case 'trim':
+        if (!trimInputRef.current.sourcePath) return false
+        void runTrimTask(trimInputRef.current.instruction, trimInputRef.current)
+        return true
       case 'dedup':
         if (!dedupInstructionRef.current) return false
         void runDedupTask(dedupInstructionRef.current, true)
@@ -317,6 +387,21 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   }
 
   const retryStoredTask = (retry: WorkspaceTaskRetry) => {
+    if (retry.kind === 'trim' && retry.sourcePath && retry.instruction) {
+      const planAndRetry = async () => {
+        const plan = await window.aiPlayer?.mediaTools?.planEdit({ instruction: retry.instruction || '', sourcePath: retry.sourcePath || '' })
+        if (!plan?.matched || plan.decision?.kind !== 'media.trim') {
+          addMessage('agent', '[错误] 原剪辑指令已无法还原成唯一时间线，请从原视频重新说明要保留的时间段。')
+          return
+        }
+        void runTrimTask(retry.instruction || '', {
+          instruction: retry.instruction || '', sourcePath: retry.sourcePath || '',
+          startSeconds: plan.decision.timeline.startSeconds, endSeconds: plan.decision.timeline.endSeconds
+        })
+      }
+      void planAndRetry()
+      return true
+    }
     if (retry.kind === 'compress' && retry.sourcePath) {
       usePlayerStore.getState().setMedia(retry.sourcePath.split(/[\\/]/).pop() || '待处理视频', retry.sourcePath)
       const mode = retry.mode || 'compress'
@@ -340,6 +425,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     runRecutShort,
     runVideoGenTask,
     runBatchTask,
+    runTrimTask,
     runCompressTask,
     runDedupTask,
     retryActiveTask,
