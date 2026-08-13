@@ -9,10 +9,12 @@ const NUMBER_TOKEN = String.raw`(?:\d+(?:\.\d+)?|[零〇一二两三四五六七
 const TIME_TOKEN = String.raw`(?:\d{1,3}:\d{2}(?:\.\d+)?|第?\s*${NUMBER_TOKEN}\s*(?:分(?:钟)?(?:\s*${NUMBER_TOKEN}\s*秒)?|秒|s))`
 const RANGE_SOURCE = `(${TIME_TOKEN})\\s*(?:到|至|—|–|-|~|～)\\s*(${TIME_TOKEN})`
 const RANGE_PATTERN_GLOBAL = new RegExp(RANGE_SOURCE, 'gi')
+const TIME_PATTERN_GLOBAL = new RegExp(`(${TIME_TOKEN})`, 'gi')
 const MAX_EDIT_SEGMENTS = 24
 const DIRECT_EDIT_PATTERN = /(?:保留|留下|截取|截出|剪出|剪辑|裁剪|取出)/
 const REMOVE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)/
 const JOIN_EDIT_PATTERN = /(?:拼接|拼起来|合并|接起来|连起来|再接|放(?:在)?前面|排到前面|调整顺序|重排)/
+const GENERIC_EDIT_PATTERN = /(?:处理|编辑|改一下|剪一下)/
 const SEGMENT_REQUEST_PATTERN = /(?:我(?:只)?想要|我要|给我|替我)[\s\S]*(?:这|那)?(?:一)?段(?:视频|片段)/
 const CONSULTATION_PATTERN = /(?:能不能|可不可以|是否|怎么|如何|支不支持|能做到|可以吗|行吗|\?|？)/
 const NEGATION_PATTERN = /(?:不要|别把|别剪|无需|不用|取消|不想)/
@@ -81,6 +83,12 @@ function extractRanges(text) {
     if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) return null
     return { startSeconds, endSeconds, durationSeconds: Number((endSeconds - startSeconds).toFixed(3)) }
   })
+}
+
+function extractTimes(text) {
+  return [...String(text || '').matchAll(TIME_PATTERN_GLOBAL)]
+    .map((match) => parseTimeSeconds(match[1]))
+    .filter((value) => Number.isFinite(value) && value >= 0)
 }
 
 function compileEditDecisionList({ instruction, sourcePath } = {}) {
@@ -160,6 +168,165 @@ function compileEditDecisionList({ instruction, sourcePath } = {}) {
   }
 }
 
+function planEditInstruction({ instruction, sourcePath } = {}) {
+  const text = String(instruction || '').trim()
+  const source = String(sourcePath || '').trim()
+  const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
+  if (decision) return { matched: true, decision }
+  if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
+  if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  const removesRange = REMOVE_EDIT_PATTERN.test(text)
+  const hasExplicitKeep = DIRECT_EDIT_PATTERN.test(text) || SEGMENT_REQUEST_PATTERN.test(text)
+  const hasGenericTrim = /剪一下/.test(text)
+  const operation = removesRange ? 'remove' : hasExplicitKeep || hasGenericTrim ? 'trim' : ''
+  const ranges = extractRanges(text)
+  const times = extractTimes(text)
+  if (operation && times.length === 0 && (DIRECT_EDIT_PATTERN.test(text) || GENERIC_EDIT_PATTERN.test(text) || removesRange)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-range',
+        question: operation === 'remove' ? '要删除哪一段？请告诉我开始和结束时间。' : '要保留哪一段？请告诉我开始和结束时间。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: { operation }
+      }
+    }
+  }
+  if (operation === 'trim' && ranges.length >= 2 && ranges.length <= MAX_EDIT_SEGMENTS && ranges.every(Boolean) && !JOIN_EDIT_PATTERN.test(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'confirm-join-order',
+        question: `按你刚才说的顺序，把这${ranges.length}段拼成一个新视频吗？`,
+        originalInstruction: text,
+        sourcePath: source,
+        known: { operation: 'concat', segments: ranges.map((range) => ({ startSeconds: range.startSeconds, endSeconds: range.endSeconds })) }
+      }
+    }
+  }
+  if (!removesRange && !hasExplicitKeep && GENERIC_EDIT_PATTERN.test(text) && ranges.length === 1 && ranges[0]) {
+    const range = ranges[0]
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-operation',
+        question: `第${range.startSeconds}–${range.endSeconds}秒要保留还是删除？`,
+        originalInstruction: text,
+        sourcePath: source,
+        known: { startSeconds: range.startSeconds, endSeconds: range.endSeconds }
+      }
+    }
+  }
+  if (operation && times.length === 1 && /(?:到|至|截止|之前|以前)/.test(text) && !/(?:之后|以后|往后)/.test(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-start',
+        question: operation === 'remove' ? '从第几秒开始删除？' : '从第几秒开始保留？',
+        originalInstruction: text,
+        sourcePath: source,
+        known: { operation, endSeconds: times[0] }
+      }
+    }
+  }
+  if (operation && times.length === 1 && /(?:之后|以后|往后|开始)/.test(text) && !/(?:之前|以前|截止|结尾|结束)/.test(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-end',
+        question: operation === 'remove' ? '要删除到第几秒？' : '要保留到第几秒？',
+        originalInstruction: text,
+        sourcePath: source,
+        known: { operation, startSeconds: times[0] }
+      }
+    }
+  }
+  return { matched: false }
+}
+
+function resolveEditClarification({ clarification, answer } = {}) {
+  const pending = clarification && typeof clarification === 'object' ? clarification : null
+  const text = String(answer || '').trim()
+  if (!pending || pending.schemaVersion !== 1 || pending.kind !== 'media.edit-clarification' || !text) return { matched: false }
+  if (/^(?:算了|取消|不弄了|先不剪了|不用了)[吧。！!]*$/.test(text)) return { matched: true, cancelled: true }
+  if (CONSULTATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  const replacementDecision = compileEditDecisionList({ instruction: text.replace(/^(?:改成|换成|重新)/, ''), sourcePath: pending.sourcePath })
+  if (replacementDecision) return { matched: true, decision: replacementDecision }
+  if (pending.reason === 'missing-end') {
+    const times = extractTimes(text)
+    if (times.length !== 1) return { matched: false }
+    const startSeconds = Number(pending.known?.startSeconds)
+    const endSeconds = times[0]
+    if (!Number.isFinite(startSeconds)) return { matched: false }
+    if (endSeconds <= startSeconds) return { matched: true, clarification: { ...pending, question: `结束时间要晚于第${startSeconds}秒，请重新告诉我结束时间。` } }
+    const verb = pending.known?.operation === 'remove' ? '删除' : '保留'
+    const instruction = `${verb}第${startSeconds}秒到第${endSeconds}秒`
+    const decision = compileEditDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
+  if (pending.reason === 'missing-start') {
+    const times = extractTimes(text)
+    if (times.length !== 1) return { matched: false }
+    const startSeconds = times[0]
+    const endSeconds = Number(pending.known?.endSeconds)
+    if (!Number.isFinite(endSeconds)) return { matched: false }
+    if (endSeconds <= startSeconds) return { matched: true, clarification: { ...pending, question: `开始时间要早于第${endSeconds}秒，请重新告诉我开始时间。` } }
+    const verb = pending.known?.operation === 'remove' ? '删除' : '保留'
+    const instruction = `${verb}第${startSeconds}秒到第${endSeconds}秒`
+    const decision = compileEditDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
+  if (pending.reason === 'missing-operation') {
+    const removes = REMOVE_EDIT_PATTERN.test(text)
+    const keeps = DIRECT_EDIT_PATTERN.test(text) || /^(?:保留|留下|要这段|留着)[吧。！!]*$/.test(text)
+    if (removes === keeps) return { matched: false }
+    const startSeconds = Number(pending.known?.startSeconds)
+    const endSeconds = Number(pending.known?.endSeconds)
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) return { matched: false }
+    const instruction = `${removes ? '删除' : '保留'}第${startSeconds}秒到第${endSeconds}秒`
+    const decision = compileEditDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
+  if (pending.reason === 'confirm-join-order') {
+    const reverses = /(?:反过来|倒过来|顺序反过来|倒序)/.test(text)
+    if (!reverses && !/(?:^是[的吧。！!]*$|确认|就按|按(?:这个|刚才|上述)?顺序|拼接|拼起来)/.test(text)) return { matched: false }
+    const originalSegments = Array.isArray(pending.known?.segments) ? pending.known.segments : []
+    const segments = reverses ? [...originalSegments].reverse() : originalSegments
+    if (segments.length < 2 || segments.length > MAX_EDIT_SEGMENTS) return { matched: false }
+    const rangeText = segments.map((segment) => {
+      const startSeconds = Number(segment?.startSeconds)
+      const endSeconds = Number(segment?.endSeconds)
+      return Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds
+        ? `第${startSeconds}秒到第${endSeconds}秒`
+        : ''
+    })
+    if (rangeText.some((range) => !range)) return { matched: false }
+    const instruction = `按顺序拼接${rangeText.join('和')}`
+    const decision = compileEditDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
+  if (pending.reason === 'missing-range') {
+    const ranges = extractRanges(text)
+    if (ranges.length !== 1 || !ranges[0]) return { matched: false }
+    const verb = pending.known?.operation === 'remove' ? '删除' : '保留'
+    const instruction = `${verb}第${ranges[0].startSeconds}秒到第${ranges[0].endSeconds}秒`
+    const decision = compileEditDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
+  return { matched: false }
+}
+
 function compileEditHistoryAction(instruction) {
   const text = String(instruction || '').trim()
   if (!text || CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return null
@@ -168,4 +335,4 @@ function compileEditHistoryAction(instruction) {
   return null
 }
 
-module.exports = { compileEditDecisionList, compileEditHistoryAction, parseTimeSeconds, chineseInteger, portableBasename }
+module.exports = { compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

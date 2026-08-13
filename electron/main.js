@@ -68,6 +68,7 @@ const { PersistentTaskRuntime } = require('./persistent-task-runtime')
 const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = require('./persistent-document-task')
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
 const { compileEditDecisionList, compileEditHistoryAction } = require('./media-edit-decision')
+const { MediaEditConversation } = require('./media-edit-conversation')
 const { MediaEditService } = require('./media-edit-service')
 const { MediaEditProjectStore } = require('./media-edit-project-store')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
@@ -639,6 +640,7 @@ const videoFrames = new VideoFrameService({
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
+const mediaEditConversation = new MediaEditConversation()
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
   manifest: TRANSLATE_PACK,
@@ -2028,8 +2030,7 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       const sourcePath = assertAllowedPath(input.sourcePath)
-      const decision = compileEditDecisionList({ instruction: input.instruction, sourcePath })
-      return decision ? { matched: true, decision } : { matched: false }
+      return mediaEditConversation.plan({ instruction: input.instruction, sourcePath, clarificationId: input.clarificationId })
     } catch (error) {
       return { matched: false, error: error instanceof Error ? error.message : String(error) }
     }

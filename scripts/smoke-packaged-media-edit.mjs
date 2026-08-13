@@ -20,6 +20,8 @@ const installedFfmpeg = path.join(process.env.APPDATA || path.join(os.homedir(),
 const stagedFfmpeg = path.join(profileDir, 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
 const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-edit-packaged')
 const instruction = '我想要第四秒到第20秒的这段视频'
+const ambiguousInstruction = '保留第4秒之后'
+const clarificationAnswer = '到第20秒'
 const removeInstruction = '删除第4秒到第8秒'
 const concatInstruction = '把第8秒到第12秒放前面，再接第0秒到第4秒'
 
@@ -168,7 +170,8 @@ try {
     }, '本地视频与对话框就绪', 60000)
     const explicitPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(instruction)}, sourcePath: ${JSON.stringify(sourcePath)} })
     const consultationPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: '能不能截取第4秒到第20秒？', sourcePath: ${JSON.stringify(sourcePath)} })
-    if (!explicitPlan.matched || consultationPlan.matched) throw new Error('安装态意图边界不合格')
+    const ambiguousPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(ambiguousInstruction)}, sourcePath: ${JSON.stringify(sourcePath)} })
+    if (!explicitPlan.matched || consultationPlan.matched || ambiguousPlan.clarification?.reason !== 'missing-end') throw new Error('安装态意图或追问边界不合格')
     const sendText = async (text) => {
       const input = document.querySelector('.agent-composer input[type="text"]')
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -179,13 +182,19 @@ try {
       if (!send) throw new Error('没有找到发送按钮')
       send.click()
     }
-    await sendText(${JSON.stringify(instruction)})
+    const tasksBeforeClarification = await window.aiPlayer.taskRuntime.list()
+    await sendText(${JSON.stringify(ambiguousInstruction)})
+    await waitFor(() => document.body.innerText.includes('要保留到第几秒？'), '只追问缺失的结束时间', 10000)
+    const tasksWhileClarifying = await window.aiPlayer.taskRuntime.list()
+    if (tasksWhileClarifying.length !== tasksBeforeClarification.length) throw new Error('追问阶段错误创建了持久任务')
+    await sendText(${JSON.stringify(clarificationAnswer)})
     const task = await waitFor(async () => {
       const tasks = await window.aiPlayer.taskRuntime.list()
       const candidate = [...tasks].reverse().find((item) => item.type === 'media.edit-trim')
       return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
     }, '剪辑任务完成')
     if (task.state !== 'completed') throw new Error(task.error || task.status || '剪辑任务未完成')
+    if (task.spec?.instruction !== '保留第4秒到第20秒') throw new Error('追问补齐后没有冻结成完整剪辑指令')
     const preview = await waitFor(() => {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return video && Number.isFinite(video.duration) && Math.abs(video.duration - 16) <= 0.2
@@ -276,11 +285,21 @@ try {
         ? { duration: video.duration, currentSrc: video.currentSrc }
         : null
     }, '重做拼接并回到重排版', 30000)
+    const tasksBeforeCancel = await window.aiPlayer.taskRuntime.list()
+    await sendText('删除视频')
+    await waitFor(() => document.body.innerText.includes('要删除哪一段？请告诉我开始和结束时间。'), '删除范围追问', 10000)
+    await sendText('算了')
+    await waitFor(() => document.body.innerText.includes('已取消这次剪辑，没有创建任务，也没有改动文件。'), '取消追问回执', 10000)
+    const tasksAfterCancel = await window.aiPlayer.taskRuntime.list()
+    if (tasksAfterCancel.length !== tasksBeforeCancel.length) throw new Error('取消追问后错误创建了持久任务')
     const bodyText = document.body.innerText
     return {
       version: window.aiPlayer.version,
       originalDuration: initial.duration,
       explicitPlan,
+      ambiguousPlan,
+      clarificationNoTask: tasksWhileClarifying.length === tasksBeforeClarification.length,
+      cancelledClarificationNoTask: tasksAfterCancel.length === tasksBeforeCancel.length,
       consultationMatched: consultationPlan.matched,
       task,
       preview,

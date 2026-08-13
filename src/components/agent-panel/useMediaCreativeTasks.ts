@@ -45,6 +45,7 @@ type MediaCreativeTaskOptions = {
 const VIDEO_GENERATION_INTENT = /^生成(一段|一个|一条|个|段|条)?视频|^做(一段|一个|一条|个|段|条)?视频|^来(一段|一条)视频/
 const AUDIO_VIDEO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv'])
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
+const sameLocalPath = (left: string, right: string) => left.replace(/\\/g, '/').toLowerCase() === right.replace(/\\/g, '/').toLowerCase()
 
 export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions) {
   const {
@@ -58,6 +59,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   const batchInputRef = useRef<BatchInput>({ instruction: '', targets: [] })
   const compressInputRef = useRef<CompressInput>({ instruction: '', sourcePath: '', targetMb: 25, mode: 'compress' })
   const trimInputRef = useRef<TrimInput>({ instruction: '', sourcePath: '', startSeconds: 0, endSeconds: 0 })
+  const pendingEditClarificationRef = useRef<MediaEditClarification | null>(null)
   const videoGenInstructionRef = useRef('')
   const dedupInstructionRef = useRef('')
 
@@ -221,17 +223,53 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
 
   const runTrimTask = async (text: string, override?: TrimInput): Promise<boolean> => {
     if (!text) return false
-    const sourcePath = override?.sourcePath || usePlayerStore.getState().videoSrc
+    const currentPath = override?.sourcePath || usePlayerStore.getState().videoSrc
+    const pendingClarification = override ? null : pendingEditClarificationRef.current
+    if (pendingClarification && (!currentPath || !sameLocalPath(currentPath, pendingClarification.sourcePath))) {
+      pendingEditClarificationRef.current = null
+      addMessage('user', text)
+      setInputText('')
+      addMessage('agent', '当前视频已经切换，刚才未完成的剪辑追问已取消；请对当前视频重新说明。')
+      return true
+    }
+    const sourcePath = pendingClarification?.sourcePath || currentPath
     if (!sourcePath || /^(https?|blob):/i.test(sourcePath) || !window.aiPlayer?.mediaTools?.planEdit) return false
     let startSeconds = override?.startSeconds || 0
     let endSeconds = override?.endSeconds || 0
     let operation: 'trim' | 'remove' | 'concat' = override?.operation || 'trim'
     let segments = override?.segments || []
+    let executionInstruction = text
     if (!override) {
       try {
-        const plan = await window.aiPlayer.mediaTools.planEdit({ instruction: text, sourcePath })
+        const plan = await window.aiPlayer.mediaTools.planEdit({ instruction: text, sourcePath, ...(pendingClarification ? { clarificationId: pendingClarification.id } : {}) })
+        if (pendingClarification && plan?.error) {
+          pendingEditClarificationRef.current = null
+          addMessage('user', text)
+          setInputText('')
+          addMessage('agent', `[错误] ${plan.error}`)
+          return true
+        }
+        if (plan?.cancelled) {
+          pendingEditClarificationRef.current = null
+          addMessage('user', text)
+          setInputText('')
+          addMessage('agent', '好的，已取消这次剪辑，没有创建任务，也没有改动文件。')
+          return true
+        }
+        if (plan?.clarification) {
+          pendingEditClarificationRef.current = plan.clarification
+          addMessage('user', text)
+          setInputText('')
+          addMessage('agent', plan.clarification.question)
+          return true
+        }
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments'].includes(decision.kind)) return false
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments'].includes(decision.kind)) {
+          pendingEditClarificationRef.current = null
+          return false
+        }
+        pendingEditClarificationRef.current = null
+        executionInstruction = decision.instruction || text
         operation = decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim'
         startSeconds = Number(decision.timeline.startSeconds || decision.timeline.segments?.[0]?.sourceStartSeconds || 0)
         endSeconds = Number(decision.timeline.endSeconds || decision.timeline.segments?.at(-1)?.sourceEndSeconds || 0)
@@ -241,7 +279,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       }
     }
     if (busyRef.current) return true
-    const input: TrimInput = { instruction: text, sourcePath, startSeconds, endSeconds, operation, segments }
+    const input: TrimInput = { instruction: executionInstruction, sourcePath, startSeconds, endSeconds, operation, segments }
     trimInputRef.current = input
     busyRef.current = true
     if (!override) {
@@ -251,14 +289,14 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     const actionLabel = operation === 'concat' ? `按顺序拼接 ${segments.length} 个片段` : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
       kind: 'media', label: actionLabel, phase: 'running',
-      status: operation === 'concat' ? '正在按口述顺序重排片段、拼接连续音画并核验成品…' : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: text, source: sourcePath,
-      retry: { kind: 'trim', instruction: text, sourcePath }
+      status: operation === 'concat' ? '正在按口述顺序重排片段、拼接连续音画并核验成品…' : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
+      retry: { kind: 'trim', instruction: executionInstruction, sourcePath }
     })
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     pendingTaskRef.current = 'trim'
     bindCancelableRequest(requestId)
     try {
-      const result = await window.aiPlayer.mediaTools.trim({ sourcePath, instruction: text, requestId, workspaceTaskId: executionTaskIdRef.current })
+      const result = await window.aiPlayer.mediaTools.trim({ sourcePath, instruction: executionInstruction, requestId, workspaceTaskId: executionTaskIdRef.current })
       if (!result?.success || !result.outputPath) throw new Error(result?.error || '视频剪辑失败')
       const timeline = (result.timelineReceipt || []).map((item) => `${item.operation}：源片 ${item.sourceRange}；成片 ${item.outputRange}`).join('\n')
       const summary = result.summary || `已生成 ${Number(result.durationSeconds || 0).toFixed(3)} 秒新视频；原文件未改动`

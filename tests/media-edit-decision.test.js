@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const { compileEditDecisionList, compileEditHistoryAction, portableBasename } = require('../electron/media-edit-decision')
+const { compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, portableBasename } = require('../electron/media-edit-decision')
 
 test('edit decision source names are stable across Windows and POSIX runners', () => {
   assert.equal(portableBasename('D:\\Videos\\source.mp4'), 'source.mp4')
@@ -55,6 +55,119 @@ test('ambiguous or invalid ranges stay in conversation instead of guessing', () 
     assert.equal(compileEditDecisionList({ instruction, sourcePath: 'D:\\Videos\\source.mp4' }), null, instruction)
   }
 
+})
+
+test('an edit missing only its end time asks one targeted question without creating a decision', () => {
+  const plan = planEditInstruction({
+    instruction: '保留第4秒之后',
+    sourcePath: 'D:\\Videos\\source.mp4'
+  })
+
+  assert.equal(plan.matched, true)
+  assert.equal(plan.decision, undefined)
+  assert.deepEqual(plan.clarification, {
+    schemaVersion: 1,
+    kind: 'media.edit-clarification',
+    reason: 'missing-end',
+    question: '要保留到第几秒？',
+    originalInstruction: '保留第4秒之后',
+    sourcePath: 'D:\\Videos\\source.mp4',
+    known: { operation: 'trim', startSeconds: 4 }
+  })
+})
+
+test('the next short answer completes the pending edit into the same frozen decision format', () => {
+  const pending = planEditInstruction({
+    instruction: '保留第4秒之后',
+    sourcePath: 'D:\\Videos\\source.mp4'
+  }).clarification
+  const resolved = resolveEditClarification({ clarification: pending, answer: '到第20秒' })
+
+  assert.equal(resolved.matched, true)
+  assert.equal(resolved.decision.kind, 'media.trim')
+  assert.deepEqual(resolved.decision.timeline, { startSeconds: 4, endSeconds: 20, durationSeconds: 16 })
+  assert.equal(resolved.decision.instruction, '保留第4秒到第20秒')
+})
+
+test('an edit missing its start asks only for the start and resolves a remove action', () => {
+  const plan = planEditInstruction({ instruction: '删除到第20秒', sourcePath: 'D:\\Videos\\source.mp4' })
+  assert.equal(plan.matched, true)
+  assert.equal(plan.clarification.reason, 'missing-start')
+  assert.equal(plan.clarification.question, '从第几秒开始删除？')
+
+  const resolved = resolveEditClarification({ clarification: plan.clarification, answer: '从第4秒开始' })
+  assert.equal(resolved.decision.kind, 'media.remove-segment')
+  assert.deepEqual(resolved.decision.timeline, { startSeconds: 4, endSeconds: 20, removedDurationSeconds: 16 })
+})
+
+test('a timed edit without an operation asks whether to keep or remove that range', () => {
+  const plan = planEditInstruction({ instruction: '处理第4秒到第20秒', sourcePath: 'D:\\Videos\\source.mp4' })
+  assert.equal(plan.matched, true)
+  assert.equal(plan.clarification.reason, 'missing-operation')
+  assert.equal(plan.clarification.question, '第4–20秒要保留还是删除？')
+
+  const resolved = resolveEditClarification({ clarification: plan.clarification, answer: '删除' })
+  assert.equal(resolved.decision.kind, 'media.remove-segment')
+  assert.deepEqual(resolved.decision.timeline, { startSeconds: 4, endSeconds: 20, removedDurationSeconds: 16 })
+})
+
+test('multiple kept ranges without a join instruction ask once before preserving spoken order', () => {
+  const plan = planEditInstruction({
+    instruction: '保留第0秒到第4秒和第8秒到第12秒',
+    sourcePath: 'D:\\Videos\\source.mp4'
+  })
+  assert.equal(plan.matched, true)
+  assert.equal(plan.clarification.reason, 'confirm-join-order')
+  assert.equal(plan.clarification.question, '按你刚才说的顺序，把这2段拼成一个新视频吗？')
+
+  const resolved = resolveEditClarification({ clarification: plan.clarification, answer: '按这个顺序拼接' })
+  assert.equal(resolved.decision.kind, 'media.concat-segments')
+  assert.deepEqual(resolved.decision.timeline.segments.map((segment) => [segment.sourceStartSeconds, segment.sourceEndSeconds]), [[0, 4], [8, 12]])
+})
+
+test('a clear request to edit without any time range asks for exactly one range', () => {
+  const plan = planEditInstruction({ instruction: '帮我剪一下这个视频', sourcePath: 'D:\\Videos\\source.mp4' })
+  assert.equal(plan.matched, true)
+  assert.equal(plan.clarification.reason, 'missing-range')
+  assert.equal(plan.clarification.question, '要保留哪一段？请告诉我开始和结束时间。')
+
+  const resolved = resolveEditClarification({ clarification: plan.clarification, answer: '第4秒到第20秒' })
+  assert.equal(resolved.decision.kind, 'media.trim')
+  assert.deepEqual(resolved.decision.timeline, { startSeconds: 4, endSeconds: 20, durationSeconds: 16 })
+  assert.deepEqual(planEditInstruction({ instruction: '处理一下这个视频', sourcePath: 'D:\\Videos\\source.mp4' }), { matched: false })
+})
+
+test('a pending edit can be cancelled, while unrelated text is released back to normal conversation', () => {
+  const pending = planEditInstruction({ instruction: '保留第4秒之后', sourcePath: 'D:\\Videos\\source.mp4' }).clarification
+  assert.deepEqual(resolveEditClarification({ clarification: pending, answer: '算了' }), { matched: true, cancelled: true })
+  assert.deepEqual(resolveEditClarification({ clarification: pending, answer: '这个视频讲了什么' }), { matched: false })
+
+  const replacement = resolveEditClarification({ clarification: pending, answer: '改成保留第8秒到第12秒' })
+  assert.deepEqual(replacement.decision.timeline, { startSeconds: 8, endSeconds: 12, durationSeconds: 4 })
+})
+
+test('an invalid time answer repeats the same missing field instead of guessing or starting a task', () => {
+  const pending = planEditInstruction({ instruction: '保留第4秒之后', sourcePath: 'D:\\Videos\\source.mp4' }).clarification
+  const result = resolveEditClarification({ clarification: pending, answer: '到第2秒' })
+  assert.equal(result.matched, true)
+  assert.equal(result.decision, undefined)
+  assert.equal(result.clarification.reason, 'missing-end')
+  assert.equal(result.clarification.question, '结束时间要晚于第4秒，请重新告诉我结束时间。')
+
+  const missingStart = planEditInstruction({ instruction: '删除到第20秒', sourcePath: 'D:\\Videos\\source.mp4' }).clarification
+  const invalidStart = resolveEditClarification({ clarification: missingStart, answer: '从第25秒开始' })
+  assert.equal(invalidStart.matched, true)
+  assert.equal(invalidStart.clarification.reason, 'missing-start')
+  assert.equal(invalidStart.clarification.question, '开始时间要早于第20秒，请重新告诉我开始时间。')
+})
+
+test('a join clarification accepts reversing the two spoken segments without another question', () => {
+  const pending = planEditInstruction({
+    instruction: '保留第0秒到第4秒和第8秒到第12秒',
+    sourcePath: 'D:\\Videos\\source.mp4'
+  }).clarification
+  const result = resolveEditClarification({ clarification: pending, answer: '反过来拼' })
+  assert.deepEqual(result.decision.timeline.segments.map((segment) => [segment.sourceStartSeconds, segment.sourceEndSeconds]), [[8, 12], [0, 4]])
 })
 
 test('only an explicit undo or redo command becomes an edit-history action', () => {

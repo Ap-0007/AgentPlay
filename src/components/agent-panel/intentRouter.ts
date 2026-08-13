@@ -29,6 +29,7 @@ const BATCH_SCOPE_INTENT = /全部|批量|每个|逐一|一起/
 const BATCH_ACTION_INTENT = /压缩|转写/
 const COMPRESS_INTENT = /压缩|压到|视频太大|转码|转成 ?mp4|转换为 ?mp4/
 const DEDUP_INTENT = /^去重|重复文件|查重/
+const EDIT_WITHOUT_SOURCE_INTENT = /(?:剪一下|剪辑|裁剪|剪出|删除视频|删掉视频|(?:删除|删掉|保留|留下|拼接|重排)[\s\S]*(?:秒|分钟|片段))/
 const LIBRARY_INTENTS: Array<[RegExp, string, string]> = [
   [/屏幕录制|开始录制|录屏/, 'record', '已打开屏幕录制（在媒体库页操作）'],
   [/整理建议|整理素材|素材整理/, 'organize', '正在生成素材整理建议'],
@@ -65,6 +66,12 @@ export function createIntentRouter(options: IntentRouterOptions) {
     }
     if (isVideoGenerationIntent(text)) {
       await runVideoGenTask(text)
+      return
+    }
+    if ((!videoSrc || /^(https?|blob):/i.test(videoSrc)) && EDIT_WITHOUT_SOURCE_INTENT.test(text)) {
+      addMessage('user', text)
+      setInputText('')
+      addMessage('agent', '请先打开或拖入要编辑的视频；素材明确后，我只会追问真正影响结果的一项。')
       return
     }
     if (videoSrc && !/^(https?|blob):/i.test(videoSrc) && window.aiPlayer?.mediaTools?.planHistory) {
