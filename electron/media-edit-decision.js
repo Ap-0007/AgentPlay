@@ -17,6 +17,10 @@ const EXAMPLE_PATTERN = /(?:比如|例如|举例|假如|如果|假设|我说[“
 const UNDO_EDIT_PATTERN = /^(?:(?:请|帮我|麻烦你?)\s*)?(?:撤销(?:刚才的剪辑|这次剪辑|上一步(?:剪辑)?|上一个(?:剪辑)?版本)|撤回(?:刚才的剪辑|上一步(?:剪辑)?)|回到剪辑前|退回上一个(?:剪辑)?版本)\s*[吧。！!]*$/
 const REDO_EDIT_PATTERN = /^(?:(?:请|帮我|麻烦你?)\s*)?(?:重做(?:刚才撤销的剪辑|刚才的剪辑|下一步(?:剪辑)?)|恢复(?:刚才撤销的剪辑|下一个(?:剪辑)?版本)|回到下一个(?:剪辑)?版本)\s*[吧。！!]*$/
 
+function portableBasename(value) {
+  return path.posix.basename(String(value || '').replaceAll('\\', '/'))
+}
+
 function chineseInteger(value) {
   const text = String(value || '')
   if (!text) return Number.NaN
@@ -84,7 +88,7 @@ function compileEditDecisionList({ instruction, sourcePath } = {}) {
       schemaVersion: 1,
       kind: 'media.remove-segment',
       instruction: text,
-      source: { path: source, name: path.basename(source) },
+      source: { path: source, name: portableBasename(source) },
       timeline: { startSeconds, endSeconds, removedDurationSeconds: durationSeconds },
       operations: [{ type: 'remove', sourceStartSeconds: startSeconds, sourceEndSeconds: endSeconds }],
       output: {
@@ -99,7 +103,7 @@ function compileEditDecisionList({ instruction, sourcePath } = {}) {
     schemaVersion: 1,
     kind: 'media.trim',
     instruction: text,
-    source: { path: source, name: path.basename(source) },
+    source: { path: source, name: portableBasename(source) },
     timeline: { startSeconds, endSeconds, durationSeconds },
     operations: [{ type: 'trim', sourceStartSeconds: startSeconds, sourceEndSeconds: endSeconds, targetStartSeconds: 0 }],
     output: {
@@ -119,4 +123,4 @@ function compileEditHistoryAction(instruction) {
   return null
 }
 
-module.exports = { compileEditDecisionList, compileEditHistoryAction, parseTimeSeconds, chineseInteger }
+module.exports = { compileEditDecisionList, compileEditHistoryAction, parseTimeSeconds, chineseInteger, portableBasename }

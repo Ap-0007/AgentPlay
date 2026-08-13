@@ -1,7 +1,12 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const { compileEditDecisionList, compileEditHistoryAction } = require('../electron/media-edit-decision')
+const { compileEditDecisionList, compileEditHistoryAction, portableBasename } = require('../electron/media-edit-decision')
+
+test('edit decision source names are stable across Windows and POSIX runners', () => {
+  assert.equal(portableBasename('D:\\Videos\\source.mp4'), 'source.mp4')
+  assert.equal(portableBasename('/mnt/videos/source.mp4'), 'source.mp4')
+})
 
 test('explicit Chinese trim instruction compiles to a frozen 16-second timeline', () => {
   const decision = compileEditDecisionList({
