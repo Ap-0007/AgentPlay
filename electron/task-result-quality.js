@@ -156,7 +156,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('artifacts', '字幕成果', artifactRatio, 25, artifactFailure)
-    add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '调时成果不是有效的 srt 字幕', true))
+    add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt' || item.ext === '.vtt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '调时成果不是有效的 srt/vtt 字幕', true))
     add('cue-receipt', '条目回执', cueReceiptOk ? 1 : 0, 25, reason('CUE_RECEIPT_MISMATCH', `字幕条目回执不一致：源 ${sourceCueCount || 0} 条、丢弃 ${droppedCueCount} 条、成果 ${cueCount || 0} 条`, true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.translate-subtitles') {
@@ -196,7 +196,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('artifacts', '字幕成果', artifactRatio, 25, artifactFailure)
-    add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '校对成果不是有效的 srt 字幕', true))
+    add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt' || item.ext === '.vtt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '校对成果不是有效的 srt/vtt 字幕', true))
     add('cue-receipt', '条目回执', cueReceiptOk ? 1 : 0, 25, reason('CUE_RECEIPT_MISMATCH', `校对条目回执不一致：期望 ${expectedCueCount || 0} 条，实际 ${cueCount || 0} 条`, true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.compress') {

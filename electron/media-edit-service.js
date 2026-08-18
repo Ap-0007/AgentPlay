@@ -100,6 +100,56 @@ function renderSrtCues(cues) {
   return cues.map((cue, index) => `${index + 1}\r\n${msToSrtTime(cue.startMs)} --> ${msToSrtTime(cue.endMs)}\r\n${cue.text.replaceAll('\n', '\r\n')}\r\n`).join('\r\n')
 }
 
+// WebVTT：头部 WEBVTT，时间用点号毫秒且可省略小时（MM:SS.mmm）；cue 前可有标识行
+const VTT_TIME_LINE = /^\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})\.(\d{3})/
+
+function parseVttCues(text) {
+  const lines = String(text || '').replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
+  const cues = []
+  let block = []
+  const flush = () => {
+    if (!block.length) return
+    const timeIndex = block.findIndex((line) => VTT_TIME_LINE.test(line))
+    if (timeIndex >= 0) {
+      const match = VTT_TIME_LINE.exec(block[timeIndex])
+      const startMs = srtTimeToMs(match[1] || 0, match[2], match[3], match[4])
+      const endMs = srtTimeToMs(match[5] || 0, match[6], match[7], match[8])
+      const textLines = block.slice(timeIndex + 1)
+      if (endMs > startMs && textLines.some((line) => line.trim())) cues.push({ startMs, endMs, text: textLines.join('\n') })
+    }
+    block = []
+  }
+  for (const line of lines.slice(lines[0]?.trim().startsWith('WEBVTT') ? 1 : 0)) {
+    if (line.trim() === '') flush()
+    else block.push(line)
+  }
+  flush()
+  return cues
+}
+
+function msToVttTime(value) {
+  return msToSrtTime(value).replace(',', '.')
+}
+
+function renderVttCues(cues) {
+  return `WEBVTT\r\n\r\n${cues.map((cue, index) => `${index + 1}\r\n${msToVttTime(cue.startMs)} --> ${msToVttTime(cue.endMs)}\r\n${cue.text.replaceAll('\n', '\r\n')}\r\n`).join('\r\n')}`
+}
+
+// 文本字幕格式分发：srt/vtt 同一套 cue 模型（startMs/endMs/text）
+function subtitleFormatOf(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase()
+  if (ext === '.srt' || ext === '.vtt') return ext.slice(1)
+  return ''
+}
+
+function parseSubtitleCuesAuto(text, format) {
+  return format === 'vtt' ? parseVttCues(text) : parseSrtCues(text)
+}
+
+function renderSubtitleCuesAuto(cues, format) {
+  return format === 'vtt' ? renderVttCues(cues) : renderSrtCues(cues)
+}
+
 class MediaEditService {
   constructor({ frames, fsImpl = fs } = {}) {
     if (!frames) throw new Error('媒体剪辑服务缺少 FFmpeg 执行器')
@@ -544,7 +594,8 @@ class MediaEditService {
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.shift-subtitles') throw new Error('字幕调时决策无效')
     if (path.resolve(String(decision.subtitle?.path || '')) !== source) throw new Error('字幕调时决策与字幕文件不一致')
     if (source === output) throw new Error('禁止覆盖源字幕文件')
-    if (path.extname(source).toLowerCase() !== '.srt') throw new Error('字幕调时目前只支持 .srt 文件')
+    const format = subtitleFormatOf(source)
+    if (!format) throw new Error('字幕调时目前只支持 .srt/.vtt 文件')
     if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('字幕文件不存在')
     const sourceStat = this.fs.statSync(source)
     if (sourceStat.size <= 0) throw new Error('字幕文件为空')
@@ -557,8 +608,8 @@ class MediaEditService {
 
     const raw = this.fs.readFileSync(source)
     const text = decodeSubtitleText(raw)
-    const cues = parseSrtCues(text)
-    if (!cues.length) throw new Error('字幕文件里没有可识别的有效条目（需要标准 srt 时间轴）')
+    const cues = parseSubtitleCuesAuto(text, format)
+    if (!cues.length) throw new Error(`字幕文件里没有可识别的有效条目（需要标准 ${format} 时间轴）`)
     const deltaMs = Math.round(offsetSeconds * 1000) * (direction === 'earlier' ? -1 : 1)
     const shifted = []
     let droppedCueCount = 0
@@ -569,7 +620,7 @@ class MediaEditService {
       shifted.push({ startMs: Math.max(0, startMs), endMs, text: cue.text })
     }
     if (!shifted.length) throw new Error(`全部 ${cues.length} 条字幕都会移到 0 点之前，没有可交付的内容；请减小秒数或换个方向`)
-    const rendered = renderSrtCues(shifted)
+    const rendered = renderSubtitleCuesAuto(shifted, format)
     const tempPath = `${output}.agentplay-shift-${process.pid}-${Date.now()}.tmp`
     try {
       this.fs.writeFileSync(tempPath, rendered, 'utf8')
@@ -577,7 +628,7 @@ class MediaEditService {
       const sourceAfter = this.fs.statSync(source)
       if (sourceStat.size !== sourceAfter.size || Math.trunc(sourceStat.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('调时期间源字幕文件发生变化，已拒绝交付')
       // 交付前复核：重新解析成果，逐条核对时间与文本
-      const reparsed = parseSrtCues(this.fs.readFileSync(tempPath, 'utf8'))
+      const reparsed = parseSubtitleCuesAuto(this.fs.readFileSync(tempPath, 'utf8'), format)
       if (reparsed.length !== shifted.length || reparsed.some((cue, index) => cue.startMs !== shifted[index].startMs || cue.endMs !== shifted[index].endMs || cue.text !== shifted[index].text)) {
         throw new Error('调时成果复核失败：写出的字幕与冻结决策不一致')
       }
@@ -693,7 +744,8 @@ class MediaEditService {
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.edit-subtitle-cues') throw new Error('字幕校对决策无效')
     if (path.resolve(String(decision.subtitle?.path || '')) !== source) throw new Error('字幕校对决策与字幕文件不一致')
     if (source === output) throw new Error('禁止覆盖源字幕文件')
-    if (path.extname(source).toLowerCase() !== '.srt') throw new Error('字幕校对目前只支持 .srt 文件')
+    const format = subtitleFormatOf(source)
+    if (!format) throw new Error('字幕校对目前只支持 .srt/.vtt 文件')
     if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('字幕文件不存在')
     const sourceStat = this.fs.statSync(source)
     if (sourceStat.size <= 0) throw new Error('字幕文件为空')
@@ -703,8 +755,8 @@ class MediaEditService {
     if (!cueEdit || !['delete', 'replace'].includes(cueEdit.operation)) throw new Error('字幕校对操作无效')
     if (signal?.aborted) throw new Error('已取消')
 
-    const cues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
-    if (!cues.length) throw new Error('字幕文件里没有可识别的有效条目（需要标准 srt 时间轴）')
+    const cues = parseSubtitleCuesAuto(decodeSubtitleText(this.fs.readFileSync(source)), format)
+    if (!cues.length) throw new Error(`字幕文件里没有可识别的有效条目（需要标准 ${format} 时间轴）`)
     const applyEdit = (list) => {
       if (cueEdit.operation === 'replace') {
         const index = Number(cueEdit.index)
@@ -723,14 +775,14 @@ class MediaEditService {
       return kept
     }
     const edited = applyEdit(cues)
-    const rendered = renderSrtCues(edited)
+    const rendered = renderSubtitleCuesAuto(edited, format)
     const tempPath = `${output}.agentplay-cueedit-${process.pid}-${Date.now()}.tmp`
     try {
       this.fs.writeFileSync(tempPath, rendered, 'utf8')
       if (signal?.aborted) throw new Error('已取消')
       const sourceAfter = this.fs.statSync(source)
       if (sourceStat.size !== sourceAfter.size || Math.trunc(sourceStat.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('校对期间源字幕文件发生变化，已拒绝交付')
-      const reparsed = parseSrtCues(this.fs.readFileSync(tempPath, 'utf8'))
+      const reparsed = parseSubtitleCuesAuto(this.fs.readFileSync(tempPath, 'utf8'), format)
       if (reparsed.length !== edited.length || reparsed.some((cue, index) => cue.startMs !== edited[index].startMs || cue.endMs !== edited[index].endMs || cue.text !== edited[index].text)) {
         throw new Error('校对成果复核失败：写出的字幕与冻结决策不一致')
       }
@@ -746,12 +798,13 @@ class MediaEditService {
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
     if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 0) throw new Error('校对成果不存在或不完整')
-    const cues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
+    const format = subtitleFormatOf(source)
+    const cues = parseSubtitleCuesAuto(decodeSubtitleText(this.fs.readFileSync(source)), format)
     const cueEdit = decision.cueEdit
     const expected = cueEdit.operation === 'replace'
       ? cues.map((cue, order) => order + 1 === Number(cueEdit.index) ? { ...cue, text: String(cueEdit.text || '').trim() } : cue)
       : cues.filter((_, order) => order + 1 < Number(cueEdit.startIndex) || order + 1 > Number(cueEdit.endIndex))
-    const outputCues = parseSrtCues(this.fs.readFileSync(output, 'utf8'))
+    const outputCues = parseSubtitleCuesAuto(this.fs.readFileSync(output, 'utf8'), format)
     if (outputCues.length !== expected.length || outputCues.some((cue, index) => cue.startMs !== expected[index].startMs || cue.endMs !== expected[index].endMs || cue.text !== expected[index].text)) {
       throw new Error('校对成果与冻结决策不一致，已拒绝交付')
     }
@@ -786,11 +839,12 @@ class MediaEditService {
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
     if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 0) throw new Error('调时成果不存在或不完整')
+    const format = subtitleFormatOf(source)
     const direction = decision.shift?.direction === 'earlier' ? 'earlier' : 'later'
     const offsetSeconds = Number(decision.shift?.offsetSeconds)
     const deltaMs = Math.round(offsetSeconds * 1000) * (direction === 'earlier' ? -1 : 1)
-    const sourceCues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
-    const outputCues = parseSrtCues(this.fs.readFileSync(output, 'utf8'))
+    const sourceCues = parseSubtitleCuesAuto(decodeSubtitleText(this.fs.readFileSync(source)), format)
+    const outputCues = parseSubtitleCuesAuto(this.fs.readFileSync(output, 'utf8'), format)
     const expected = []
     let droppedCueCount = 0
     for (const cue of sourceCues) {

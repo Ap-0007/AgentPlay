@@ -2021,7 +2021,7 @@ app.whenReady().then(async () => {
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.shift-subtitles') throw new Error('冻结的字幕调时决策无效')
     if (path.resolve(String(decision.subtitle?.path || '')) !== path.resolve(subtitlePath)) throw new Error('冻结的字幕调时决策与字幕文件不一致')
     assertAllowedPath(decision.subtitle?.path || '')
-    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, '.srt', task.id)
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, decision.output?.container === 'vtt' ? '.vtt' : '.srt', task.id)
     status(`正在把字幕《${path.basename(subtitlePath)}》整体${decision.shift?.direction === 'earlier' ? '提前' : '延后'} ${Number(decision.shift?.offsetSeconds || 0).toFixed(3)} 秒`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath: subtitlePath, outputPath, decision, signal })
@@ -2081,7 +2081,7 @@ app.whenReady().then(async () => {
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.edit-subtitle-cues') throw new Error('冻结的字幕校对决策无效')
     if (path.resolve(String(decision.subtitle?.path || '')) !== path.resolve(subtitlePath)) throw new Error('冻结的字幕校对决策与字幕文件不一致')
     assertAllowedPath(decision.subtitle?.path || '')
-    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, '.srt', task.id)
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, decision.output?.container === 'vtt' ? '.vtt' : '.srt', task.id)
     status(`正在校对字幕《${path.basename(subtitlePath)}》`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath: subtitlePath, outputPath, decision, signal })
@@ -2255,7 +2255,7 @@ app.whenReady().then(async () => {
         : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'
           ? [assertAllowedPath(decision.subtitle?.path || '')]
           : [sourcePath]
-      const outputExtension = decision.output?.container === 'srt' ? '.srt' : '.mp4'
+      const outputExtension = decision.output?.container === 'vtt' ? '.vtt' : decision.output?.container === 'srt' ? '.srt' : '.mp4'
       const outputAnchor = decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues' ? allSourcePaths[0] : sourcePath
       // 字幕翻译：在入队前冻结引擎与模型路由；云端先过原生同意框，拒绝则回退本地离线组件（仅英译中）
       let engineChoice = ''

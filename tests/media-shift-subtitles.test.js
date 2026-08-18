@@ -146,12 +146,12 @@ test('real shiftSubtitles: later/earlier shifts exact, negative cues dropped, GB
     )
     // 覆盖已存在成果：故障关闭
     await assert.rejects(() => service.shiftSubtitles({ sourcePath: srt, outputPath: laterOut, decision: laterDecision }), /已存在/)
-    // 非 srt：故障关闭
-    const vtt = path.join(dir, 'x.vtt')
-    fs.writeFileSync(vtt, 'WEBVTT\n')
+    // 非 srt/vtt：故障关闭
+    const vtt = path.join(dir, 'x.ass')
+    fs.writeFileSync(vtt, '[Script Info]\n')
     await assert.rejects(
       () => service.shiftSubtitles({ sourcePath: vtt, outputPath: path.join(dir, 'v.srt'), decision: { schemaVersion: 1, kind: 'media.shift-subtitles', subtitle: { path: vtt }, shift: { direction: 'later', offsetSeconds: 1 }, output: {} } }),
-      /只支持 \.srt/
+      /只支持 \.srt\/\.vtt/
     )
     // verify 路径（断点续跑复核）：一致通过；被篡改的成果拒绝
     const verified = await service.verify({ sourcePath: srt, outputPath: laterOut, decision: laterDecision })

@@ -137,10 +137,11 @@ const CUE_EDIT_REPLACE_PATTERN = /(改成|改为|换成)\s*[《“"'「]?(.+?)[�
 
 function compileCueEditDecisionList({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim()
-  if (!/(?:字幕|\.srt)/i.test(text)) return null
-  const subtitle = extractSrtPath(text)
+  if (!/(?:字幕|\.srt|\.vtt)/i.test(text)) return null
+  const subtitle = extractTextSubtitlePath(text)
   if (!subtitle) return null
-  const rest = text.replace(SRT_PATH_PATTERN, '')
+  const container = path.extname(subtitle).toLowerCase() === '.vtt' ? 'vtt' : 'srt'
+  const rest = text.replace(TEXT_SUBTITLE_PATH_PATTERN, '')
   const rangeMatch = CUE_EDIT_RANGE_PATTERN.exec(rest)
   if (!rangeMatch || !rangeMatch[0].includes('条')) return null
   const startIndex = parseNumber(rangeMatch[1])
@@ -156,7 +157,7 @@ function compileCueEditDecisionList({ instruction, sourcePath } = {}) {
       source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
       subtitle: { path: subtitle, name: portableBasename(subtitle) },
       cueEdit: { operation: 'replace', index: startIndex, text: replaceMatch[2].trim() },
-      output: { container: 'srt', overwrite: false, suffix: `校对版-改第${startIndex}条` },
+      output: { container, overwrite: false, suffix: `校对版-改第${startIndex}条` },
       verification: { cueEdit: true }
     }
   }
@@ -168,7 +169,7 @@ function compileCueEditDecisionList({ instruction, sourcePath } = {}) {
     source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
     subtitle: { path: subtitle, name: portableBasename(subtitle) },
     cueEdit: { operation: 'delete', startIndex, endIndex },
-    output: { container: 'srt', overwrite: false, suffix: startIndex === endIndex ? `校对版-删第${startIndex}条` : `校对版-删第${startIndex}到${endIndex}条` },
+    output: { container, overwrite: false, suffix: startIndex === endIndex ? `校对版-删第${startIndex}条` : `校对版-删第${startIndex}到${endIndex}条` },
     verification: { cueEdit: true }
   }
 }
@@ -207,10 +208,11 @@ function compileTranslateSubtitlesDecisionList({ instruction, sourcePath } = {})
   }
 }
 
-// 字幕时间移动：用户本地 .srt 整体提前（出现更早）或延后（出现更晚）N 秒，产出新字幕文件，不动视频。
+// 字幕时间移动：用户本地 .srt/.vtt 整体提前（出现更早）或延后（出现更晚）N 秒，产出新字幕文件，不动视频。
 // 语义按字面：提前=时间轴减 N，延后=时间轴加 N；完全移出 0 点之前的条目丢弃并在回执里说明。
 const SUBTITLE_SHIFT_PATTERN = /(?:字幕)[\s\S]{0,20}(?:提前|延后)|(?:提前|延后)[\s\S]{0,12}(?:秒)/i
 const SRT_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.srt)["'“”‘’]?/i
+const TEXT_SUBTITLE_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:srt|vtt))["'“”‘’]?/i
 const SUBTITLE_SHIFT_VERB_PATTERN = /(提前|延后)/
 
 function extractSrtPath(text) {
@@ -218,16 +220,22 @@ function extractSrtPath(text) {
   return match ? match[1].trim() : ''
 }
 
+function extractTextSubtitlePath(text) {
+  const match = TEXT_SUBTITLE_PATH_PATTERN.exec(String(text || ''))
+  return match ? match[1].trim() : ''
+}
+
 function compileShiftSubtitlesDecisionList({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim()
-  // 字幕语境：明说“字幕”，或直接给出 .srt 路径（路径本身就是无歧义的字幕指代）
-  if (!/(?:字幕|\.srt)/i.test(text) || !SUBTITLE_SHIFT_PATTERN.test(text)) return null
-  const subtitle = extractSrtPath(text)
+  // 字幕语境：明说“字幕”，或直接给出 .srt/.vtt 路径（路径本身就是无歧义的字幕指代）
+  if (!/(?:字幕|\.srt|\.vtt)/i.test(text) || !SUBTITLE_SHIFT_PATTERN.test(text)) return null
+  const subtitle = extractTextSubtitlePath(text)
   if (!subtitle) return null
-  const times = extractTimes(text.replace(SRT_PATH_PATTERN, ''))
+  const times = extractTimes(text.replace(TEXT_SUBTITLE_PATH_PATTERN, ''))
   if (times.length !== 1 || !(times[0] > 0)) return null
   const direction = SUBTITLE_SHIFT_VERB_PATTERN.test(text) && text.lastIndexOf('提前') > text.lastIndexOf('延后') ? 'earlier' : 'later'
   const offsetSeconds = Number(times[0].toFixed(3))
+  const container = path.extname(subtitle).toLowerCase() === '.vtt' ? 'vtt' : 'srt'
   return {
     schemaVersion: 1,
     kind: 'media.shift-subtitles',
@@ -236,7 +244,7 @@ function compileShiftSubtitlesDecisionList({ instruction, sourcePath } = {}) {
     subtitle: { path: subtitle, name: portableBasename(subtitle) },
     shift: { direction, offsetSeconds },
     output: {
-      container: 'srt',
+      container,
       overwrite: false,
       suffix: `调时版-${direction === 'earlier' ? '提前' : '延后'}${formatSeconds(offsetSeconds)}`
     },
@@ -478,7 +486,7 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
   // 字幕条目校对缺序号：给了 .srt 路径且有删除/改动词但没"第 N 条"时追问唯一一项
-  if (extractSrtPath(text) && /(?:字幕)/.test(text) && (CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成|改)/.test(text)) && !CUE_EDIT_RANGE_PATTERN.test(text) && !compileCueEditDecisionList({ instruction: text, sourcePath: source })) {
+  if (extractTextSubtitlePath(text) && /(?:字幕)/.test(text) && (CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成|改)/.test(text)) && !CUE_EDIT_RANGE_PATTERN.test(text) && !compileCueEditDecisionList({ instruction: text, sourcePath: source })) {
     return {
       matched: true,
       clarification: {
@@ -488,12 +496,12 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
         question: '要处理第几条字幕？直接说序号（比如"第 3 条"或"第 2 到第 4 条"）；改文本请说"第 3 条改成《新文本》"。',
         originalInstruction: text,
         sourcePath: source,
-        known: { subtitlePath: extractSrtPath(text), editIntent: CUE_EDIT_DELETE_PATTERN.test(text) ? 'delete' : 'replace' }
+        known: { subtitlePath: extractTextSubtitlePath(text), editIntent: CUE_EDIT_DELETE_PATTERN.test(text) ? 'delete' : 'replace' }
       }
     }
   }
   // 字幕条目校对但没给文件：明说"第 N 条字幕"已是字幕语境，追问文件而不是落到视频段时间追问
-  if (!extractSrtPath(text) && /字幕/.test(text) && new RegExp(`第\\s*${CUE_EDIT_NUMBER}\\s*条`).test(text) && (CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成|改)/.test(text))) {
+  if (!extractTextSubtitlePath(text) && /字幕/.test(text) && new RegExp(`第\\s*${CUE_EDIT_NUMBER}\\s*条`).test(text) && (CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成|改)/.test(text))) {
     return {
       matched: true,
       clarification: {
@@ -537,9 +545,9 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
       }
     }
   }
-  // 字幕调时缺文件或缺秒数：只追问当前唯一影响结果的一项（本切片只收 .srt）
-  if (/(?:字幕|\.srt)/i.test(text) && SUBTITLE_SHIFT_PATTERN.test(text) && !compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })) {
-    if (!extractSrtPath(text)) {
+  // 字幕调时缺文件或缺秒数：只追问当前唯一影响结果的一项（.srt/.vtt 都收）
+  if (/(?:字幕|\.srt|\.vtt)/i.test(text) && SUBTITLE_SHIFT_PATTERN.test(text) && !compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })) {
+    if (!extractTextSubtitlePath(text)) {
       const direction = SUBTITLE_SHIFT_VERB_PATTERN.test(text) && text.lastIndexOf('提前') > text.lastIndexOf('延后') ? 'earlier' : 'later'
       const times = extractTimes(text)
       return {
@@ -548,7 +556,7 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
           schemaVersion: 1,
           kind: 'media.edit-clarification',
           reason: 'missing-subtitle-file',
-          question: '要调哪个字幕文件？请给我 .srt 完整路径（也可以把字幕文件拖进对话窗）。',
+          question: '要调哪个字幕文件？请给我 .srt/.vtt 完整路径（也可以把字幕文件拖进对话窗）。',
           originalInstruction: text,
           sourcePath: source,
           known: { direction, offsetSeconds: times.length === 1 ? Number(times[0].toFixed(3)) : null }
@@ -564,7 +572,7 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
         question: '整体移动几秒？请直接说秒数（比如 2 秒或 0.5 秒）。',
         originalInstruction: text,
         sourcePath: source,
-        known: { direction: SUBTITLE_SHIFT_VERB_PATTERN.test(text) && text.lastIndexOf('提前') > text.lastIndexOf('延后') ? 'earlier' : 'later', subtitlePath: extractSrtPath(text) }
+        known: { direction: SUBTITLE_SHIFT_VERB_PATTERN.test(text) && text.lastIndexOf('提前') > text.lastIndexOf('延后') ? 'earlier' : 'later', subtitlePath: extractTextSubtitlePath(text) }
       }
     }
   }
@@ -791,7 +799,7 @@ function resolveEditClarification({ clarification, answer } = {}) {
     return decision ? { matched: true, decision } : { matched: false }
   }
   if (pending.reason === 'missing-subtitle-cueedit-file') {
-    const subtitlePath = extractSrtPath(text)
+    const subtitlePath = extractTextSubtitlePath(text)
     if (!subtitlePath) return { matched: false }
     const instruction = `${pending.originalInstruction} ${subtitlePath}`
     const decision = compileCueEditDecisionList({ instruction, sourcePath: pending.sourcePath })
@@ -832,11 +840,11 @@ function resolveEditClarification({ clarification, answer } = {}) {
     return decision ? { matched: true, decision } : { matched: false }
   }
   if (pending.reason === 'missing-subtitle-file') {
-    const subtitlePath = extractSrtPath(text)
+    const subtitlePath = extractTextSubtitlePath(text)
     if (!subtitlePath) return { matched: false }
     const offsetSeconds = Number(pending.known?.offsetSeconds)
     if (!Number.isFinite(offsetSeconds) || offsetSeconds <= 0) {
-      const times = extractTimes(text.replace(SRT_PATH_PATTERN, ''))
+      const times = extractTimes(text.replace(TEXT_SUBTITLE_PATH_PATTERN, ''))
       if (times.length !== 1 || !(times[0] > 0)) {
         // 原句连秒数也没给：文件补齐后继续只追问秒数这一项
         return {
