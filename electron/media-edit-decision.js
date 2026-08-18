@@ -94,6 +94,40 @@ function compileMuxSubtitlesDecisionList({ instruction, sourcePath } = {}) {
   }
 }
 
+// 字幕翻译：用户本地 .srt 逐句翻译成英文/中文（或双语对照），产出全新 srt；视频与源字幕都不动。
+// 引擎：云端已配置且用户同意后走云端；英译中可回退本地 OPUS-MT 离线组件。批失败故障关闭不交付半成品。
+// 范围切割：必须给出 .srt 路径才接管——"翻译字幕"不带路径时可能指当前视频的双语生成（既有 subtitle.generate 流程），不在这里追问劫持。
+const SUBTITLE_TRANSLATE_PATTERN = /(?:翻译|译成)/
+const SUBTITLE_TRANSLATE_TARGET_PATTERN = /(英文|英语|中文|汉语|双语)/
+
+function compileTranslateSubtitlesDecisionList({ instruction, sourcePath } = {}) {
+  const text = String(instruction || '').trim()
+  if (!SUBTITLE_TRANSLATE_PATTERN.test(text)) return null
+  if (!/(?:字幕|\.srt)/i.test(text)) return null
+  const subtitle = extractSrtPath(text)
+  if (!subtitle) return null
+  const targetMatch = SUBTITLE_TRANSLATE_TARGET_PATTERN.exec(text)
+  if (!targetMatch) return null
+  const bilingual = targetMatch[1] === '双语' || /双语对照/.test(text)
+  const targetLang = bilingual
+    ? (/英文|英语/.test(text) ? '英文' : /中文|汉语/.test(text) ? '中文' : 'auto')
+    : (/英文|英语/.test(targetMatch[1]) ? '英文' : '中文')
+  return {
+    schemaVersion: 1,
+    kind: 'media.translate-subtitles',
+    instruction: text,
+    source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
+    subtitle: { path: subtitle, name: portableBasename(subtitle) },
+    translate: { targetLang, mode: bilingual ? 'bilingual' : 'translated' },
+    output: {
+      container: 'srt',
+      overwrite: false,
+      suffix: bilingual ? '双语版' : targetLang === '英文' ? '英译版' : targetLang === '中文' ? '中译版' : '双语版'
+    },
+    verification: { targetLanguage: true }
+  }
+}
+
 // 字幕时间移动：用户本地 .srt 整体提前（出现更早）或延后（出现更晚）N 秒，产出新字幕文件，不动视频。
 // 语义按字面：提前=时间轴减 N，延后=时间轴加 N；完全移出 0 点之前的条目丢弃并在回执里说明。
 const SUBTITLE_SHIFT_PATTERN = /(?:字幕)[\s\S]{0,20}(?:提前|延后)|(?:提前|延后)[\s\S]{0,12}(?:秒)/i
@@ -354,12 +388,29 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (burnDecision) return { matched: true, decision: burnDecision }
   const muxDecision = compileMuxSubtitlesDecisionList({ instruction: text, sourcePath: source })
   if (muxDecision) return { matched: true, decision: muxDecision }
+  const translateDecision = compileTranslateSubtitlesDecisionList({ instruction: text, sourcePath: source })
+  if (translateDecision) return { matched: true, decision: translateDecision }
   const shiftDecision = compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })
   if (shiftDecision) return { matched: true, decision: shiftDecision }
   const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  // 字幕翻译缺目标语言：给了 .srt 路径才追问唯一一项；没给路径不接管（可能是视频级双语生成诉求）
+  if (SUBTITLE_TRANSLATE_PATTERN.test(text) && extractSrtPath(text) && !SUBTITLE_TRANSLATE_TARGET_PATTERN.test(text) && !compileTranslateSubtitlesDecisionList({ instruction: text, sourcePath: source })) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-translate-target',
+        question: '想翻译成哪种语言？说"英文"或"中文"，也可以说"双语对照"。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: { subtitlePath: extractSrtPath(text) }
+      }
+    }
+  }
   // 软字幕封装缺文件：只追问唯一一项
   if (SUBTITLE_MUX_PATTERN.test(text) && SUBTITLE_MUX_EXCLUDE_PATTERN.test(text) === false && /(?:字幕|\.srt|\.vtt|\.ass|\.ssa)/i.test(text) && !extractSubtitlePath(text)) {
     return {
@@ -546,6 +597,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (replacementBurn) return { matched: true, decision: replacementBurn }
   const replacementMux = compileMuxSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementMux) return { matched: true, decision: replacementMux }
+  const replacementTranslate = compileTranslateSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementTranslate) return { matched: true, decision: replacementTranslate }
   const replacementShift = compileShiftSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementShift) return { matched: true, decision: replacementShift }
   const replacementDecision = compileEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
@@ -624,6 +677,15 @@ function resolveEditClarification({ clarification, answer } = {}) {
     const decision = compileMuxSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
     return decision ? { matched: true, decision } : { matched: false }
   }
+  if (pending.reason === 'missing-translate-target') {
+    const targetMatch = SUBTITLE_TRANSLATE_TARGET_PATTERN.exec(text)
+    if (!targetMatch) return { matched: false }
+    const subtitlePath = String(pending.known?.subtitlePath || '')
+    if (!subtitlePath) return { matched: false }
+    const instruction = `把字幕 ${subtitlePath} 翻译成${targetMatch[1]}`
+    const decision = compileTranslateSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
   if (pending.reason === 'missing-subtitle-file') {
     const subtitlePath = extractSrtPath(text)
     if (!subtitlePath) return { matched: false }
@@ -693,5 +755,6 @@ module.exports = {
   compileConcatSourcesDecisionList,
   compileBurnSubtitlesDecisionList,
   compileMuxSubtitlesDecisionList,
+  compileTranslateSubtitlesDecisionList,
   compileShiftSubtitlesDecisionList,
   compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

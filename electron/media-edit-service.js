@@ -1,6 +1,8 @@
 const fs = require('fs')
 const path = require('path')
 
+const { buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, parseSrt, translateEntries } = require('./subtitle-bilingual-service')
+
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'])
 const SUBTITLE_EXTENSIONS = new Set(['.srt', '.vtt', '.ass', '.ssa'])
@@ -584,6 +586,103 @@ class MediaEditService {
     }
   }
 
+  // 字幕翻译：用户本地 .srt 逐句翻译成目标语言（或双语对照），产出全新 UTF-8 srt；视频与源字幕都不动。
+  // 引擎由主进程冻结注入（云端 llmComplete 或本地 OPUS-MT jsonComplete）；任一批次失败即故障关闭，不交付半成品。
+  async translateSubtitles({ sourcePath, outputPath, decision, engine, signal, onProgress } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.translate-subtitles') throw new Error('字幕翻译决策无效')
+    if (path.resolve(String(decision.subtitle?.path || '')) !== source) throw new Error('字幕翻译决策与字幕文件不一致')
+    if (source === output) throw new Error('禁止覆盖源字幕文件')
+    if (path.extname(source).toLowerCase() !== '.srt') throw new Error('字幕翻译目前只支持 .srt 文件')
+    if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('字幕文件不存在')
+    const sourceStat = this.fs.statSync(source)
+    if (sourceStat.size <= 0) throw new Error('字幕文件为空')
+    if (sourceStat.size > 20 * 1024 * 1024) throw new Error('字幕文件超过 20MB 安全上限')
+    if (this.fs.existsSync(output)) throw new Error('成果文件已存在，为避免覆盖已停止')
+    if (!engine || typeof engine.complete !== 'function') throw new Error('没有可用的翻译引擎')
+
+    const sourceCues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
+    if (!sourceCues.length) throw new Error('字幕文件里没有可识别的有效条目（需要标准 srt 时间轴）')
+    const entries = sourceCues.map((cue, order) => ({ index: order + 1, start: msToSrtTime(cue.startMs), end: msToSrtTime(cue.endMs), text: cue.text }))
+    const mode = decision.translate?.mode === 'bilingual' ? 'bilingual' : 'translated'
+    const requestedTarget = String(decision.translate?.targetLang || '')
+    const targetLang = requestedTarget === 'auto' || !requestedTarget ? chooseOppositeTarget(entries) : requestedTarget
+    if (!['中文', '英文'].includes(targetLang)) throw new Error('字幕翻译目标语言无效')
+
+    const { translations, failed } = await translateEntries(entries, engine.complete, { targetLang, signal, onProgress })
+    if (signal?.aborted) throw new Error('已取消')
+    if (failed > 0) throw new Error(`${failed} 条字幕未能可靠翻译，已拒绝交付不完整成果；请重试`)
+    if (translations.size !== entries.length) throw new Error(`翻译结果数量不一致（${translations.size}/${entries.length}），已拒绝交付`)
+
+    const rendered = mode === 'bilingual' ? buildBilingualSrt(entries, translations) : buildTranslationOnlySrt(entries, translations, { targetLang })
+    const tempPath = `${output}.agentplay-translate-${process.pid}-${Date.now()}.tmp`
+    try {
+      this.fs.writeFileSync(tempPath, rendered, 'utf8')
+      if (signal?.aborted) throw new Error('已取消')
+      const sourceAfter = this.fs.statSync(source)
+      if (sourceStat.size !== sourceAfter.size || Math.trunc(sourceStat.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('翻译期间源字幕文件发生变化，已拒绝交付')
+      this.assertTranslatedOutput({ tempPath, entries, mode, targetLang })
+      this.fs.renameSync(tempPath, output)
+      return this.translateSubtitlesReceipt({ output, decision, sourceCueCount: entries.length, targetLang, mode, engineLabel: String(engine.label || '') })
+    } catch (error) {
+      if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      throw error
+    }
+  }
+
+  // 交付闸门：成果必须可解析、条数不低于源条数、每条时间在源范围内、目标语言真实出现
+  assertTranslatedOutput({ tempPath, entries, mode, targetLang }) {
+    const outputEntries = parseSrt(this.fs.readFileSync(tempPath, 'utf8'))
+    if (!outputEntries.length) throw new Error('翻译成果无法解析成有效字幕，已拒绝交付')
+    if (outputEntries.length < entries.length) throw new Error(`翻译成果条数不足（${outputEntries.length}/${entries.length}），已拒绝交付`)
+    if (mode === 'bilingual') {
+      const mismatch = entries.some((entry, index) => outputEntries[index]?.start !== entry.start || outputEntries[index]?.end !== entry.end)
+      if (mismatch) throw new Error('双语成果时间轴与源字幕不一致，已拒绝交付')
+    }
+    const sample = outputEntries.slice(0, 30).map((entry) => entry.text).join('\n')
+    const hasTarget = targetLang === '英文' ? /[A-Za-z]/.test(sample) : /[一-鿿]/.test(sample)
+    if (!hasTarget) throw new Error(`翻译成果里没有检测到${targetLang}文本，已拒绝交付`)
+    return outputEntries.length
+  }
+
+  async verifyTranslateSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 0) throw new Error('翻译成果不存在或不完整')
+    const sourceCues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
+    const entries = sourceCues.map((cue, order) => ({ index: order + 1, start: msToSrtTime(cue.startMs), end: msToSrtTime(cue.endMs), text: cue.text }))
+    const mode = decision.translate?.mode === 'bilingual' ? 'bilingual' : 'translated'
+    const requestedTarget = String(decision.translate?.targetLang || '')
+    const targetLang = requestedTarget === 'auto' || !requestedTarget ? chooseOppositeTarget(entries) : requestedTarget
+    if (signal?.aborted) throw new Error('已取消')
+    this.assertTranslatedOutput({ tempPath: output, entries, mode, targetLang })
+    return this.translateSubtitlesReceipt({ output, decision, sourceCueCount: entries.length, targetLang, mode, engineLabel: '' })
+  }
+
+  translateSubtitlesReceipt({ output, decision, sourceCueCount, targetLang, mode, engineLabel }) {
+    const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
+    const outputEntries = parseSrt(this.fs.readFileSync(output, 'utf8'))
+    return {
+      success: true,
+      outputPath: output,
+      outputs: [output],
+      outputBytes: this.fs.statSync(output).size,
+      cueCount: outputEntries.length,
+      sourceCueCount,
+      droppedCueCount: 0,
+      targetLang,
+      mode,
+      engine: engineLabel,
+      timelineReceipt: [{
+        operation: `字幕翻译（${mode === 'bilingual' ? '双语对照' : `译成${targetLang}`}）`,
+        sourceRange: `${sourceCueCount} 条字幕`,
+        outputRange: `${outputEntries.length} 条字幕`
+      }],
+      summary: `已把字幕《${subtitleName}》${sourceCueCount} 条${mode === 'bilingual' ? `翻译成双语对照（译文为${targetLang}）` : `翻译成${targetLang}`}${engineLabel ? `（${engineLabel}）` : ''}，生成全新字幕文件；原字幕文件与视频均未改动`
+    }
+  }
+
   async verifyShiftSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
@@ -632,6 +731,7 @@ class MediaEditService {
 
   async verify({ sourcePath, outputPath, decision, signal } = {}) {
     if (decision?.kind === 'media.shift-subtitles') return this.verifyShiftSubtitles({ sourcePath, outputPath, decision, signal })
+    if (decision?.kind === 'media.translate-subtitles') return this.verifyTranslateSubtitles({ sourcePath, outputPath, decision, signal })
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
     if (!this.fs.existsSync(output) || !this.fs.statSync(output).isFile() || this.fs.statSync(output).size <= 1024) throw new Error('剪辑成果不存在或不完整')
@@ -809,4 +909,4 @@ class MediaEditService {
   }
 }
 
-module.exports = { MediaEditService, formatTimestamp }
+module.exports = { MediaEditService, formatTimestamp, decodeSubtitleText, parseSrtCues }
