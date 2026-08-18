@@ -238,6 +238,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     let endSeconds = override?.endSeconds || 0
     let operation: 'trim' | 'remove' | 'concat' | 'music' = override?.operation || 'trim'
     let segments = override?.segments || []
+    let sourceCount = 0
     let executionInstruction = text
     if (!override) {
       try {
@@ -264,16 +265,17 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           return true
         }
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music'].includes(decision.kind)) {
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music', 'media.concat-sources'].includes(decision.kind)) {
           pendingEditClarificationRef.current = null
           return false
         }
         pendingEditClarificationRef.current = null
         executionInstruction = decision.instruction || text
-        operation = decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim'
+        operation = decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' || decision.kind === 'media.concat-sources' ? 'concat' : 'trim'
         startSeconds = Number(decision.timeline?.startSeconds || decision.timeline?.segments?.[0]?.sourceStartSeconds || 0)
         endSeconds = Number(decision.timeline?.endSeconds || decision.timeline?.segments?.at(-1)?.sourceEndSeconds || 0)
         segments = (decision.timeline?.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
+        sourceCount = decision.kind === 'media.concat-sources' ? (decision.sources?.length || 0) : 0
       } catch {
         return false
       }
@@ -286,10 +288,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       addMessage('user', text)
       setInputText('')
     }
-    const actionLabel = operation === 'music' ? '配乐（对白闪避）' : operation === 'concat' ? `按顺序拼接 ${segments.length} 个片段` : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
+    const actionLabel = operation === 'music' ? '配乐（对白闪避）' : operation === 'concat' ? (sourceCount > 0 ? `按顺序合并 ${sourceCount} 个素材` : `按顺序拼接 ${segments.length} 个片段`) : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
       kind: 'media', label: actionLabel, phase: 'running',
-      status: operation === 'music' ? '正在混音配乐（音量+淡入淡出+对白闪避）并核验成品时长与音轨…' : operation === 'concat' ? '正在按口述顺序重排片段、拼接连续音画并核验成品…' : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
+      status: operation === 'music' ? '正在混音配乐（音量+淡入淡出+对白闪避）并核验成品时长与音轨…' : operation === 'concat' ? (sourceCount > 0 ? '正在统一分辨率与音轨、按顺序拼接多个素材并核验成品…' : '正在按口述顺序重排片段、拼接连续音画并核验成品…') : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
       retry: { kind: 'trim', instruction: executionInstruction, sourcePath }
     })
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -486,7 +488,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       const planAndRetry = async () => {
         const plan = await window.aiPlayer?.mediaTools?.planEdit({ instruction: retry.instruction || '', sourcePath: retry.sourcePath || '' })
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music'].includes(decision.kind)) {
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music', 'media.concat-sources'].includes(decision.kind)) {
           addMessage('agent', '[错误] 原剪辑指令已无法还原成唯一时间线，请从原视频重新说明要保留、删除或按顺序拼接的时间段。')
           return
         }
@@ -494,7 +496,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           instruction: retry.instruction || '', sourcePath: retry.sourcePath || '',
           startSeconds: Number(decision.timeline?.startSeconds || decision.timeline?.segments?.[0]?.sourceStartSeconds || 0),
           endSeconds: Number(decision.timeline?.endSeconds || decision.timeline?.segments?.at(-1)?.sourceEndSeconds || 0),
-          operation: decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim',
+          operation: decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' || decision.kind === 'media.concat-sources' ? 'concat' : 'trim',
           segments: (decision.timeline?.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
         })
       }

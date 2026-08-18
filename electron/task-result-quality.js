@@ -112,7 +112,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('format', '文件结构', formatRatio, 15, formatFailure)
     add('history', '历史记录', result.historyId ? 1 : 0, 20, reason('HISTORY_MISSING', '成果尚未写入历史记录', true))
     add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 10, reason('SUMMARY_MISSING', '缺少结果说明', true))
-  } else if (taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat') {
+  } else if (taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat' || taskType === 'media.edit-concat-sources') {
     const expectedDuration = Number(result.expectedDurationSeconds || spec.decision?.timeline?.durationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)

@@ -174,6 +174,43 @@ class VideoFrameService {
     return out.trim().length > 0
   }
 
+  // 读取首个视频流的宽高；失败返回 null（调用方自行决定拒绝还是降级）
+  async probeDimensions(sourcePath, { signal } = {}) {
+    if (!this.ffprobePath || !fs.existsSync(this.ffprobePath)) return null
+    try {
+      const child = this.spawnImpl(this.ffprobePath, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', sourcePath], { windowsHide: true, shell: false })
+      let out = ''
+      await new Promise((resolve, reject) => {
+        let settled = false
+        const finish = (fn, value) => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', onAbort)
+          fn(value)
+        }
+        const onAbort = () => {
+          try { child.kill() } catch { /* 已退出 */ }
+          finish(reject, new Error('已取消'))
+        }
+        if (signal) {
+          if (signal.aborted) {
+            onAbort()
+            return
+          }
+          signal.addEventListener('abort', onAbort, { once: true })
+        }
+        child.stdout?.on('data', (chunk) => { out += chunk.toString('utf8') })
+        child.once('error', () => finish(resolve))
+        child.once('exit', () => finish(resolve))
+      })
+      const match = out.trim().match(/^(\d+),(\d+)/)
+      return match ? { width: Number(match[1]), height: Number(match[2]) } : null
+    } catch (error) {
+      if (signal?.aborted) throw error
+      return null
+    }
+  }
+
   // 抽取关键帧：scene-change 优先，产出不足或去重塌缩都退均匀采样；返回 [{ path, tSec, label }]
   async extract({ sourcePath, durationSec = 0, outDir, budget, signal } = {}) {
     if (!this.availability().available) return []

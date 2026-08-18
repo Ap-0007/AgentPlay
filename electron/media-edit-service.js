@@ -296,6 +296,78 @@ class MediaEditService {
     }
   }
 
+  // 跨素材拼接：当前视频 + 用户指定的其它本地视频，按给定顺序拼成一个新视频。
+  // 红线：所有原文件都不动；统一等比缩放+黑边居中到第一个素材的分辨率；无音轨的素材补等长静音。
+  async concatSources({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.concat-sources') throw new Error('跨素材拼接决策无效')
+    const sources = (Array.isArray(decision.sources) ? decision.sources : []).map((item) => path.resolve(String(item?.path || '')))
+    if (sources.length < 2 || sources.length > 20) throw new Error('跨素材拼接需要 2 到 20 个素材')
+    if (sources[0] !== source) throw new Error('跨素材拼接决策与源视频不一致')
+    if (new Set(sources.map((item) => item.toLowerCase())).size !== sources.length) throw new Error('拼接素材列表里有重复文件')
+    if (sources.some((item) => item === output)) throw new Error('禁止覆盖源视频')
+    for (const item of sources) {
+      if (!VIDEO_EXTENSIONS.has(path.extname(item).toLowerCase())) throw new Error(`不是受支持的视频格式：${path.basename(item)}`)
+      if (!this.fs.existsSync(item) || !this.fs.statSync(item).isFile()) throw new Error(`拼接素材不存在：${path.basename(item)}`)
+    }
+    if (this.fs.existsSync(output)) throw new Error('成果文件已存在，为避免覆盖已停止')
+    if (!this.frames.availability().available) throw new Error('缺少 ffmpeg 组件')
+    if (typeof this.frames.probeHasAudio !== 'function') throw new Error('无法确认素材音轨')
+    if (typeof this.frames.probeDimensions !== 'function') throw new Error('无法确认素材分辨率')
+
+    const probes = []
+    for (const item of sources) {
+      const duration = await this.frames.probeDuration(item, { signal })
+      if (!(duration > 0)) throw new Error(`无法读取素材时长：${path.basename(item)}`)
+      const hasAudio = await this.frames.probeHasAudio(item, { signal })
+      const dimensions = await this.frames.probeDimensions(item, { signal })
+      if (!(Number(dimensions?.width) > 0) || !(Number(dimensions?.height) > 0)) throw new Error(`无法读取素材分辨率：${path.basename(item)}`)
+      probes.push({ duration, hasAudio, width: Number(dimensions.width), height: Number(dimensions.height) })
+    }
+    const expectedDuration = Number(probes.reduce((sum, item) => sum + item.duration, 0).toFixed(3))
+    const targetWidth = Math.ceil(probes[0].width / 2) * 2
+    const targetHeight = Math.ceil(probes[0].height / 2) * 2
+
+    const videoParts = sources.map((_, index) => `[${index}:v:0]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${index}]`)
+    const audioParts = sources.map((_, index) => probes[index].hasAudio
+      ? `[${index}:a:0]aformat=sample_rates=48000:channel_layouts=stereo[a${index}]`
+      : `anullsrc=r=48000:cl=stereo:d=${probes[index].duration.toFixed(3)}[a${index}]`)
+    const join = `${sources.map((_, index) => `[v${index}][a${index}]`).join('')}concat=n=${sources.length}:v=1:a=1[vout][aout]`
+    const filter = [...videoParts, ...audioParts, join].join(';')
+    const sourcesBefore = sources.map((item) => this.fs.statSync(item))
+    const parsed = path.parse(output)
+    const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-edit-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    try {
+      await this.frames.run([
+        '-hide_banner', '-nostdin',
+        ...sources.flatMap((item) => ['-i', item]),
+        '-filter_complex', filter,
+        '-map', '[vout]', '-map', '[aout]',
+        '-map_chapters', '-1',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-c:a', 'aac', '-b:a', '160k',
+        '-movflags', '+faststart', '-avoid_negative_ts', 'make_zero', '-y', tempPath
+      ], { timeoutMs: 60 * 60 * 1000, signal })
+      if (signal?.aborted) throw new Error('已取消')
+      sources.forEach((item, index) => {
+        const after = this.fs.statSync(item)
+        if (sourcesBefore[index].size !== after.size || Math.trunc(sourcesBefore[index].mtimeMs) !== Math.trunc(after.mtimeMs)) throw new Error(`拼接期间素材发生变化，已拒绝交付：${path.basename(item)}`)
+      })
+      if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('跨素材拼接成果为空或不完整')
+      const actualDuration = await this.frames.probeDuration(tempPath, { signal })
+      const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.25)
+      if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) {
+        throw new Error(`跨素材拼接时长校验失败：期望 ${expectedDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
+      }
+      this.fs.renameSync(tempPath, output)
+      return this.concatSourcesReceipt({ output, decision, probes, expectedDuration, actualDuration })
+    } catch (error) {
+      if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      throw error
+    }
+  }
+
   async verify({ sourcePath, outputPath, decision, signal } = {}) {
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
@@ -304,18 +376,33 @@ class MediaEditService {
     const actualDuration = await this.frames.probeDuration(output, { signal })
     const isRemove = decision?.kind === 'media.remove-segment'
     const isConcat = decision?.kind === 'media.concat-segments'
+    const isConcatSources = decision?.kind === 'media.concat-sources'
     const concatTimeline = isConcat ? validateConcatTimeline(decision) : null
     if (concatTimeline) assertSegmentsWithinSource(concatTimeline.segments, sourceDuration)
+    let concatSourcesProbes = null
+    if (isConcatSources) {
+      const others = (Array.isArray(decision.sources) ? decision.sources : []).slice(1)
+      concatSourcesProbes = [{ duration: sourceDuration }]
+      for (const item of others) {
+        const duration = await this.frames.probeDuration(path.resolve(String(item?.path || '')), { signal })
+        if (!(duration > 0)) throw new Error(`无法读取拼接素材时长：${path.basename(String(item?.path || ''))}`)
+        concatSourcesProbes.push({ duration })
+      }
+    }
     const expectedDuration = isRemove
       ? Number((sourceDuration - Number(decision?.timeline?.removedDurationSeconds || 0)).toFixed(3))
-      : isConcat ? concatTimeline.expectedDuration : Number(decision?.timeline?.durationSeconds || 0)
+      : isConcat ? concatTimeline.expectedDuration
+        : isConcatSources ? Number(concatSourcesProbes.reduce((sum, item) => sum + item.duration, 0).toFixed(3))
+          : Number(decision?.timeline?.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(decision?.verification?.toleranceSeconds) || 0.2)
     if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) throw new Error('剪辑成果时长校验失败')
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration })
       : isConcat
         ? this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration })
-      : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
+        : isConcatSources
+          ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration })
+          : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
   }
 
   resultReceipt({ source, output, decision, sourceDuration, actualDuration }) {
@@ -383,6 +470,30 @@ class MediaEditService {
         outputRange: `${formatTimestamp(segment.targetStartSeconds)} → ${formatTimestamp(segment.targetEndSeconds)}`
       })),
       summary: `已按指定顺序拼接 ${segments.length} 个片段，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件未改动`
+    }
+  }
+
+  concatSourcesReceipt({ output, decision, probes, expectedDuration, actualDuration }) {
+    const names = (Array.isArray(decision.sources) ? decision.sources : []).map((item) => String(item?.name || path.basename(String(item?.path || ''))))
+    let cursor = 0
+    const timelineReceipt = probes.map((probe, index) => {
+      const start = cursor
+      cursor = Number((cursor + probe.duration).toFixed(3))
+      return {
+        operation: `拼接素材 ${index + 1}（${names[index] || `素材${index + 1}`}）`,
+        sourceRange: `${formatTimestamp(0)} → ${formatTimestamp(probe.duration)}`,
+        outputRange: `${formatTimestamp(start)} → ${formatTimestamp(cursor)}`
+      }
+    })
+    return {
+      success: true,
+      outputPath: output,
+      outputs: [output],
+      outputBytes: this.fs.statSync(output).size,
+      expectedDurationSeconds: expectedDuration,
+      durationSeconds: Number(actualDuration.toFixed(3)),
+      timelineReceipt,
+      summary: `已按顺序拼接 ${probes.length} 个素材，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件均未改动`
     }
   }
 }

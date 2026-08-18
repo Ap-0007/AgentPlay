@@ -19,6 +19,8 @@ function quickFingerprint(filePath, stat = fs.statSync(filePath), fsImpl = fs) {
 function editVersionKind(decision) {
   if (decision?.kind === 'media.remove-segment') return 'remove-segment'
   if (decision?.kind === 'media.concat-segments') return 'concat-segments'
+  if (decision?.kind === 'media.add-music') return 'add-music'
+  if (decision?.kind === 'media.concat-sources') return 'concat-sources'
   return 'trim'
 }
 

@@ -21,6 +21,18 @@ const NEGATION_PATTERN = /(?:不要|别把|别剪|无需|不用|取消|不想)/
 const EXAMPLE_PATTERN = /(?:比如|例如|举例|假如|如果|假设|我说[“\"])/
 const MUSIC_EDIT_PATTERN = /(?:背景音乐|配乐|配个?乐|加.?个?音乐|音乐轨|背景音)/
 const MUSIC_REMOVE_PATTERN = /(?:去掉|删除|移除|静音).{0,4}(?:背景)?音乐/
+const CONCAT_SOURCES_PATTERN = /(?:拼起来|拼接|合并|接起来|连在一起|合成一个)/
+const VIDEO_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:mp4|mkv|mov|webm|ts|m4v|wmv|flv|avi))["'“”‘’]?/gi
+
+function extractVideoPaths(text) {
+  const paths = []
+  for (const match of String(text || '').matchAll(VIDEO_PATH_PATTERN)) {
+    const value = match[1].trim()
+    if (value && !paths.includes(value)) paths.push(value)
+  }
+  return paths
+}
+
 const AUDIO_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:mp3|wav|m4a|aac|flac|ogg|wma))["'“”‘’]?/i
 const VOLUME_PATTERN = /(?:音量|声音|小声点|调到|降到|减到|改为)[^\d]{0,6}(\d+(?:\.\d+)?)\s*%/
 
@@ -215,15 +227,53 @@ function compileEditDecisionList({ instruction, sourcePath } = {}) {
   }
 }
 
+function compileConcatSourcesDecisionList({ instruction, sourcePath }) {
+  const text = String(instruction || '').trim()
+  const source = String(sourcePath || '').trim()
+  if (!CONCAT_SOURCES_PATTERN.test(text)) return null
+  const others = extractVideoPaths(text).filter((item) => path.basename(item) !== path.basename(source))
+  if (!source || others.length < 1 || others.length > MAX_EDIT_SEGMENTS - 1) return null
+  const sources = [source, ...others]
+  return {
+    schemaVersion: 1,
+    kind: 'media.concat-sources',
+    instruction: text,
+    sources: sources.map((item) => ({ path: item, name: portableBasename(item) })),
+    output: {
+      container: 'mp4',
+      overwrite: false,
+      suffix: `合并版-${sources.length}段`
+    },
+    verification: { toleranceSeconds: 0.25 }
+  }
+}
+
 function planEditInstruction({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim()
   const source = String(sourcePath || '').trim()
+  const concatSourcesDecision = compileConcatSourcesDecisionList({ instruction: text, sourcePath: source })
+  if (concatSourcesDecision) return { matched: true, decision: concatSourcesDecision }
   const musicDecision = compileMusicDecisionList({ instruction: text, sourcePath: source })
   if (musicDecision) return { matched: true, decision: musicDecision }
   const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  // 跨素材拼接缺第二个素材：只追问唯一一项
+  if (CONCAT_SOURCES_PATTERN.test(text) && extractVideoPaths(text).length < 2 && !CONSULTATION_PATTERN.test(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-sources',
+        question: '要把当前视频和哪个视频拼在一起？请给我完整路径（也可以把另一个视频拖进对话窗）。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: {}
+      }
+    }
+  }
   // 配乐缺文件：只追问唯一影响结果的一项（版权红线：不替用户去网上抓音乐）
   if (MUSIC_EDIT_PATTERN.test(text) && !MUSIC_REMOVE_PATTERN.test(text) && !extractAudioPath(text)) {
     return {
@@ -326,6 +376,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (/^(?:算了|取消|不弄了|先不剪了|不用了)[吧。！!]*$/.test(text)) return { matched: true, cancelled: true }
   if (CONSULTATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
   const replacementText = text.replace(/^(?:改成|换成|重新)/, '')
+  const replacementConcat = compileConcatSourcesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementConcat) return { matched: true, decision: replacementConcat }
   const replacementMusic = compileMusicDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementMusic) return { matched: true, decision: replacementMusic }
   const replacementDecision = compileEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
@@ -383,6 +435,13 @@ function resolveEditClarification({ clarification, answer } = {}) {
     const decision = compileEditDecisionList({ instruction, sourcePath: pending.sourcePath })
     return decision ? { matched: true, decision } : { matched: false }
   }
+  if (pending.reason === 'missing-sources') {
+    const others = extractVideoPaths(text).filter((item) => path.basename(item) !== path.basename(pending.sourcePath))
+    if (others.length < 1) return { matched: false }
+    const instruction = `把${pending.sourcePath}和${others.join('和')}拼起来`
+    const decision = compileConcatSourcesDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
   if (pending.reason === 'missing-audio') {
     const audioPath = extractAudioPath(text)
     if (!audioPath) return { matched: false }
@@ -411,4 +470,5 @@ function compileEditHistoryAction(instruction) {
 }
 
 module.exports = {
+  compileConcatSourcesDecisionList,
   compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }
