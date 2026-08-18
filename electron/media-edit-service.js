@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'])
 const MAX_EDIT_SEGMENTS = 24
 
 function formatTimestamp(value) {
@@ -89,6 +90,86 @@ class MediaEditService {
       }
       this.fs.renameSync(tempPath, output)
       return this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
+    } catch (error) {
+      if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      throw error
+    }
+  }
+
+  // 配乐：用户本地/合法音乐 + 音量 + 淡入淡出 + 对白闪避（sidechain）；音乐短于视频自动循环。
+  // 红线：不下载任何音乐；原视频不动；成果时长必须等于源视频时长。
+  async addMusic({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.add-music') throw new Error('配乐决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== source) throw new Error('配乐决策与源文件不一致')
+    if (source === output) throw new Error('禁止覆盖源视频')
+    if (!VIDEO_EXTENSIONS.has(path.extname(source).toLowerCase())) throw new Error('当前文件不是受支持的视频格式')
+    const audio = path.resolve(String(decision.audio?.path || ''))
+    if (!AUDIO_EXTENSIONS.has(path.extname(audio).toLowerCase())) throw new Error('音乐文件格式不受支持（mp3/wav/m4a/aac/flac/ogg/wma）')
+    if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('源视频不存在')
+    if (!this.fs.existsSync(audio) || !this.fs.statSync(audio).isFile()) throw new Error(`音乐文件不存在：${audio}；请提供你已有的合法音乐文件`)
+    if (this.fs.existsSync(output)) throw new Error('成果文件已存在，为避免覆盖已停止')
+    if (!this.frames.availability().available) throw new Error('缺少 ffmpeg 组件')
+    if (typeof this.frames.probeHasAudio !== 'function') throw new Error('无法确认源视频音轨')
+
+    const volume = Math.max(0.01, Math.min(1, Number(decision.audio?.volume) || 0.15))
+    const fadeIn = Math.max(0, Math.min(10, Number(decision.audio?.fadeInSeconds) ?? 1))
+    const fadeOut = Math.max(0, Math.min(10, Number(decision.audio?.fadeOutSeconds) ?? 1.5))
+    const duck = decision.audio?.duck !== false
+    const sourceDuration = await this.frames.probeDuration(source, { signal })
+    if (!(sourceDuration > 0)) throw new Error('无法读取源视频时长')
+    const dur = sourceDuration.toFixed(3)
+    const fadeOutStart = Math.max(0, sourceDuration - fadeOut).toFixed(3)
+    const hasAudio = await this.frames.probeHasAudio(source, { signal })
+
+    // 有原声：原声为 key 做 sidechain 闪避；无原声：纯视频+音乐
+    const musicChain = `[1:a]volume=${volume.toFixed(3)},afade=t=in:st=0:d=${fadeIn.toFixed(3)},afade=t=out:st=${fadeOutStart}:d=${fadeOut.toFixed(3)}`
+    const filter = hasAudio
+      ? (duck
+        ? `[0:a]volume=1.0,asplit=2[voice][key];${musicChain}[mu];[mu][key]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=500[ducked];[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]`
+        : `[0:a]volume=1.0[voice];${musicChain}[mu];[voice][mu]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]`)
+      : `${musicChain}[aout]`
+
+    const sourceBefore = this.fs.statSync(source)
+    const parsed = path.parse(output)
+    const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-edit-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    try {
+      await this.frames.run([
+        '-hide_banner', '-nostdin',
+        '-i', source,
+        ...(decision.audio?.loop !== false ? ['-stream_loop', '-1'] : []), '-i', audio,
+        '-filter_complex', filter,
+        '-map', '0:v:0', '-map', '[aout]', '-t', dur,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+        '-c:a', 'aac', '-b:a', '160k',
+        '-movflags', '+faststart', '-avoid_negative_ts', 'make_zero', '-y', tempPath
+      ], { timeoutMs: 60 * 60 * 1000, signal })
+      if (signal?.aborted) throw new Error('已取消')
+      const sourceAfter = this.fs.statSync(source)
+      if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('配乐期间源视频发生变化，已拒绝交付')
+      if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('配乐成果为空或不完整')
+      const actualDuration = await this.frames.probeDuration(tempPath, { signal })
+      const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.2)
+      if (!(actualDuration > 0) || Math.abs(actualDuration - sourceDuration) > tolerance) {
+        throw new Error(`配乐成果时长校验失败：期望 ${sourceDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
+      }
+      if (typeof this.frames.probeHasAudio === 'function' && !(await this.frames.probeHasAudio(tempPath, { signal }))) {
+        throw new Error('配乐成果没有音轨，已拒绝交付')
+      }
+      this.fs.renameSync(tempPath, output)
+      return {
+        success: true,
+        outputPath: output,
+        outputs: [output],
+        outputBytes: this.fs.statSync(output).size,
+        sourceDurationSeconds: sourceDuration,
+        expectedDurationSeconds: sourceDuration,
+        durationSeconds: Number(actualDuration.toFixed(3)),
+        music: { path: audio, volume, duck, fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut },
+        summary: `已生成 ${Number(actualDuration.toFixed(3)).toFixed(3)} 秒配乐版新视频（音乐音量 ${Math.round(volume * 100)}%${duck ? '，对白闪避' : ''}）；原文件未改动`
+      }
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error

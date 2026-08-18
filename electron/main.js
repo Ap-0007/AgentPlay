@@ -67,7 +67,7 @@ const { LocalAiDownloadService } = require('./local-ai-download-service')
 const { PersistentTaskRuntime } = require('./persistent-task-runtime')
 const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = require('./persistent-document-task')
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
-const { compileEditDecisionList, compileEditHistoryAction } = require('./media-edit-decision')
+const { compileEditDecisionList, compileEditHistoryAction, compileMusicDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
 const { MediaEditService } = require('./media-edit-service')
 const { MediaEditProjectStore } = require('./media-edit-project-store')
@@ -1147,7 +1147,7 @@ app.whenReady().then(async () => {
       const actualOutput = actualValue ? path.resolve(actualValue) : ''
       if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
       action = '清理不合格的任务自产物并重新压缩'
-    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat') {
+    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
       const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
@@ -1913,6 +1913,25 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.edit-music', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.add-music') throw new Error('冻结的配乐决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的配乐决策与源视频不一致')
+    const audioPath = assertAllowedPath(decision.audio?.path || '')
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
+    status(`正在配乐（音量 ${Math.round((Number(decision.audio?.volume) || 0.15) * 100)}%${decision.audio?.duck !== false ? '、对白闪避' : ''}）`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
+      : await mediaEditService.addMusic({ sourcePath, outputPath, decision: { ...decision, audio: { ...decision.audio, path: audioPath } }, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.edit-concat', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
@@ -2068,11 +2087,13 @@ app.whenReady().then(async () => {
     try {
       const sourcePath = assertAllowedPath(input.sourcePath)
       if (!videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
-      const decision = compileEditDecisionList({ instruction: input.instruction, sourcePath })
+      const decision = compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-segments'
         ? 'media.edit-concat'
-        : decision.kind === 'media.remove-segment' ? 'media.edit-remove' : 'media.edit-trim'
+        : decision.kind === 'media.add-music'
+          ? 'media.edit-music'
+          : decision.kind === 'media.remove-segment' ? 'media.edit-remove' : 'media.edit-trim'
       persistentTaskRuntime.enqueue({
         id: requestId,
         type: taskType,

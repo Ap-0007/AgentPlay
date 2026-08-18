@@ -18,7 +18,7 @@ type TrimInput = {
   sourcePath: string
   startSeconds: number
   endSeconds: number
-  operation?: 'trim' | 'remove' | 'concat'
+  operation?: 'trim' | 'remove' | 'concat' | 'music'
   segments?: Array<{ startSeconds: number; endSeconds: number }>
 }
 
@@ -236,7 +236,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     if (!sourcePath || /^(https?|blob):/i.test(sourcePath) || !window.aiPlayer?.mediaTools?.planEdit) return false
     let startSeconds = override?.startSeconds || 0
     let endSeconds = override?.endSeconds || 0
-    let operation: 'trim' | 'remove' | 'concat' = override?.operation || 'trim'
+    let operation: 'trim' | 'remove' | 'concat' | 'music' = override?.operation || 'trim'
     let segments = override?.segments || []
     let executionInstruction = text
     if (!override) {
@@ -264,16 +264,16 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           return true
         }
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments'].includes(decision.kind)) {
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music'].includes(decision.kind)) {
           pendingEditClarificationRef.current = null
           return false
         }
         pendingEditClarificationRef.current = null
         executionInstruction = decision.instruction || text
-        operation = decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim'
-        startSeconds = Number(decision.timeline.startSeconds || decision.timeline.segments?.[0]?.sourceStartSeconds || 0)
-        endSeconds = Number(decision.timeline.endSeconds || decision.timeline.segments?.at(-1)?.sourceEndSeconds || 0)
-        segments = (decision.timeline.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
+        operation = decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim'
+        startSeconds = Number(decision.timeline?.startSeconds || decision.timeline?.segments?.[0]?.sourceStartSeconds || 0)
+        endSeconds = Number(decision.timeline?.endSeconds || decision.timeline?.segments?.at(-1)?.sourceEndSeconds || 0)
+        segments = (decision.timeline?.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
       } catch {
         return false
       }
@@ -286,10 +286,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       addMessage('user', text)
       setInputText('')
     }
-    const actionLabel = operation === 'concat' ? `按顺序拼接 ${segments.length} 个片段` : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
+    const actionLabel = operation === 'music' ? '配乐（对白闪避）' : operation === 'concat' ? `按顺序拼接 ${segments.length} 个片段` : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
       kind: 'media', label: actionLabel, phase: 'running',
-      status: operation === 'concat' ? '正在按口述顺序重排片段、拼接连续音画并核验成品…' : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
+      status: operation === 'music' ? '正在混音配乐（音量+淡入淡出+对白闪避）并核验成品时长与音轨…' : operation === 'concat' ? '正在按口述顺序重排片段、拼接连续音画并核验成品…' : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
       retry: { kind: 'trim', instruction: executionInstruction, sourcePath }
     })
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -299,7 +299,9 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       const result = await window.aiPlayer.mediaTools.trim({ sourcePath, instruction: executionInstruction, requestId, workspaceTaskId: executionTaskIdRef.current })
       if (!result?.success || !result.outputPath) throw new Error(result?.error || '视频剪辑失败')
       const timeline = (result.timelineReceipt || []).map((item) => `${item.operation}：源片 ${item.sourceRange}；成片 ${item.outputRange}`).join('\n')
-      const summary = result.summary || `已生成 ${Number(result.durationSeconds || 0).toFixed(3)} 秒新视频；原文件未改动`
+      const summary = result.summary || (result.music
+        ? `已生成配乐版新视频：音乐音量 ${Math.round((result.music.volume || 0.15) * 100)}%${result.music.duck ? '，人声自动压低音乐（对白闪避）' : ''}；原文件未改动`
+        : `已生成 ${Number(result.durationSeconds || 0).toFixed(3)} 秒新视频；原文件未改动`)
       const capsule = result.projectCapsule
       const projectHint = capsule
         ? `\n编辑项目：第 ${capsule.cursor + 1}/${capsule.versionCount} 版；可直接说“撤销刚才的剪辑”。`
@@ -484,16 +486,16 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       const planAndRetry = async () => {
         const plan = await window.aiPlayer?.mediaTools?.planEdit({ instruction: retry.instruction || '', sourcePath: retry.sourcePath || '' })
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments'].includes(decision.kind)) {
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music'].includes(decision.kind)) {
           addMessage('agent', '[错误] 原剪辑指令已无法还原成唯一时间线，请从原视频重新说明要保留、删除或按顺序拼接的时间段。')
           return
         }
         void runTrimTask(retry.instruction || '', {
           instruction: retry.instruction || '', sourcePath: retry.sourcePath || '',
-          startSeconds: Number(decision.timeline.startSeconds || decision.timeline.segments?.[0]?.sourceStartSeconds || 0),
-          endSeconds: Number(decision.timeline.endSeconds || decision.timeline.segments?.at(-1)?.sourceEndSeconds || 0),
-          operation: decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim',
-          segments: (decision.timeline.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
+          startSeconds: Number(decision.timeline?.startSeconds || decision.timeline?.segments?.[0]?.sourceStartSeconds || 0),
+          endSeconds: Number(decision.timeline?.endSeconds || decision.timeline?.segments?.at(-1)?.sourceEndSeconds || 0),
+          operation: decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' ? 'concat' : 'trim',
+          segments: (decision.timeline?.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
         })
       }
       void planAndRetry()

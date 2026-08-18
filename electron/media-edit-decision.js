@@ -19,6 +19,53 @@ const SEGMENT_REQUEST_PATTERN = /(?:我(?:只)?想要|我要|给我|替我)[\s\S
 const CONSULTATION_PATTERN = /(?:能不能|可不可以|是否|怎么|如何|支不支持|能做到|可以吗|行吗|\?|？)/
 const NEGATION_PATTERN = /(?:不要|别把|别剪|无需|不用|取消|不想)/
 const EXAMPLE_PATTERN = /(?:比如|例如|举例|假如|如果|假设|我说[“\"])/
+const MUSIC_EDIT_PATTERN = /(?:背景音乐|配乐|配个?乐|加.?个?音乐|音乐轨|背景音)/
+const MUSIC_REMOVE_PATTERN = /(?:去掉|删除|移除|静音).{0,4}(?:背景)?音乐/
+const AUDIO_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:mp3|wav|m4a|aac|flac|ogg|wma))["'“”‘’]?/i
+const VOLUME_PATTERN = /(?:音量|声音|小声点|调到|降到|减到|改为)[^\d]{0,6}(\d+(?:\.\d+)?)\s*%/
+
+function extractAudioPath(text) {
+  const match = AUDIO_PATH_PATTERN.exec(String(text || ''))
+  return match ? match[1].trim() : ''
+}
+
+function extractMusicVolume(text) {
+  const match = VOLUME_PATTERN.exec(String(text || ''))
+  if (!match) return null
+  const percent = Number(match[1])
+  if (!Number.isFinite(percent) || percent <= 0 || percent > 100) return null
+  return Number((percent / 100).toFixed(3))
+}
+
+function compileMusicDecisionList({ instruction, sourcePath, audioPath, volume }) {
+  const text = String(instruction || '').trim()
+  const source = String(sourcePath || '').trim()
+  if (!MUSIC_EDIT_PATTERN.test(text) || MUSIC_REMOVE_PATTERN.test(text)) return null
+  const audio = String(audioPath || extractAudioPath(text) || '').trim()
+  if (!audio) return null
+  const musicVolume = Number.isFinite(volume) ? volume : extractMusicVolume(text)
+  return {
+    schemaVersion: 1,
+    kind: 'media.add-music',
+    instruction: text,
+    source: { path: source, name: portableBasename(source) },
+    audio: {
+      path: audio,
+      volume: musicVolume ?? 0.15,
+      fadeInSeconds: 1,
+      fadeOutSeconds: 1.5,
+      duck: true,
+      loop: true
+    },
+    output: {
+      container: 'mp4',
+      overwrite: false,
+      suffix: `配乐版-${Math.round((musicVolume ?? 0.15) * 100)}vol`
+    },
+    verification: { toleranceSeconds: 0.2 }
+  }
+}
+
 const UNDO_EDIT_PATTERN = /^(?:(?:请|帮我|麻烦你?)\s*)?(?:撤销(?:刚才的剪辑|这次剪辑|上一步(?:剪辑)?|上一个(?:剪辑)?版本)|撤回(?:刚才的剪辑|上一步(?:剪辑)?)|回到剪辑前|退回上一个(?:剪辑)?版本)\s*[吧。！!]*$/
 const REDO_EDIT_PATTERN = /^(?:(?:请|帮我|麻烦你?)\s*)?(?:重做(?:刚才撤销的剪辑|刚才的剪辑|下一步(?:剪辑)?)|恢复(?:刚才撤销的剪辑|下一个(?:剪辑)?版本)|回到下一个(?:剪辑)?版本)\s*[吧。！!]*$/
 
@@ -171,10 +218,27 @@ function compileEditDecisionList({ instruction, sourcePath } = {}) {
 function planEditInstruction({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim()
   const source = String(sourcePath || '').trim()
+  const musicDecision = compileMusicDecisionList({ instruction: text, sourcePath: source })
+  if (musicDecision) return { matched: true, decision: musicDecision }
   const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  // 配乐缺文件：只追问唯一影响结果的一项（版权红线：不替用户去网上抓音乐）
+  if (MUSIC_EDIT_PATTERN.test(text) && !MUSIC_REMOVE_PATTERN.test(text) && !extractAudioPath(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-audio',
+        question: '配乐用哪个本地音乐文件？请给我完整路径（也可以把音频文件拖进对话窗）。商业歌曲请用你自己已有的合法文件，我不会去网上抓。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: { volume: extractMusicVolume(text) }
+      }
+    }
+  }
   const removesRange = REMOVE_EDIT_PATTERN.test(text)
   const hasExplicitKeep = DIRECT_EDIT_PATTERN.test(text) || SEGMENT_REQUEST_PATTERN.test(text)
   const hasGenericTrim = /剪一下/.test(text)
@@ -261,7 +325,10 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (!pending || pending.schemaVersion !== 1 || pending.kind !== 'media.edit-clarification' || !text) return { matched: false }
   if (/^(?:算了|取消|不弄了|先不剪了|不用了)[吧。！!]*$/.test(text)) return { matched: true, cancelled: true }
   if (CONSULTATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
-  const replacementDecision = compileEditDecisionList({ instruction: text.replace(/^(?:改成|换成|重新)/, ''), sourcePath: pending.sourcePath })
+  const replacementText = text.replace(/^(?:改成|换成|重新)/, '')
+  const replacementMusic = compileMusicDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementMusic) return { matched: true, decision: replacementMusic }
+  const replacementDecision = compileEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementDecision) return { matched: true, decision: replacementDecision }
   if (pending.reason === 'missing-end') {
     const times = extractTimes(text)
@@ -316,6 +383,14 @@ function resolveEditClarification({ clarification, answer } = {}) {
     const decision = compileEditDecisionList({ instruction, sourcePath: pending.sourcePath })
     return decision ? { matched: true, decision } : { matched: false }
   }
+  if (pending.reason === 'missing-audio') {
+    const audioPath = extractAudioPath(text)
+    if (!audioPath) return { matched: false }
+    const volume = Number.isFinite(pending.known?.volume) ? pending.known.volume : extractMusicVolume(text)
+    const instruction = `${pending.originalInstruction} ${audioPath}`
+    const decision = compileMusicDecisionList({ instruction, sourcePath: pending.sourcePath, audioPath, volume })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
   if (pending.reason === 'missing-range') {
     const ranges = extractRanges(text)
     if (ranges.length !== 1 || !ranges[0]) return { matched: false }
@@ -335,4 +410,5 @@ function compileEditHistoryAction(instruction) {
   return null
 }
 
-module.exports = { compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }
+module.exports = {
+  compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

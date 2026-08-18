@@ -19,7 +19,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isCreative = isVideoGeneration || isRecut
       const isBatch = runtimeTask.type === 'media.batch'
       const isCompress = runtimeTask.type === 'media.compress'
-      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat'
+      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music'
       const isDedup = runtimeTask.type === 'media.dedup'
       const isDownload = String(runtimeTask.type || '').startsWith('download.')
       const dedupRoot = runtimeTask.spec?.root as { path?: string } | undefined
