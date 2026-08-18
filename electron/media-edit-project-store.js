@@ -22,6 +22,7 @@ function editVersionKind(decision) {
   if (decision?.kind === 'media.add-music') return 'add-music'
   if (decision?.kind === 'media.concat-sources') return 'concat-sources'
   if (decision?.kind === 'media.burn-subtitles') return 'burn-subtitles'
+  if (decision?.kind === 'media.mux-subtitles') return 'mux-subtitles'
   if (decision?.kind === 'media.shift-subtitles') return 'shift-subtitles'
   return 'trim'
 }

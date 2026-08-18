@@ -69,7 +69,7 @@ test('shift-subtitles wiring: task registered, decision routed, renderer gate ac
   assert.match(main, /decision\.kind === 'media\.shift-subtitles'/)
   assert.match(main, /'media\.shift-subtitles'/)
   assert.match(main, /compileShiftSubtitlesDecisionList/)
-  assert.match(main, /media\.edit-burn-subtitles' \|\| type === 'media\.shift-subtitles'/, '质量修复清单必须含字幕调时')
+  assert.match(main, /media\.edit-burn-subtitles' \|\| type === 'media\.edit-mux-subtitles' \|\| type === 'media\.shift-subtitles'/, '质量修复清单必须含字幕调时')
   assert.match(panel, /'media\.shift-subtitles'/)
   assert.match(panel, /字幕时间调移/)
   assert.match(panel, /isPlayableVideoPath/, '.srt 成果不得自动进播放器')

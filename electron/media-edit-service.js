@@ -478,6 +478,59 @@ class MediaEditService {
     }
   }
 
+  // 软字幕封装：字幕作为可开关的独立轨道封进 mp4（mov_text）；音画流直接 copy 不重编码，秒级完成。
+  // 红线：源视频与字幕文件都不动；成果时长=源视频时长；成果必须真实带字幕流。
+  async muxSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.mux-subtitles') throw new Error('软字幕封装决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== source) throw new Error('软字幕封装决策与源文件不一致')
+    if (source === output) throw new Error('禁止覆盖源视频')
+    if (!VIDEO_EXTENSIONS.has(path.extname(source).toLowerCase())) throw new Error('当前文件不是受支持的视频格式')
+    const subtitle = path.resolve(String(decision.subtitle?.path || ''))
+    if (!SUBTITLE_EXTENSIONS.has(path.extname(subtitle).toLowerCase())) throw new Error('字幕文件格式不受支持（srt/vtt/ass/ssa）')
+    if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('源视频不存在')
+    if (!this.fs.existsSync(subtitle) || !this.fs.statSync(subtitle).isFile()) throw new Error(`字幕文件不存在：${subtitle}；请提供你已有的字幕文件`)
+    if (this.fs.statSync(subtitle).size <= 0) throw new Error('字幕文件为空')
+    if (this.fs.statSync(subtitle).size > 20 * 1024 * 1024) throw new Error('字幕文件超过 20MB 安全上限')
+    if (this.fs.existsSync(output)) throw new Error('成果文件已存在，为避免覆盖已停止')
+    if (!this.frames.availability().available) throw new Error('缺少 ffmpeg 组件')
+    if (typeof this.frames.probeHasSubtitle !== 'function') throw new Error('无法确认成果字幕轨')
+
+    const sourceDuration = await this.frames.probeDuration(source, { signal })
+    if (!(sourceDuration > 0)) throw new Error('无法读取源视频时长')
+    const sourceBefore = this.fs.statSync(source)
+    const subtitleBefore = this.fs.statSync(subtitle)
+    const parsed = path.parse(output)
+    const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-edit-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    try {
+      await this.frames.run([
+        '-hide_banner', '-nostdin', '-i', source, '-i', subtitle,
+        '-map', '0', '-map', '1',
+        '-map_metadata', '0', '-map_chapters', '0',
+        '-c', 'copy', '-c:s', 'mov_text',
+        '-movflags', '+faststart', '-y', tempPath
+      ], { timeoutMs: 60 * 60 * 1000, signal })
+      if (signal?.aborted) throw new Error('已取消')
+      const sourceAfter = this.fs.statSync(source)
+      if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('封装期间源视频发生变化，已拒绝交付')
+      const subtitleAfter = this.fs.statSync(subtitle)
+      if (subtitleBefore.size !== subtitleAfter.size || Math.trunc(subtitleBefore.mtimeMs) !== Math.trunc(subtitleAfter.mtimeMs)) throw new Error('封装期间字幕文件发生变化，已拒绝交付')
+      if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('封装成果为空或不完整')
+      const actualDuration = await this.frames.probeDuration(tempPath, { signal })
+      const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.2)
+      if (!(actualDuration > 0) || Math.abs(actualDuration - sourceDuration) > tolerance) {
+        throw new Error(`封装成果时长校验失败：期望 ${sourceDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
+      }
+      if (!(await this.frames.probeHasSubtitle(tempPath, { signal }))) throw new Error('封装成果没有字幕轨，已拒绝交付')
+      this.fs.renameSync(tempPath, output)
+      return this.muxSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
+    } catch (error) {
+      if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      throw error
+    }
+  }
+
   // 字幕时间移动：用户本地 .srt 整体提前/延后 N 秒，产出全新 UTF-8 srt；视频与源字幕都不动。
   // 语义按字面：提前=时间轴减 N（出现更早），延后=加 N（出现更晚）；完全移到 0 点之前的条目丢弃并计入回执。
   async shiftSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
@@ -588,6 +641,7 @@ class MediaEditService {
     const isConcat = decision?.kind === 'media.concat-segments'
     const isConcatSources = decision?.kind === 'media.concat-sources'
     const isBurnSubtitles = decision?.kind === 'media.burn-subtitles'
+    const isMuxSubtitles = decision?.kind === 'media.mux-subtitles'
     const concatTimeline = isConcat ? validateConcatTimeline(decision) : null
     if (concatTimeline) assertSegmentsWithinSource(concatTimeline.segments, sourceDuration)
     let concatSourcesProbes = null
@@ -604,10 +658,11 @@ class MediaEditService {
       ? Number((sourceDuration - Number(decision?.timeline?.removedDurationSeconds || 0)).toFixed(3))
       : isConcat ? concatTimeline.expectedDuration
         : isConcatSources ? Number(concatSourcesProbes.reduce((sum, item) => sum + item.duration, 0).toFixed(3))
-          : isBurnSubtitles ? sourceDuration
+          : isBurnSubtitles || isMuxSubtitles ? sourceDuration
             : Number(decision?.timeline?.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(decision?.verification?.toleranceSeconds) || 0.2)
     if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) throw new Error('剪辑成果时长校验失败')
+    if (isMuxSubtitles && !(await this.frames.probeHasSubtitle(output, { signal }))) throw new Error('封装成果没有字幕轨，已拒绝交付')
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration })
       : isConcat
@@ -616,7 +671,9 @@ class MediaEditService {
           ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration })
           : isBurnSubtitles
             ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
-            : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
+            : isMuxSubtitles
+              ? this.muxSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
+              : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
   }
 
   resultReceipt({ source, output, decision, sourceDuration, actualDuration }) {
@@ -728,6 +785,26 @@ class MediaEditService {
         outputRange: fullRange
       }],
       summary: `已把字幕《${subtitleName}》逐条烧录进画面，生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
+    }
+  }
+
+  muxSubtitlesReceipt({ output, decision, sourceDuration, actualDuration }) {
+    const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
+    const fullRange = `${formatTimestamp(0)} → ${formatTimestamp(sourceDuration)}`
+    return {
+      success: true,
+      outputPath: output,
+      outputs: [output],
+      outputBytes: this.fs.statSync(output).size,
+      sourceDurationSeconds: sourceDuration,
+      expectedDurationSeconds: sourceDuration,
+      durationSeconds: Number(actualDuration.toFixed(3)),
+      timelineReceipt: [{
+        operation: `封装软字幕（${subtitleName}）`,
+        sourceRange: fullRange,
+        outputRange: fullRange
+      }],
+      summary: `已把字幕《${subtitleName}》封装成可开关的软字幕轨（音画未重编码），生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
     }
   }
 }

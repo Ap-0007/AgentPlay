@@ -66,6 +66,34 @@ function compileBurnSubtitlesDecisionList({ instruction, sourcePath } = {}) {
   }
 }
 
+// 软字幕封装：字幕作为可开关的独立轨道封进 mp4（mov_text），音画流不重编码直接 copy。
+// 与烧录互斥：烧录动词优先；只说"封装/软字幕/外挂"才走这里。
+const SUBTITLE_MUX_PATTERN = /(?:封装|打包进|软字幕|外挂)/
+const SUBTITLE_MUX_EXCLUDE_PATTERN = /(?:烧进|烧录|烧到|压进|硬字幕)/
+
+function compileMuxSubtitlesDecisionList({ instruction, sourcePath } = {}) {
+  const text = String(instruction || '').trim()
+  const source = String(sourcePath || '').trim()
+  if (!SUBTITLE_MUX_PATTERN.test(text) || SUBTITLE_MUX_EXCLUDE_PATTERN.test(text)) return null
+  // 字幕语境：明说“字幕”，或直接给出字幕文件路径（路径本身即无歧义指代）
+  if (!/(?:字幕|\.srt|\.vtt|\.ass|\.ssa)/i.test(text)) return null
+  const subtitle = extractSubtitlePath(text)
+  if (!source || !subtitle) return null
+  return {
+    schemaVersion: 1,
+    kind: 'media.mux-subtitles',
+    instruction: text,
+    source: { path: source, name: portableBasename(source) },
+    subtitle: { path: subtitle, name: portableBasename(subtitle) },
+    output: {
+      container: 'mp4',
+      overwrite: false,
+      suffix: '软字幕版'
+    },
+    verification: { toleranceSeconds: 0.2, requireSubtitleStream: true }
+  }
+}
+
 // 字幕时间移动：用户本地 .srt 整体提前（出现更早）或延后（出现更晚）N 秒，产出新字幕文件，不动视频。
 // 语义按字面：提前=时间轴减 N，延后=时间轴加 N；完全移出 0 点之前的条目丢弃并在回执里说明。
 const SUBTITLE_SHIFT_PATTERN = /(?:字幕)[\s\S]{0,20}(?:提前|延后)|(?:提前|延后)[\s\S]{0,12}(?:秒)/i
@@ -324,12 +352,29 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (musicDecision) return { matched: true, decision: musicDecision }
   const burnDecision = compileBurnSubtitlesDecisionList({ instruction: text, sourcePath: source })
   if (burnDecision) return { matched: true, decision: burnDecision }
+  const muxDecision = compileMuxSubtitlesDecisionList({ instruction: text, sourcePath: source })
+  if (muxDecision) return { matched: true, decision: muxDecision }
   const shiftDecision = compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })
   if (shiftDecision) return { matched: true, decision: shiftDecision }
   const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  // 软字幕封装缺文件：只追问唯一一项
+  if (SUBTITLE_MUX_PATTERN.test(text) && SUBTITLE_MUX_EXCLUDE_PATTERN.test(text) === false && /(?:字幕|\.srt|\.vtt|\.ass|\.ssa)/i.test(text) && !extractSubtitlePath(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-subtitle-mux',
+        question: '要把哪个字幕文件封装成可开关的软字幕？请给我 .srt/.vtt/.ass 完整路径（也可以把字幕文件拖进对话窗）。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: {}
+      }
+    }
+  }
   // 字幕调时缺文件或缺秒数：只追问当前唯一影响结果的一项（本切片只收 .srt）
   if (/(?:字幕|\.srt)/i.test(text) && SUBTITLE_SHIFT_PATTERN.test(text) && !compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })) {
     if (!extractSrtPath(text)) {
@@ -499,6 +544,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (replacementMusic) return { matched: true, decision: replacementMusic }
   const replacementBurn = compileBurnSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementBurn) return { matched: true, decision: replacementBurn }
+  const replacementMux = compileMuxSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementMux) return { matched: true, decision: replacementMux }
   const replacementShift = compileShiftSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementShift) return { matched: true, decision: replacementShift }
   const replacementDecision = compileEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
@@ -570,6 +617,13 @@ function resolveEditClarification({ clarification, answer } = {}) {
     const decision = compileBurnSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
     return decision ? { matched: true, decision } : { matched: false }
   }
+  if (pending.reason === 'missing-subtitle-mux') {
+    const subtitlePath = extractSubtitlePath(text)
+    if (!subtitlePath) return { matched: false }
+    const instruction = `把字幕 ${subtitlePath} 封装进视频`
+    const decision = compileMuxSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
   if (pending.reason === 'missing-subtitle-file') {
     const subtitlePath = extractSrtPath(text)
     if (!subtitlePath) return { matched: false }
@@ -638,5 +692,6 @@ function compileEditHistoryAction(instruction) {
 module.exports = {
   compileConcatSourcesDecisionList,
   compileBurnSubtitlesDecisionList,
+  compileMuxSubtitlesDecisionList,
   compileShiftSubtitlesDecisionList,
   compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }
