@@ -3,6 +3,7 @@ const path = require('path')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'])
+const SUBTITLE_EXTENSIONS = new Set(['.srt', '.vtt', '.ass', '.ssa'])
 const MAX_EDIT_SEGMENTS = 24
 
 function formatTimestamp(value) {
@@ -368,6 +369,61 @@ class MediaEditService {
     }
   }
 
+  // 硬字幕烧录：用户本地 .srt/.vtt/.ass/.ssa 逐条烧进画面。
+  // 红线：源视频与字幕文件都不动；成果时长必须等于源视频时长；字幕文件超 20MB 拒绝（对齐派生字幕安全上限）。
+  async burnSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.burn-subtitles') throw new Error('烧录字幕决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== source) throw new Error('烧录字幕决策与源文件不一致')
+    if (source === output) throw new Error('禁止覆盖源视频')
+    if (!VIDEO_EXTENSIONS.has(path.extname(source).toLowerCase())) throw new Error('当前文件不是受支持的视频格式')
+    const subtitle = path.resolve(String(decision.subtitle?.path || ''))
+    if (!SUBTITLE_EXTENSIONS.has(path.extname(subtitle).toLowerCase())) throw new Error('字幕文件格式不受支持（srt/vtt/ass/ssa）')
+    if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('源视频不存在')
+    if (!this.fs.existsSync(subtitle) || !this.fs.statSync(subtitle).isFile()) throw new Error(`字幕文件不存在：${subtitle}；请提供你已有的字幕文件`)
+    if (this.fs.statSync(subtitle).size <= 0) throw new Error('字幕文件为空')
+    if (this.fs.statSync(subtitle).size > 20 * 1024 * 1024) throw new Error('字幕文件超过 20MB 安全上限')
+    if (this.fs.existsSync(output)) throw new Error('成果文件已存在，为避免覆盖已停止')
+    if (!this.frames.availability().available) throw new Error('缺少 ffmpeg 组件')
+
+    const sourceDuration = await this.frames.probeDuration(source, { signal })
+    if (!(sourceDuration > 0)) throw new Error('无法读取源视频时长')
+    // ffmpeg filter 参数转义：统一正斜杠、盘符冒号加反斜杠、单引号加倍转义；中文路径原样可行
+    const escapedSubtitle = subtitle.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''")
+    const sourceBefore = this.fs.statSync(source)
+    const subtitleBefore = this.fs.statSync(subtitle)
+    const parsed = path.parse(output)
+    const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-edit-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    try {
+      await this.frames.run([
+        '-hide_banner', '-nostdin', '-i', source,
+        '-vf', `subtitles='${escapedSubtitle}',pad=ceil(iw/2)*2:ceil(ih/2)*2`,
+        '-map', '0:v:0', '-map', '0:a?', '-map_metadata', '0', '-map_chapters', '0',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '160k',
+        '-movflags', '+faststart', '-avoid_negative_ts', 'make_zero', '-y', tempPath
+      ], { timeoutMs: 60 * 60 * 1000, signal })
+      if (signal?.aborted) throw new Error('已取消')
+      const sourceAfter = this.fs.statSync(source)
+      if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('烧录期间源视频发生变化，已拒绝交付')
+      const subtitleAfter = this.fs.statSync(subtitle)
+      if (subtitleBefore.size !== subtitleAfter.size || Math.trunc(subtitleBefore.mtimeMs) !== Math.trunc(subtitleAfter.mtimeMs)) throw new Error('烧录期间字幕文件发生变化，已拒绝交付')
+      if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('烧录成果为空或不完整')
+      const actualDuration = await this.frames.probeDuration(tempPath, { signal })
+      const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.2)
+      if (!(actualDuration > 0) || Math.abs(actualDuration - sourceDuration) > tolerance) {
+        throw new Error(`烧录成果时长校验失败：期望 ${sourceDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
+      }
+      this.fs.renameSync(tempPath, output)
+      return this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
+    } catch (error) {
+      if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      throw error
+    }
+  }
+
   async verify({ sourcePath, outputPath, decision, signal } = {}) {
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
@@ -377,6 +433,7 @@ class MediaEditService {
     const isRemove = decision?.kind === 'media.remove-segment'
     const isConcat = decision?.kind === 'media.concat-segments'
     const isConcatSources = decision?.kind === 'media.concat-sources'
+    const isBurnSubtitles = decision?.kind === 'media.burn-subtitles'
     const concatTimeline = isConcat ? validateConcatTimeline(decision) : null
     if (concatTimeline) assertSegmentsWithinSource(concatTimeline.segments, sourceDuration)
     let concatSourcesProbes = null
@@ -393,7 +450,8 @@ class MediaEditService {
       ? Number((sourceDuration - Number(decision?.timeline?.removedDurationSeconds || 0)).toFixed(3))
       : isConcat ? concatTimeline.expectedDuration
         : isConcatSources ? Number(concatSourcesProbes.reduce((sum, item) => sum + item.duration, 0).toFixed(3))
-          : Number(decision?.timeline?.durationSeconds || 0)
+          : isBurnSubtitles ? sourceDuration
+            : Number(decision?.timeline?.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(decision?.verification?.toleranceSeconds) || 0.2)
     if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) throw new Error('剪辑成果时长校验失败')
     return isRemove
@@ -402,7 +460,9 @@ class MediaEditService {
         ? this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration })
         : isConcatSources
           ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration })
-          : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
+          : isBurnSubtitles
+            ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
+            : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
   }
 
   resultReceipt({ source, output, decision, sourceDuration, actualDuration }) {
@@ -494,6 +554,26 @@ class MediaEditService {
       durationSeconds: Number(actualDuration.toFixed(3)),
       timelineReceipt,
       summary: `已按顺序拼接 ${probes.length} 个素材，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件均未改动`
+    }
+  }
+
+  burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration }) {
+    const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
+    const fullRange = `${formatTimestamp(0)} → ${formatTimestamp(sourceDuration)}`
+    return {
+      success: true,
+      outputPath: output,
+      outputs: [output],
+      outputBytes: this.fs.statSync(output).size,
+      sourceDurationSeconds: sourceDuration,
+      expectedDurationSeconds: sourceDuration,
+      durationSeconds: Number(actualDuration.toFixed(3)),
+      timelineReceipt: [{
+        operation: `烧录字幕（${subtitleName}）`,
+        sourceRange: fullRange,
+        outputRange: fullRange
+      }],
+      summary: `已把字幕《${subtitleName}》逐条烧录进画面，生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
     }
   }
 }

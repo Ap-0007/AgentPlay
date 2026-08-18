@@ -36,6 +36,36 @@ function extractVideoPaths(text) {
 const AUDIO_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:mp3|wav|m4a|aac|flac|ogg|wma))["'“”‘’]?/i
 const VOLUME_PATTERN = /(?:音量|声音|小声点|调到|降到|减到|改为)[^\d]{0,6}(\d+(?:\.\d+)?)\s*%/
 
+// 硬字幕烧录：用户本地 .srt/.vtt/.ass/.ssa 逐条烧进画面；只说"烧字幕"不给文件时只追问唯一一项
+const SUBTITLE_BURN_PATTERN = /(?:烧进|烧录|烧到|压进|嵌入|合成到视频|硬字幕)/
+const SUBTITLE_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:srt|vtt|ass|ssa))["'“”‘’]?/i
+
+function extractSubtitlePath(text) {
+  const match = SUBTITLE_PATH_PATTERN.exec(String(text || ''))
+  return match ? match[1].trim() : ''
+}
+
+function compileBurnSubtitlesDecisionList({ instruction, sourcePath } = {}) {
+  const text = String(instruction || '').trim()
+  const source = String(sourcePath || '').trim()
+  if (!SUBTITLE_BURN_PATTERN.test(text)) return null
+  const subtitle = extractSubtitlePath(text)
+  if (!source || !subtitle) return null
+  return {
+    schemaVersion: 1,
+    kind: 'media.burn-subtitles',
+    instruction: text,
+    source: { path: source, name: portableBasename(source) },
+    subtitle: { path: subtitle, name: portableBasename(subtitle) },
+    output: {
+      container: 'mp4',
+      overwrite: false,
+      suffix: '硬字幕版'
+    },
+    verification: { toleranceSeconds: 0.2 }
+  }
+}
+
 function extractAudioPath(text) {
   const match = AUDIO_PATH_PATTERN.exec(String(text || ''))
   return match ? match[1].trim() : ''
@@ -255,10 +285,27 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (concatSourcesDecision) return { matched: true, decision: concatSourcesDecision }
   const musicDecision = compileMusicDecisionList({ instruction: text, sourcePath: source })
   if (musicDecision) return { matched: true, decision: musicDecision }
+  const burnDecision = compileBurnSubtitlesDecisionList({ instruction: text, sourcePath: source })
+  if (burnDecision) return { matched: true, decision: burnDecision }
   const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  // 烧录字幕缺文件：只追问唯一一项（用用户自己的字幕文件，不抓网）
+  if (SUBTITLE_BURN_PATTERN.test(text) && !extractSubtitlePath(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-subtitle',
+        question: '要把哪个字幕文件烧进视频？请给我 .srt/.vtt/.ass 完整路径（也可以把字幕文件拖进对话窗）。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: {}
+      }
+    }
+  }
   // 跨素材拼接缺第二个素材：只追问唯一一项
   if (CONCAT_SOURCES_PATTERN.test(text) && extractVideoPaths(text).length < 2 && !CONSULTATION_PATTERN.test(text)) {
     return {
@@ -380,6 +427,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (replacementConcat) return { matched: true, decision: replacementConcat }
   const replacementMusic = compileMusicDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementMusic) return { matched: true, decision: replacementMusic }
+  const replacementBurn = compileBurnSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementBurn) return { matched: true, decision: replacementBurn }
   const replacementDecision = compileEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementDecision) return { matched: true, decision: replacementDecision }
   if (pending.reason === 'missing-end') {
@@ -442,6 +491,13 @@ function resolveEditClarification({ clarification, answer } = {}) {
     const decision = compileConcatSourcesDecisionList({ instruction, sourcePath: pending.sourcePath })
     return decision ? { matched: true, decision } : { matched: false }
   }
+  if (pending.reason === 'missing-subtitle') {
+    const subtitlePath = extractSubtitlePath(text)
+    if (!subtitlePath) return { matched: false }
+    const instruction = `${pending.originalInstruction} ${subtitlePath}`
+    const decision = compileBurnSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
   if (pending.reason === 'missing-audio') {
     const audioPath = extractAudioPath(text)
     if (!audioPath) return { matched: false }
@@ -471,4 +527,5 @@ function compileEditHistoryAction(instruction) {
 
 module.exports = {
   compileConcatSourcesDecisionList,
+  compileBurnSubtitlesDecisionList,
   compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

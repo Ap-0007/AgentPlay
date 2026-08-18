@@ -67,7 +67,7 @@ const { LocalAiDownloadService } = require('./local-ai-download-service')
 const { PersistentTaskRuntime } = require('./persistent-task-runtime')
 const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = require('./persistent-document-task')
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
-const { compileConcatSourcesDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMusicDecisionList } = require('./media-edit-decision')
+const { compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMusicDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
 const { MediaEditService } = require('./media-edit-service')
 const { MediaEditProjectStore } = require('./media-edit-project-store')
@@ -1147,7 +1147,7 @@ app.whenReady().then(async () => {
       const actualOutput = actualValue ? path.resolve(actualValue) : ''
       if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
       action = '清理不合格的任务自产物并重新压缩'
-    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-concat-sources') {
+    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
       const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
@@ -1977,6 +1977,25 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.edit-burn-subtitles', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.burn-subtitles') throw new Error('冻结的烧录字幕决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的烧录字幕决策与源视频不一致')
+    assertAllowedPath(decision.subtitle?.path || '')
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
+    status(`正在把字幕《${path.basename(String(decision.subtitle?.path || ''))}》烧录进画面`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
+      : await mediaEditService.burnSubtitles({ sourcePath, outputPath, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.dedup', async ({ task, signal, checkpoint, status }) => {
     const root = validateFrozenDirectoryRoot(task.spec.root)
     const hashCache = task.checkpoint?.hashCache && typeof task.checkpoint.hashCache === 'object' ? { ...task.checkpoint.hashCache } : {}
@@ -2114,7 +2133,7 @@ app.whenReady().then(async () => {
     try {
       const sourcePath = assertAllowedPath(input.sourcePath)
       if (!videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
-      const decision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+      const decision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-sources'
         ? 'media.edit-concat-sources'
@@ -2122,7 +2141,9 @@ app.whenReady().then(async () => {
           ? 'media.edit-concat'
           : decision.kind === 'media.add-music'
             ? 'media.edit-music'
-            : decision.kind === 'media.remove-segment' ? 'media.edit-remove' : 'media.edit-trim'
+            : decision.kind === 'media.burn-subtitles'
+              ? 'media.edit-burn-subtitles'
+              : decision.kind === 'media.remove-segment' ? 'media.edit-remove' : 'media.edit-trim'
       const allSourcePaths = decision.kind === 'media.concat-sources'
         ? decision.sources.map((item) => assertAllowedPath(item?.path || ''))
         : [sourcePath]

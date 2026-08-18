@@ -21,6 +21,7 @@ function editVersionKind(decision) {
   if (decision?.kind === 'media.concat-segments') return 'concat-segments'
   if (decision?.kind === 'media.add-music') return 'add-music'
   if (decision?.kind === 'media.concat-sources') return 'concat-sources'
+  if (decision?.kind === 'media.burn-subtitles') return 'burn-subtitles'
   return 'trim'
 }
 
