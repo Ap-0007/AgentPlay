@@ -142,6 +142,23 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('duration-receipt', '成品时长', durationOk ? 1 : 0, 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
     add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, 10, timelineFailure)
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+  } else if (taskType === 'media.shift-subtitles') {
+    const cueCount = Number(result.cueCount)
+    const sourceCueCount = Number(result.sourceCueCount)
+    const droppedCueCount = Number(result.droppedCueCount || 0)
+    const cueReceiptOk = Number.isFinite(cueCount) && cueCount > 0 && Number.isFinite(sourceCueCount) && sourceCueCount - droppedCueCount === cueCount
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1
+      && String(projectCapsule.projectId || '').startsWith('edit-')
+      && String(projectCapsule.versionId || '').startsWith('version-')
+      && Number(projectCapsule.versionCount) >= 2
+      && projectCapsule.canUndo === true
+      && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
+    add('artifacts', '字幕成果', artifactRatio, 25, artifactFailure)
+    add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '调时成果不是有效的 srt 字幕', true))
+    add('cue-receipt', '条目回执', cueReceiptOk ? 1 : 0, 25, reason('CUE_RECEIPT_MISMATCH', `字幕条目回执不一致：源 ${sourceCueCount || 0} 条、丢弃 ${droppedCueCount} 条、成果 ${cueCount || 0} 条`, true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.compress') {
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('artifacts', '视频成果', artifactRatio, 50, artifactFailure)

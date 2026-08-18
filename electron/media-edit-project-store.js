@@ -22,6 +22,7 @@ function editVersionKind(decision) {
   if (decision?.kind === 'media.add-music') return 'add-music'
   if (decision?.kind === 'media.concat-sources') return 'concat-sources'
   if (decision?.kind === 'media.burn-subtitles') return 'burn-subtitles'
+  if (decision?.kind === 'media.shift-subtitles') return 'shift-subtitles'
   return 'trim'
 }
 
@@ -165,9 +166,15 @@ class MediaEditProjectStore {
   navigate({ currentPath, direction } = {}) {
     this.assertReady()
     const resolved = path.resolve(String(currentPath || ''))
-    const project = this.state.projects.find((item) => item.versions.some((version) => path.resolve(version.artifact.path) === resolved))
-    if (!project) return { success: false, error: '当前视频还没有可撤销的编辑历史' }
-    const currentIndex = project.versions.findIndex((version) => path.resolve(version.artifact.path) === resolved)
+    let project = this.state.projects.find((item) => item.versions.some((version) => path.resolve(version.artifact.path) === resolved))
+    let currentIndex = project ? project.versions.findIndex((version) => path.resolve(version.artifact.path) === resolved) : -1
+    if (!project) {
+      // 当前文件不在任何编辑项目里（典型：字幕调时的项目锚在字幕文件而不是当前视频）——
+      // “撤销刚才的剪辑”退到最近更新的项目，从其当前版本游标继续
+      project = [...this.state.projects].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0]
+      if (!project) return { success: false, error: '当前视频还没有可撤销的编辑历史' }
+      currentIndex = Math.max(0, Math.min(project.versions.length - 1, Number(project.cursor) || 0))
+    }
     const delta = direction === 'redo' ? 1 : direction === 'undo' ? -1 : 0
     if (!delta) return { success: false, error: '编辑历史动作无效' }
     const targetIndex = currentIndex + delta

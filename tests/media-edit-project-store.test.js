@@ -43,6 +43,41 @@ test('a completed trim becomes a non-destructive project version that can undo t
   }
 })
 
+test('navigate falls back to the most recent project when current file owns no history (subtitle-shift anchor case)', () => {
+  const { root, sourcePath, outputPath } = fixture()
+  try {
+    const store = new MediaEditProjectStore({ rootDir: path.join(root, 'state') })
+    store.recordTrim({
+      taskId: 'shift-1',
+      sourcePath,
+      outputPath,
+      decision: { schemaVersion: 1, kind: 'media.shift-subtitles', subtitle: { path: sourcePath }, shift: { direction: 'later', offsetSeconds: 2 } }
+    })
+    // 当前文件（如正在播放的视频）不在任何编辑项目里：撤销落到最近项目的当前游标
+    const unrelated = path.join(root, '正在播放的视频.mp4')
+    fs.writeFileSync(unrelated, Buffer.alloc(1024))
+    const undone = store.navigate({ currentPath: unrelated, direction: 'undo' })
+    assert.equal(undone.success, true)
+    assert.equal(undone.currentPath, sourcePath, '撤销应回到最近项目的上一版（源字幕）')
+    assert.equal(undone.canRedo, true)
+    const redone = store.navigate({ currentPath: unrelated, direction: 'redo' })
+    assert.equal(redone.success, true)
+    assert.equal(redone.currentPath, outputPath)
+    // 游标在最早版本时继续撤销：故障关闭且不改动状态
+    store.navigate({ currentPath: outputPath, direction: 'undo' })
+    const earliest = store.navigate({ currentPath: unrelated, direction: 'undo' })
+    assert.equal(earliest.success, false)
+    assert.match(earliest.error, /已经是最早版本/)
+    // 完全没有任何项目时：保持旧报错
+    const empty = new MediaEditProjectStore({ rootDir: path.join(root, 'state-empty') })
+    const none = empty.navigate({ currentPath: unrelated, direction: 'undo' })
+    assert.equal(none.success, false)
+    assert.match(none.error, /还没有可撤销的编辑历史/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('corrupt project history fails closed and is never silently overwritten', () => {
   const { root, sourcePath, outputPath } = fixture()
   try {

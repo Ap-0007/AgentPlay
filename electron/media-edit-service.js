@@ -43,6 +43,60 @@ function assertSegmentsWithinSource(segments, sourceDuration) {
   if (outOfRange) throw new Error(`结束时间 ${formatTimestamp(outOfRange.sourceEndSeconds)} 超出源视频时长 ${formatTimestamp(sourceDuration)}`)
 }
 
+const SRT_TIME_LINE = /^\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})/
+
+function srtTimeToMs(hours, minutes, seconds, milliseconds) {
+  return ((Number(hours) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000 + Number(milliseconds)
+}
+
+function msToSrtTime(value) {
+  const ms = Math.max(0, Math.round(value))
+  const hours = Math.floor(ms / 3600000)
+  const minutes = Math.floor((ms % 3600000) / 60000)
+  const seconds = Math.floor((ms % 60000) / 1000)
+  const fraction = ms % 1000
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(fraction).padStart(3, '0')}`
+}
+
+// srt 解码：BOM 直读；否则先严格 UTF-8，失败退 GBK（中文圈常见）；写出统一 UTF-8
+function decodeSubtitleText(buffer) {
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) return buffer.subarray(3).toString('utf8')
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+  } catch {
+    try { return new TextDecoder('gbk').decode(buffer) } catch { return buffer.toString('utf8') }
+  }
+}
+
+// 解析标准 srt：序号行 + 时间行 + 文本行；容忍缺序号、CRLF/LF、行间空行
+function parseSrtCues(text) {
+  const lines = String(text || '').replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
+  const cues = []
+  let block = []
+  const flush = () => {
+    if (!block.length) return
+    const timeIndex = block.findIndex((line) => SRT_TIME_LINE.test(line))
+    if (timeIndex >= 0) {
+      const match = SRT_TIME_LINE.exec(block[timeIndex])
+      const startMs = srtTimeToMs(match[1], match[2], match[3], match[4])
+      const endMs = srtTimeToMs(match[5], match[6], match[7], match[8])
+      const textLines = block.slice(timeIndex + 1)
+      if (endMs > startMs && textLines.some((line) => line.trim())) cues.push({ startMs, endMs, text: textLines.join('\n') })
+    }
+    block = []
+  }
+  for (const line of lines) {
+    if (line.trim() === '') flush()
+    else block.push(line)
+  }
+  flush()
+  return cues
+}
+
+function renderSrtCues(cues) {
+  return cues.map((cue, index) => `${index + 1}\r\n${msToSrtTime(cue.startMs)} --> ${msToSrtTime(cue.endMs)}\r\n${cue.text.replaceAll('\n', '\r\n')}\r\n`).join('\r\n')
+}
+
 class MediaEditService {
   constructor({ frames, fsImpl = fs } = {}) {
     if (!frames) throw new Error('媒体剪辑服务缺少 FFmpeg 执行器')
@@ -424,7 +478,107 @@ class MediaEditService {
     }
   }
 
+  // 字幕时间移动：用户本地 .srt 整体提前/延后 N 秒，产出全新 UTF-8 srt；视频与源字幕都不动。
+  // 语义按字面：提前=时间轴减 N（出现更早），延后=加 N（出现更晚）；完全移到 0 点之前的条目丢弃并计入回执。
+  async shiftSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.shift-subtitles') throw new Error('字幕调时决策无效')
+    if (path.resolve(String(decision.subtitle?.path || '')) !== source) throw new Error('字幕调时决策与字幕文件不一致')
+    if (source === output) throw new Error('禁止覆盖源字幕文件')
+    if (path.extname(source).toLowerCase() !== '.srt') throw new Error('字幕调时目前只支持 .srt 文件')
+    if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('字幕文件不存在')
+    const sourceStat = this.fs.statSync(source)
+    if (sourceStat.size <= 0) throw new Error('字幕文件为空')
+    if (sourceStat.size > 20 * 1024 * 1024) throw new Error('字幕文件超过 20MB 安全上限')
+    if (this.fs.existsSync(output)) throw new Error('成果文件已存在，为避免覆盖已停止')
+    const direction = decision.shift?.direction === 'earlier' ? 'earlier' : 'later'
+    const offsetSeconds = Number(decision.shift?.offsetSeconds)
+    if (!Number.isFinite(offsetSeconds) || offsetSeconds <= 0 || offsetSeconds > 24 * 3600) throw new Error('字幕调时秒数无效')
+    if (signal?.aborted) throw new Error('已取消')
+
+    const raw = this.fs.readFileSync(source)
+    const text = decodeSubtitleText(raw)
+    const cues = parseSrtCues(text)
+    if (!cues.length) throw new Error('字幕文件里没有可识别的有效条目（需要标准 srt 时间轴）')
+    const deltaMs = Math.round(offsetSeconds * 1000) * (direction === 'earlier' ? -1 : 1)
+    const shifted = []
+    let droppedCueCount = 0
+    for (const cue of cues) {
+      const startMs = cue.startMs + deltaMs
+      const endMs = cue.endMs + deltaMs
+      if (endMs <= 0) { droppedCueCount += 1; continue }
+      shifted.push({ startMs: Math.max(0, startMs), endMs, text: cue.text })
+    }
+    if (!shifted.length) throw new Error(`全部 ${cues.length} 条字幕都会移到 0 点之前，没有可交付的内容；请减小秒数或换个方向`)
+    const rendered = renderSrtCues(shifted)
+    const tempPath = `${output}.agentplay-shift-${process.pid}-${Date.now()}.tmp`
+    try {
+      this.fs.writeFileSync(tempPath, rendered, 'utf8')
+      if (signal?.aborted) throw new Error('已取消')
+      const sourceAfter = this.fs.statSync(source)
+      if (sourceStat.size !== sourceAfter.size || Math.trunc(sourceStat.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('调时期间源字幕文件发生变化，已拒绝交付')
+      // 交付前复核：重新解析成果，逐条核对时间与文本
+      const reparsed = parseSrtCues(this.fs.readFileSync(tempPath, 'utf8'))
+      if (reparsed.length !== shifted.length || reparsed.some((cue, index) => cue.startMs !== shifted[index].startMs || cue.endMs !== shifted[index].endMs || cue.text !== shifted[index].text)) {
+        throw new Error('调时成果复核失败：写出的字幕与冻结决策不一致')
+      }
+      this.fs.renameSync(tempPath, output)
+      return this.shiftSubtitlesReceipt({ output, decision, sourceCueCount: cues.length, droppedCueCount })
+    } catch (error) {
+      if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      throw error
+    }
+  }
+
+  async verifyShiftSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 0) throw new Error('调时成果不存在或不完整')
+    const direction = decision.shift?.direction === 'earlier' ? 'earlier' : 'later'
+    const offsetSeconds = Number(decision.shift?.offsetSeconds)
+    const deltaMs = Math.round(offsetSeconds * 1000) * (direction === 'earlier' ? -1 : 1)
+    const sourceCues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
+    const outputCues = parseSrtCues(this.fs.readFileSync(output, 'utf8'))
+    const expected = []
+    let droppedCueCount = 0
+    for (const cue of sourceCues) {
+      const startMs = cue.startMs + deltaMs
+      const endMs = cue.endMs + deltaMs
+      if (endMs <= 0) { droppedCueCount += 1; continue }
+      expected.push({ startMs: Math.max(0, startMs), endMs, text: cue.text })
+    }
+    if (outputCues.length !== expected.length || outputCues.some((cue, index) => cue.startMs !== expected[index].startMs || cue.endMs !== expected[index].endMs || cue.text !== expected[index].text)) {
+      throw new Error('调时成果与冻结决策不一致，已拒绝交付')
+    }
+    if (signal?.aborted) throw new Error('已取消')
+    return this.shiftSubtitlesReceipt({ output, decision, sourceCueCount: sourceCues.length, droppedCueCount })
+  }
+
+  shiftSubtitlesReceipt({ output, decision, sourceCueCount, droppedCueCount }) {
+    const direction = decision.shift?.direction === 'earlier' ? '提前' : '延后'
+    const offsetSeconds = Number(decision.shift?.offsetSeconds) || 0
+    const cueCount = sourceCueCount - droppedCueCount
+    const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
+    return {
+      success: true,
+      outputPath: output,
+      outputs: [output],
+      outputBytes: this.fs.statSync(output).size,
+      cueCount,
+      sourceCueCount,
+      droppedCueCount,
+      timelineReceipt: [{
+        operation: `字幕时间移动（${direction} ${offsetSeconds.toFixed(3)} 秒）`,
+        sourceRange: `${sourceCueCount} 条字幕`,
+        outputRange: `${cueCount} 条字幕${droppedCueCount > 0 ? `（${droppedCueCount} 条移出 0 点丢弃）` : ''}`
+      }],
+      summary: `已把字幕《${subtitleName}》共 ${cueCount} 条整体${direction} ${offsetSeconds.toFixed(3)} 秒（出现更${direction === '提前' ? '早' : '晚'}）${droppedCueCount > 0 ? `，${droppedCueCount} 条完全移出 0 点之前已丢弃` : ''}；原字幕文件与视频均未改动`
+    }
+  }
+
   async verify({ sourcePath, outputPath, decision, signal } = {}) {
+    if (decision?.kind === 'media.shift-subtitles') return this.verifyShiftSubtitles({ sourcePath, outputPath, decision, signal })
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
     if (!this.fs.existsSync(output) || !this.fs.statSync(output).isFile() || this.fs.statSync(output).size <= 1024) throw new Error('剪辑成果不存在或不完整')

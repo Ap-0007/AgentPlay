@@ -66,6 +66,43 @@ function compileBurnSubtitlesDecisionList({ instruction, sourcePath } = {}) {
   }
 }
 
+// 字幕时间移动：用户本地 .srt 整体提前（出现更早）或延后（出现更晚）N 秒，产出新字幕文件，不动视频。
+// 语义按字面：提前=时间轴减 N，延后=时间轴加 N；完全移出 0 点之前的条目丢弃并在回执里说明。
+const SUBTITLE_SHIFT_PATTERN = /(?:字幕)[\s\S]{0,20}(?:提前|延后)|(?:提前|延后)[\s\S]{0,12}(?:秒)/i
+const SRT_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.srt)["'“”‘’]?/i
+const SUBTITLE_SHIFT_VERB_PATTERN = /(提前|延后)/
+
+function extractSrtPath(text) {
+  const match = SRT_PATH_PATTERN.exec(String(text || ''))
+  return match ? match[1].trim() : ''
+}
+
+function compileShiftSubtitlesDecisionList({ instruction, sourcePath } = {}) {
+  const text = String(instruction || '').trim()
+  // 字幕语境：明说“字幕”，或直接给出 .srt 路径（路径本身就是无歧义的字幕指代）
+  if (!/(?:字幕|\.srt)/i.test(text) || !SUBTITLE_SHIFT_PATTERN.test(text)) return null
+  const subtitle = extractSrtPath(text)
+  if (!subtitle) return null
+  const times = extractTimes(text.replace(SRT_PATH_PATTERN, ''))
+  if (times.length !== 1 || !(times[0] > 0)) return null
+  const direction = SUBTITLE_SHIFT_VERB_PATTERN.test(text) && text.lastIndexOf('提前') > text.lastIndexOf('延后') ? 'earlier' : 'later'
+  const offsetSeconds = Number(times[0].toFixed(3))
+  return {
+    schemaVersion: 1,
+    kind: 'media.shift-subtitles',
+    instruction: text,
+    source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
+    subtitle: { path: subtitle, name: portableBasename(subtitle) },
+    shift: { direction, offsetSeconds },
+    output: {
+      container: 'srt',
+      overwrite: false,
+      suffix: `调时版-${direction === 'earlier' ? '提前' : '延后'}${formatSeconds(offsetSeconds)}`
+    },
+    verification: { cueTiming: true }
+  }
+}
+
 function extractAudioPath(text) {
   const match = AUDIO_PATH_PATTERN.exec(String(text || ''))
   return match ? match[1].trim() : ''
@@ -287,10 +324,43 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (musicDecision) return { matched: true, decision: musicDecision }
   const burnDecision = compileBurnSubtitlesDecisionList({ instruction: text, sourcePath: source })
   if (burnDecision) return { matched: true, decision: burnDecision }
+  const shiftDecision = compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })
+  if (shiftDecision) return { matched: true, decision: shiftDecision }
   const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  // 字幕调时缺文件或缺秒数：只追问当前唯一影响结果的一项（本切片只收 .srt）
+  if (/(?:字幕|\.srt)/i.test(text) && SUBTITLE_SHIFT_PATTERN.test(text) && !compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })) {
+    if (!extractSrtPath(text)) {
+      const direction = SUBTITLE_SHIFT_VERB_PATTERN.test(text) && text.lastIndexOf('提前') > text.lastIndexOf('延后') ? 'earlier' : 'later'
+      const times = extractTimes(text)
+      return {
+        matched: true,
+        clarification: {
+          schemaVersion: 1,
+          kind: 'media.edit-clarification',
+          reason: 'missing-subtitle-file',
+          question: '要调哪个字幕文件？请给我 .srt 完整路径（也可以把字幕文件拖进对话窗）。',
+          originalInstruction: text,
+          sourcePath: source,
+          known: { direction, offsetSeconds: times.length === 1 ? Number(times[0].toFixed(3)) : null }
+        }
+      }
+    }
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-offset',
+        question: '整体移动几秒？请直接说秒数（比如 2 秒或 0.5 秒）。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: { direction: SUBTITLE_SHIFT_VERB_PATTERN.test(text) && text.lastIndexOf('提前') > text.lastIndexOf('延后') ? 'earlier' : 'later', subtitlePath: extractSrtPath(text) }
+      }
+    }
+  }
   // 烧录字幕缺文件：只追问唯一一项（用用户自己的字幕文件，不抓网）
   if (SUBTITLE_BURN_PATTERN.test(text) && !extractSubtitlePath(text)) {
     return {
@@ -429,6 +499,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (replacementMusic) return { matched: true, decision: replacementMusic }
   const replacementBurn = compileBurnSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementBurn) return { matched: true, decision: replacementBurn }
+  const replacementShift = compileShiftSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementShift) return { matched: true, decision: replacementShift }
   const replacementDecision = compileEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementDecision) return { matched: true, decision: replacementDecision }
   if (pending.reason === 'missing-end') {
@@ -498,6 +570,44 @@ function resolveEditClarification({ clarification, answer } = {}) {
     const decision = compileBurnSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
     return decision ? { matched: true, decision } : { matched: false }
   }
+  if (pending.reason === 'missing-subtitle-file') {
+    const subtitlePath = extractSrtPath(text)
+    if (!subtitlePath) return { matched: false }
+    const offsetSeconds = Number(pending.known?.offsetSeconds)
+    if (!Number.isFinite(offsetSeconds) || offsetSeconds <= 0) {
+      const times = extractTimes(text.replace(SRT_PATH_PATTERN, ''))
+      if (times.length !== 1 || !(times[0] > 0)) {
+        // 原句连秒数也没给：文件补齐后继续只追问秒数这一项
+        return {
+          matched: true,
+          clarification: {
+            ...pending,
+            reason: 'missing-offset',
+            question: '整体移动几秒？请直接说秒数（比如 2 秒或 0.5 秒）。',
+            known: { direction: pending.known?.direction || 'later', subtitlePath }
+          }
+        }
+      }
+      const direction = pending.known?.direction === 'earlier' ? '提前' : '延后'
+      const instruction = `把字幕 ${subtitlePath} ${direction} ${times[0]} 秒`
+      const decision = compileShiftSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
+      return decision ? { matched: true, decision } : { matched: false }
+    }
+    const direction = pending.known?.direction === 'earlier' ? '提前' : '延后'
+    const instruction = `把字幕 ${subtitlePath} ${direction} ${offsetSeconds} 秒`
+    const decision = compileShiftSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
+  if (pending.reason === 'missing-offset') {
+    const times = extractTimes(text)
+    if (times.length !== 1 || !(times[0] > 0)) return { matched: false }
+    const subtitlePath = String(pending.known?.subtitlePath || '')
+    if (!subtitlePath) return { matched: false }
+    const direction = pending.known?.direction === 'earlier' ? '提前' : '延后'
+    const instruction = `把字幕 ${subtitlePath} ${direction} ${times[0]} 秒`
+    const decision = compileShiftSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
   if (pending.reason === 'missing-audio') {
     const audioPath = extractAudioPath(text)
     if (!audioPath) return { matched: false }
@@ -528,4 +638,5 @@ function compileEditHistoryAction(instruction) {
 module.exports = {
   compileConcatSourcesDecisionList,
   compileBurnSubtitlesDecisionList,
+  compileShiftSubtitlesDecisionList,
   compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

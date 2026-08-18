@@ -21,7 +21,7 @@ test('main process owns planning, frozen execution, recovery and cancellation fo
   assert.match(main, /const taskType = decision\.kind === 'media\.concat-sources'/)
   assert.match(main, /decision\.kind === 'media\.concat-segments'/)
   assert.match(main, /type: taskType/)
-  assert.match(main, /plannedMediaOutput\(sourcePath, decision\.output\.suffix, '\.mp4', requestId\)/)
+  assert.match(main, /plannedMediaOutput\(outputAnchor, decision\.output\.suffix, outputExtension, requestId\)/)
 })
 
 test('main process persists an edit capsule before checkpointing and owns undo or redo navigation', () => {
@@ -104,12 +104,12 @@ test('renderer presents remove-segment as a recoverable edit with every timeline
   const tasks = read('src/components/agent-panel/useMediaCreativeTasks.ts')
   const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts')
   const types = read('src/types/global.d.ts')
-  assert.match(tasks, /\['media\.trim', 'media\.remove-segment', 'media\.concat-segments', 'media\.add-music', 'media\.concat-sources', 'media\.burn-subtitles'\]\.includes\(decision\.kind\)/)
+  assert.match(tasks, /\['media\.trim', 'media\.remove-segment', 'media\.concat-segments', 'media\.add-music', 'media\.concat-sources', 'media\.burn-subtitles', 'media\.shift-subtitles'\]\.includes\(decision\.kind\)/)
   assert.match(tasks, /decision\.kind === 'media\.remove-segment' \? 'remove'/)
   assert.match(tasks, /timelineReceipt \|\| \[\]\)\.map/)
   assert.match(tasks, /start_remove_video_segment/)
   assert.match(runtime, /runtimeTask\.type === 'media\.edit-trim' \|\| runtimeTask\.type === 'media\.edit-remove' \|\| runtimeTask\.type === 'media\.edit-concat' || runtimeTask\.type === 'media\.edit-music'/)
-  assert.match(types, /kind: 'media\.trim' \| 'media\.remove-segment' \| 'media\.concat-segments' \| 'media\.add-music' \| 'media\.concat-sources' \| 'media\.burn-subtitles'/)
+  assert.match(types, /kind: 'media\.trim' \| 'media\.remove-segment' \| 'media\.concat-segments' \| 'media\.add-music' \| 'media\.concat-sources' \| 'media\.burn-subtitles' \| 'media\.shift-subtitles'/)
 })
 
 test('concat decisions run as their own persistent task and repair from the same frozen timeline', () => {
@@ -152,6 +152,6 @@ test('renderer and preload contracts present concat and reorder as one recoverab
   assert.match(tasks, /按顺序拼接/)
   assert.match(runtime, /runtimeTask\.type === 'media\.edit-concat' || runtimeTask\.type === 'media\.edit-music'/)
   assert.match(runtime, /拼接/)
-  assert.match(types, /kind: 'media\.trim' \| 'media\.remove-segment' \| 'media\.concat-segments' \| 'media\.add-music' \| 'media\.concat-sources' \| 'media\.burn-subtitles'/)
+  assert.match(types, /kind: 'media\.trim' \| 'media\.remove-segment' \| 'media\.concat-segments' \| 'media\.add-music' \| 'media\.concat-sources' \| 'media\.burn-subtitles' \| 'media\.shift-subtitles'/)
   assert.match(types, /segments: Array<\{ sourceStartSeconds: number; sourceEndSeconds: number;/)
 })
