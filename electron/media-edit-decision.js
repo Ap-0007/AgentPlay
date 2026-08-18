@@ -51,19 +51,52 @@ function compileBurnSubtitlesDecisionList({ instruction, sourcePath } = {}) {
   if (!SUBTITLE_BURN_PATTERN.test(text)) return null
   const subtitle = extractSubtitlePath(text)
   if (!source || !subtitle) return null
+  const style = extractBurnSubtitleStyle(text)
   return {
     schemaVersion: 1,
     kind: 'media.burn-subtitles',
     instruction: text,
     source: { path: source, name: portableBasename(source) },
-    subtitle: { path: subtitle, name: portableBasename(subtitle) },
+    subtitle: { path: subtitle, name: portableBasename(subtitle), ...(style ? { style } : {}) },
     output: {
       container: 'mp4',
       overwrite: false,
-      suffix: '硬字幕版'
+      suffix: `硬字幕版${style?.fontSize === 'large' ? '-大字' : style?.fontSize === 'small' ? '-小字' : ''}${style?.alignment === 'top' ? '-顶部' : ''}${style?.color ? `-${style.color}` : ''}`
     },
     verification: { toleranceSeconds: 0.2 }
   }
+}
+
+// 烧录样式：字号（大/小）、位置（顶部/底部）、颜色（黄白红蓝绿黑）；只在烧录语境生效。
+// ASS force_style：FontSize 按 libass 默认 PlayResY=288 等比缩放到实际分辨率；颜色是 &H00BBGGRR。
+const BURN_FONT_SIZE_PATTERN = /(大一号|大一点|大点|大字|大号|小一号|小一点|小点|小字|小号)/
+const BURN_ALIGNMENT_PATTERN = /(顶部|上面|上方|顶上|底部|下面|下方|底下)/
+const BURN_COLOR_PATTERN = /(黄色|白色|红色|蓝色|绿色|黑色)/
+const BURN_COLOR_MAP = { 黄色: '&H0000FFFF', 白色: '&H00FFFFFF', 红色: '&H000000FF', 蓝色: '&H00FF0000', 绿色: '&H0000FF00', 黑色: '&H00000000' }
+
+function extractBurnSubtitleStyle(text) {
+  const value = String(text || '')
+  const sizeMatch = BURN_FONT_SIZE_PATTERN.exec(value)
+  const alignMatch = BURN_ALIGNMENT_PATTERN.exec(value)
+  const colorMatch = BURN_COLOR_PATTERN.exec(value)
+  if (!sizeMatch && !alignMatch && !colorMatch) return null
+  return {
+    ...(sizeMatch ? { fontSize: /^大/.test(sizeMatch[1]) ? 'large' : 'small' } : {}),
+    ...(alignMatch ? { alignment: /顶|上/.test(alignMatch[1]) ? 'top' : 'bottom' } : {}),
+    ...(colorMatch ? { color: colorMatch[1] } : {})
+  }
+}
+
+function burnForceStyle(style) {
+  if (!style) return ''
+  const parts = []
+  if (style.fontSize === 'large') parts.push('FontSize=32')
+  else if (style.fontSize === 'small') parts.push('FontSize=16')
+  // force_style 走 SSA 语义：6=顶中（不是 ASS 小键盘的 8）；2=底中
+  if (style.alignment === 'top') parts.push('Alignment=6')
+  else if (style.alignment === 'bottom') parts.push('Alignment=2')
+  if (style.color && BURN_COLOR_MAP[style.color]) parts.push(`PrimaryColour=${BURN_COLOR_MAP[style.color]}`)
+  return parts.join(',')
 }
 
 // 软字幕封装：字幕作为可开关的独立轨道封进 mp4（mov_text），音画流不重编码直接 copy。
@@ -757,4 +790,5 @@ module.exports = {
   compileMuxSubtitlesDecisionList,
   compileTranslateSubtitlesDecisionList,
   compileShiftSubtitlesDecisionList,
+  burnForceStyle,
   compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 
 const { buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, parseSrt, translateEntries } = require('./subtitle-bilingual-service')
+const { burnForceStyle } = require('./media-edit-decision')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'])
@@ -447,6 +448,8 @@ class MediaEditService {
     if (!(sourceDuration > 0)) throw new Error('无法读取源视频时长')
     // ffmpeg filter 参数转义：统一正斜杠、盘符冒号加反斜杠、单引号加倍转义；中文路径原样可行
     const escapedSubtitle = subtitle.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''")
+    const forceStyle = burnForceStyle(decision.subtitle?.style)
+    const subtitleFilter = `subtitles='${escapedSubtitle}'${forceStyle ? `:force_style='${forceStyle}'` : ''}`
     const sourceBefore = this.fs.statSync(source)
     const subtitleBefore = this.fs.statSync(subtitle)
     const parsed = path.parse(output)
@@ -454,7 +457,7 @@ class MediaEditService {
     try {
       await this.frames.run([
         '-hide_banner', '-nostdin', '-i', source,
-        '-vf', `subtitles='${escapedSubtitle}',pad=ceil(iw/2)*2:ceil(ih/2)*2`,
+        '-vf', `${subtitleFilter},pad=ceil(iw/2)*2:ceil(ih/2)*2`,
         '-map', '0:v:0', '-map', '0:a?', '-map_metadata', '0', '-map_chapters', '0',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
         '-pix_fmt', 'yuv420p',
@@ -871,6 +874,10 @@ class MediaEditService {
   burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration }) {
     const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
     const fullRange = `${formatTimestamp(0)} → ${formatTimestamp(sourceDuration)}`
+    const style = decision.subtitle?.style
+    const styleText = style
+      ? `（${[style.fontSize === 'large' ? '大号字' : style.fontSize === 'small' ? '小号字' : '', style.alignment === 'top' ? '顶部' : style.alignment === 'bottom' ? '底部' : '', style.color || ''].filter(Boolean).join('、')}）`
+      : ''
     return {
       success: true,
       outputPath: output,
@@ -880,11 +887,11 @@ class MediaEditService {
       expectedDurationSeconds: sourceDuration,
       durationSeconds: Number(actualDuration.toFixed(3)),
       timelineReceipt: [{
-        operation: `烧录字幕（${subtitleName}）`,
+        operation: `烧录字幕（${subtitleName}）${styleText}`,
         sourceRange: fullRange,
         outputRange: fullRange
       }],
-      summary: `已把字幕《${subtitleName}》逐条烧录进画面，生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
+      summary: `已把字幕《${subtitleName}》逐条烧录进画面${styleText}，生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
     }
   }
 
