@@ -22,6 +22,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music' || runtimeTask.type === 'media.edit-concat-sources' || runtimeTask.type === 'media.edit-burn-subtitles' || runtimeTask.type === 'media.edit-mux-subtitles'
       const isSubtitleShift = runtimeTask.type === 'media.shift-subtitles'
       const isSubtitleTranslate = runtimeTask.type === 'media.translate-subtitles'
+      const isSubtitleCueEdit = runtimeTask.type === 'media.edit-subtitle-cues'
       const isDedup = runtimeTask.type === 'media.dedup'
       const isDownload = String(runtimeTask.type || '').startsWith('download.')
       const dedupRoot = runtimeTask.spec?.root as { path?: string } | undefined
@@ -70,6 +71,9 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       } else if (isSubtitleTranslate) {
         kind = 'media'; label = '翻译字幕'; instruction = String(runtimeTask.spec?.instruction || '翻译字幕'); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
+      } else if (isSubtitleCueEdit) {
+        kind = 'media'; label = '字幕校对'; instruction = String(runtimeTask.spec?.instruction || '字幕校对'); source = firstSourcePath
+        retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isCompress) {
         kind = 'media'; label = compressMode === 'remux' ? '转码为 MP4' : `压缩到 ${Number(runtimeTask.spec?.targetMb) || 25}MB`
         instruction = compressMode === 'remux' ? '转码成 mp4' : `压缩到 ${Number(runtimeTask.spec?.targetMb) || 25}MB`; source = firstSourcePath
@@ -89,7 +93,8 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
                   : isTimelineEdit ? '视频剪辑完成（已从冻结时间线恢复）'
                     : isSubtitleShift ? '字幕调时完成（已从冻结决策恢复）'
                       : isSubtitleTranslate ? '字幕翻译完成（已从冻结决策恢复）'
-                      : isCompress ? `${compressMode === 'remux' ? '转码' : '压缩'}完成（已从检查点恢复）`
+                        : isSubtitleCueEdit ? '字幕校对完成（已从冻结决策恢复）'
+                        : isCompress ? `${compressMode === 'remux' ? '转码' : '压缩'}完成（已从检查点恢复）`
                     : isDedup ? '重复文件检查完成（已从哈希检查点恢复）' : '视频下载完成（已从检查点恢复）'
         store.updateTask(runtimeTask.workspaceTaskId, {
           phase: 'completed', status: '', error: '', outputs: outputPaths, summary: String(runtimeTask.result?.summary || fallbackSummary),

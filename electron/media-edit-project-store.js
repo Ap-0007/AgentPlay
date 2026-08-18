@@ -24,6 +24,7 @@ function editVersionKind(decision) {
   if (decision?.kind === 'media.burn-subtitles') return 'burn-subtitles'
   if (decision?.kind === 'media.mux-subtitles') return 'mux-subtitles'
   if (decision?.kind === 'media.translate-subtitles') return 'translate-subtitles'
+  if (decision?.kind === 'media.edit-subtitle-cues') return 'edit-subtitle-cues'
   if (decision?.kind === 'media.shift-subtitles') return 'shift-subtitles'
   return 'trim'
 }

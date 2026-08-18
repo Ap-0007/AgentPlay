@@ -686,6 +686,102 @@ class MediaEditService {
     }
   }
 
+  // 字幕条目校对/删除：按"第 N 条"改文本或删除区间条目，产出全新 UTF-8 srt；源字幕与视频都不动。
+  async editSubtitleCues({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.edit-subtitle-cues') throw new Error('字幕校对决策无效')
+    if (path.resolve(String(decision.subtitle?.path || '')) !== source) throw new Error('字幕校对决策与字幕文件不一致')
+    if (source === output) throw new Error('禁止覆盖源字幕文件')
+    if (path.extname(source).toLowerCase() !== '.srt') throw new Error('字幕校对目前只支持 .srt 文件')
+    if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('字幕文件不存在')
+    const sourceStat = this.fs.statSync(source)
+    if (sourceStat.size <= 0) throw new Error('字幕文件为空')
+    if (sourceStat.size > 20 * 1024 * 1024) throw new Error('字幕文件超过 20MB 安全上限')
+    if (this.fs.existsSync(output)) throw new Error('成果文件已存在，为避免覆盖已停止')
+    const cueEdit = decision.cueEdit
+    if (!cueEdit || !['delete', 'replace'].includes(cueEdit.operation)) throw new Error('字幕校对操作无效')
+    if (signal?.aborted) throw new Error('已取消')
+
+    const cues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
+    if (!cues.length) throw new Error('字幕文件里没有可识别的有效条目（需要标准 srt 时间轴）')
+    const applyEdit = (list) => {
+      if (cueEdit.operation === 'replace') {
+        const index = Number(cueEdit.index)
+        const text = String(cueEdit.text || '').trim()
+        if (!Number.isInteger(index) || index < 1 || index > list.length) throw new Error(`第 ${index} 条不存在：这份字幕一共 ${list.length} 条`)
+        if (!text) throw new Error('校对的新文本不能为空')
+        return list.map((cue, order) => order + 1 === index ? { ...cue, text } : cue)
+      }
+      const startIndex = Number(cueEdit.startIndex)
+      const endIndex = Number(cueEdit.endIndex)
+      if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex) || startIndex < 1 || endIndex < startIndex || endIndex > list.length) {
+        throw new Error(`第 ${Number.isInteger(startIndex) ? startIndex : '?'} 到第 ${Number.isInteger(endIndex) ? endIndex : '?'} 条超出范围：这份字幕一共 ${list.length} 条`)
+      }
+      const kept = list.filter((_, order) => order + 1 < startIndex || order + 1 > endIndex)
+      if (!kept.length) throw new Error('不能删除全部字幕条目；请至少保留一条')
+      return kept
+    }
+    const edited = applyEdit(cues)
+    const rendered = renderSrtCues(edited)
+    const tempPath = `${output}.agentplay-cueedit-${process.pid}-${Date.now()}.tmp`
+    try {
+      this.fs.writeFileSync(tempPath, rendered, 'utf8')
+      if (signal?.aborted) throw new Error('已取消')
+      const sourceAfter = this.fs.statSync(source)
+      if (sourceStat.size !== sourceAfter.size || Math.trunc(sourceStat.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('校对期间源字幕文件发生变化，已拒绝交付')
+      const reparsed = parseSrtCues(this.fs.readFileSync(tempPath, 'utf8'))
+      if (reparsed.length !== edited.length || reparsed.some((cue, index) => cue.startMs !== edited[index].startMs || cue.endMs !== edited[index].endMs || cue.text !== edited[index].text)) {
+        throw new Error('校对成果复核失败：写出的字幕与冻结决策不一致')
+      }
+      this.fs.renameSync(tempPath, output)
+      return this.cueEditReceipt({ output, decision, sourceCueCount: cues.length, outputCueCount: edited.length })
+    } catch (error) {
+      if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      throw error
+    }
+  }
+
+  async verifyCueEdit({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 0) throw new Error('校对成果不存在或不完整')
+    const cues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
+    const cueEdit = decision.cueEdit
+    const expected = cueEdit.operation === 'replace'
+      ? cues.map((cue, order) => order + 1 === Number(cueEdit.index) ? { ...cue, text: String(cueEdit.text || '').trim() } : cue)
+      : cues.filter((_, order) => order + 1 < Number(cueEdit.startIndex) || order + 1 > Number(cueEdit.endIndex))
+    const outputCues = parseSrtCues(this.fs.readFileSync(output, 'utf8'))
+    if (outputCues.length !== expected.length || outputCues.some((cue, index) => cue.startMs !== expected[index].startMs || cue.endMs !== expected[index].endMs || cue.text !== expected[index].text)) {
+      throw new Error('校对成果与冻结决策不一致，已拒绝交付')
+    }
+    if (signal?.aborted) throw new Error('已取消')
+    return this.cueEditReceipt({ output, decision, sourceCueCount: cues.length, outputCueCount: expected.length })
+  }
+
+  cueEditReceipt({ output, decision, sourceCueCount, outputCueCount }) {
+    const cueEdit = decision.cueEdit
+    const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
+    const operationText = cueEdit.operation === 'replace'
+      ? `第 ${cueEdit.index} 条改成《${String(cueEdit.text || '').slice(0, 30)}》`
+      : Number(cueEdit.startIndex) === Number(cueEdit.endIndex) ? `删除第 ${cueEdit.startIndex} 条` : `删除第 ${cueEdit.startIndex} 到第 ${cueEdit.endIndex} 条`
+    return {
+      success: true,
+      outputPath: output,
+      outputs: [output],
+      outputBytes: this.fs.statSync(output).size,
+      cueCount: outputCueCount,
+      sourceCueCount,
+      droppedCueCount: cueEdit.operation === 'delete' ? sourceCueCount - outputCueCount : 0,
+      timelineReceipt: [{
+        operation: `字幕校对（${operationText}）`,
+        sourceRange: `${sourceCueCount} 条字幕`,
+        outputRange: `${outputCueCount} 条字幕`
+      }],
+      summary: `已把字幕《${subtitleName}》${operationText}，其余条目不重排时间轴，共 ${outputCueCount} 条；原字幕文件与视频均未改动`
+    }
+  }
+
   async verifyShiftSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
@@ -735,6 +831,7 @@ class MediaEditService {
   async verify({ sourcePath, outputPath, decision, signal } = {}) {
     if (decision?.kind === 'media.shift-subtitles') return this.verifyShiftSubtitles({ sourcePath, outputPath, decision, signal })
     if (decision?.kind === 'media.translate-subtitles') return this.verifyTranslateSubtitles({ sourcePath, outputPath, decision, signal })
+    if (decision?.kind === 'media.edit-subtitle-cues') return this.verifyCueEdit({ sourcePath, outputPath, decision, signal })
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
     if (!this.fs.existsSync(output) || !this.fs.statSync(output).isFile() || this.fs.statSync(output).size <= 1024) throw new Error('剪辑成果不存在或不完整')

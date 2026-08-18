@@ -179,6 +179,26 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('cue-receipt', '条目回执', cueReceiptOk ? 1 : 0, 15, reason('CUE_RECEIPT_MISMATCH', `翻译条目回执不一致：源 ${sourceCueCount || 0} 条、成果 ${cueCount || 0} 条`, true))
     add('target-language', '目标语言', hasTargetText ? 1 : 0, 10, reason('TARGET_LANGUAGE_MISSING', `字幕中没有检测到${targetLang || '目标语言'}文本`, true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+  } else if (taskType === 'media.edit-subtitle-cues') {
+    const cueCount = Number(result.cueCount)
+    const sourceCueCount = Number(result.sourceCueCount)
+    const cueEdit = spec.decision?.cueEdit
+    const expectedCueCount = cueEdit?.operation === 'replace'
+      ? sourceCueCount
+      : sourceCueCount - (Number(cueEdit?.endIndex) - Number(cueEdit?.startIndex) + 1)
+    const cueReceiptOk = Number.isFinite(cueCount) && cueCount > 0 && Number.isFinite(expectedCueCount) && cueCount === expectedCueCount
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1
+      && String(projectCapsule.projectId || '').startsWith('edit-')
+      && String(projectCapsule.versionId || '').startsWith('version-')
+      && Number(projectCapsule.versionCount) >= 2
+      && projectCapsule.canUndo === true
+      && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
+    add('artifacts', '字幕成果', artifactRatio, 25, artifactFailure)
+    add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '校对成果不是有效的 srt 字幕', true))
+    add('cue-receipt', '条目回执', cueReceiptOk ? 1 : 0, 25, reason('CUE_RECEIPT_MISMATCH', `校对条目回执不一致：期望 ${expectedCueCount || 0} 条，实际 ${cueCount || 0} 条`, true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.compress') {
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('artifacts', '视频成果', artifactRatio, 50, artifactFailure)

@@ -127,6 +127,52 @@ function compileMuxSubtitlesDecisionList({ instruction, sourcePath } = {}) {
   }
 }
 
+// 字幕条目校对/删除：用户本地 .srt 按"第 N 条"改文本或删除条目（可区间），产出全新 srt；源字幕与视频都不动。
+// 范围切割：必须给出 .srt 路径才接管；序号用"第 N 条"（与剪辑的"第 N 秒"严格区分）。
+const CUE_EDIT_NUMBER = String.raw`(\d+|[零〇一二两三四五六七八九十百]+)`
+// 兼容"第2条到第4条""第2到第4条""第3条"三种写法；整条匹配必须含"条"
+const CUE_EDIT_RANGE_PATTERN = new RegExp(`第\\s*${CUE_EDIT_NUMBER}\\s*条?(?:\\s*(?:到|至)\\s*(?:第?\\s*${CUE_EDIT_NUMBER})\\s*条?)?`)
+const CUE_EDIT_DELETE_PATTERN = /(?:删除|删掉|去掉|移除)/
+const CUE_EDIT_REPLACE_PATTERN = /(改成|改为|换成)\s*[《“"'「]?(.+?)[》”"'」]?\s*$/
+
+function compileCueEditDecisionList({ instruction, sourcePath } = {}) {
+  const text = String(instruction || '').trim()
+  if (!/(?:字幕|\.srt)/i.test(text)) return null
+  const subtitle = extractSrtPath(text)
+  if (!subtitle) return null
+  const rest = text.replace(SRT_PATH_PATTERN, '')
+  const rangeMatch = CUE_EDIT_RANGE_PATTERN.exec(rest)
+  if (!rangeMatch || !rangeMatch[0].includes('条')) return null
+  const startIndex = parseNumber(rangeMatch[1])
+  const endIndex = rangeMatch[2] ? parseNumber(rangeMatch[2]) : startIndex
+  if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex) || startIndex < 1 || endIndex < startIndex || endIndex > 50000) return null
+  const replaceMatch = CUE_EDIT_REPLACE_PATTERN.exec(rest)
+  if (replaceMatch && replaceMatch[2] && replaceMatch[2].trim()) {
+    if (endIndex !== startIndex) return null
+    return {
+      schemaVersion: 1,
+      kind: 'media.edit-subtitle-cues',
+      instruction: text,
+      source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
+      subtitle: { path: subtitle, name: portableBasename(subtitle) },
+      cueEdit: { operation: 'replace', index: startIndex, text: replaceMatch[2].trim() },
+      output: { container: 'srt', overwrite: false, suffix: `校对版-改第${startIndex}条` },
+      verification: { cueEdit: true }
+    }
+  }
+  if (!CUE_EDIT_DELETE_PATTERN.test(rest)) return null
+  return {
+    schemaVersion: 1,
+    kind: 'media.edit-subtitle-cues',
+    instruction: text,
+    source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
+    subtitle: { path: subtitle, name: portableBasename(subtitle) },
+    cueEdit: { operation: 'delete', startIndex, endIndex },
+    output: { container: 'srt', overwrite: false, suffix: startIndex === endIndex ? `校对版-删第${startIndex}条` : `校对版-删第${startIndex}到${endIndex}条` },
+    verification: { cueEdit: true }
+  }
+}
+
 // 字幕翻译：用户本地 .srt 逐句翻译成英文/中文（或双语对照），产出全新 srt；视频与源字幕都不动。
 // 引擎：云端已配置且用户同意后走云端；英译中可回退本地 OPUS-MT 离线组件。批失败故障关闭不交付半成品。
 // 范围切割：必须给出 .srt 路径才接管——"翻译字幕"不带路径时可能指当前视频的双语生成（既有 subtitle.generate 流程），不在这里追问劫持。
@@ -423,12 +469,44 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (muxDecision) return { matched: true, decision: muxDecision }
   const translateDecision = compileTranslateSubtitlesDecisionList({ instruction: text, sourcePath: source })
   if (translateDecision) return { matched: true, decision: translateDecision }
+  const cueEditDecision = compileCueEditDecisionList({ instruction: text, sourcePath: source })
+  if (cueEditDecision) return { matched: true, decision: cueEditDecision }
   const shiftDecision = compileShiftSubtitlesDecisionList({ instruction: text, sourcePath: source })
   if (shiftDecision) return { matched: true, decision: shiftDecision }
   const decision = compileEditDecisionList({ instruction: text, sourcePath: source })
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  // 字幕条目校对缺序号：给了 .srt 路径且有删除/改动词但没"第 N 条"时追问唯一一项
+  if (extractSrtPath(text) && /(?:字幕)/.test(text) && (CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成|改)/.test(text)) && !CUE_EDIT_RANGE_PATTERN.test(text) && !compileCueEditDecisionList({ instruction: text, sourcePath: source })) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-cue-index',
+        question: '要处理第几条字幕？直接说序号（比如"第 3 条"或"第 2 到第 4 条"）；改文本请说"第 3 条改成《新文本》"。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: { subtitlePath: extractSrtPath(text), editIntent: CUE_EDIT_DELETE_PATTERN.test(text) ? 'delete' : 'replace' }
+      }
+    }
+  }
+  // 字幕条目校对但没给文件：明说"第 N 条字幕"已是字幕语境，追问文件而不是落到视频段时间追问
+  if (!extractSrtPath(text) && /字幕/.test(text) && new RegExp(`第\\s*${CUE_EDIT_NUMBER}\\s*条`).test(text) && (CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成|改)/.test(text))) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-subtitle-cueedit-file',
+        question: '要处理哪个字幕文件？请给我 .srt 完整路径（也可以把字幕文件拖进对话窗）。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: {}
+      }
+    }
+  }
   // 字幕翻译缺目标语言：给了 .srt 路径才追问唯一一项；没给路径不接管（可能是视频级双语生成诉求）
   if (SUBTITLE_TRANSLATE_PATTERN.test(text) && extractSrtPath(text) && !SUBTITLE_TRANSLATE_TARGET_PATTERN.test(text) && !compileTranslateSubtitlesDecisionList({ instruction: text, sourcePath: source })) {
     return {
@@ -632,6 +710,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (replacementMux) return { matched: true, decision: replacementMux }
   const replacementTranslate = compileTranslateSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementTranslate) return { matched: true, decision: replacementTranslate }
+  const replacementCueEdit = compileCueEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementCueEdit) return { matched: true, decision: replacementCueEdit }
   const replacementShift = compileShiftSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementShift) return { matched: true, decision: replacementShift }
   const replacementDecision = compileEditDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
@@ -708,6 +788,38 @@ function resolveEditClarification({ clarification, answer } = {}) {
     if (!subtitlePath) return { matched: false }
     const instruction = `把字幕 ${subtitlePath} 封装进视频`
     const decision = compileMuxSubtitlesDecisionList({ instruction, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
+  if (pending.reason === 'missing-subtitle-cueedit-file') {
+    const subtitlePath = extractSrtPath(text)
+    if (!subtitlePath) return { matched: false }
+    const instruction = `${pending.originalInstruction} ${subtitlePath}`
+    const decision = compileCueEditDecisionList({ instruction, sourcePath: pending.sourcePath })
+    if (decision) return { matched: true, decision }
+    // 原句可能还缺序号：继续只问序号
+    const followup = planEditInstruction({ instruction, sourcePath: pending.sourcePath })
+    return followup.matched ? followup : { matched: false }
+  }
+  if (pending.reason === 'missing-cue-index') {
+    const subtitlePath = String(pending.known?.subtitlePath || '')
+    if (!subtitlePath) return { matched: false }
+    const hasEditVerb = CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成)/.test(text)
+    const hasRange = CUE_EDIT_RANGE_PATTERN.test(text)
+    // 第一轮只给了序号且原句是改文本：记住序号，继续只问文本这一项
+    if (hasRange && !hasEditVerb && pending.known?.editIntent === 'replace' && !pending.known?.cueRange) {
+      return {
+        matched: true,
+        clarification: { ...pending, question: '改成什么内容？请说"改成《新文本》"。', known: { ...pending.known, cueRange: text } }
+      }
+    }
+    // 第二轮：文本带"改成"，序号从 remembered cueRange 补回
+    const body = hasEditVerb && !hasRange && pending.known?.cueRange
+      ? `${pending.known.cueRange}${text}`
+      : hasEditVerb && hasRange ? text
+        : pending.known?.editIntent === 'delete' && hasRange ? `删掉${text}` : ''
+    if (!body) return { matched: false }
+    const instruction = `把字幕 ${subtitlePath} ${body}`
+    const decision = compileCueEditDecisionList({ instruction, sourcePath: pending.sourcePath })
     return decision ? { matched: true, decision } : { matched: false }
   }
   if (pending.reason === 'missing-translate-target') {
@@ -787,6 +899,7 @@ function compileEditHistoryAction(instruction) {
 module.exports = {
   compileConcatSourcesDecisionList,
   compileBurnSubtitlesDecisionList,
+  compileCueEditDecisionList,
   compileMuxSubtitlesDecisionList,
   compileTranslateSubtitlesDecisionList,
   compileShiftSubtitlesDecisionList,
