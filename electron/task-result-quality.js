@@ -6,7 +6,7 @@ const OFFICE_ZIP_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.odt', '.ods'
 const HARD_FAILURES = new Set([
   'RESULT_FAILED', 'ARTIFACT_MISSING', 'ARTIFACT_EMPTY', 'INVALID_FORMAT', 'SUBTITLE_EMPTY',
   'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE', 'PROJECT_CAPSULE_MISSING',
-  'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_BOUNDARY_MISMATCH'
+  'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -126,30 +126,42 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const hasTimelineReceipt = expectedSegmentCount > 0
       ? timelineReceipt.length === expectedSegmentCount && mappedTimelineReceipts.length === expectedSegmentCount
       : mappedTimelineReceipts.length > 0
-    const requiresFrameProof = taskType === 'media.edit-trim'
+    const requiresFrameProof = taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat'
     const frameProof = result.frameProof
     const frameProofVerdict = String(frameProof?.verdict || '')
+    const expectedFrameBoundaryCount = taskType === 'media.edit-trim' ? 1 : taskType === 'media.edit-concat' ? expectedSegmentCount : taskType === 'media.edit-remove' ? mappedTimelineReceipts.length : 0
+    const frameProofComplete = taskType === 'media.edit-trim'
+      ? Boolean(frameProof?.first && frameProof?.last)
+      : Array.isArray(frameProof?.boundaries) && frameProof.boundaries.length === expectedFrameBoundaryCount && frameProof.boundaries.every((item) => item?.first && item?.last)
     let frameProofRatio = 1
     let frameProofFailure = null
     if (requiresFrameProof) {
       if (!frameProof) {
         frameProofRatio = 0
         frameProofFailure = reason('FRAME_PROOF_MISSING', '缺少首尾帧边界证明，不能确认剪辑点', true)
+      } else if (frameProofVerdict === 'unavailable') {
+        frameProofRatio = 0
+        frameProofFailure = reason('FRAME_PROOF_UNAVAILABLE', '无法生成首尾帧边界证明，不能确认剪辑点', true)
+      } else if (frameProofVerdict === 'mismatch') {
+        frameProofRatio = 0
+        frameProofFailure = reason('FRAME_BOUNDARY_MISMATCH', '成片首尾帧与决策切割点不符', true)
+      } else if (!frameProofComplete) {
+        frameProofRatio = 0
+        frameProofFailure = reason('FRAME_PROOF_INCOMPLETE', `帧边界证明不完整：期望 ${expectedFrameBoundaryCount} 个片段，实际 ${Array.isArray(frameProof.boundaries) ? frameProof.boundaries.length : 0} 个`, true)
       } else if (frameProofVerdict === 'matched') {
         frameProofRatio = 1
       } else if (frameProofVerdict === 'inconclusive') {
         frameProofRatio = 0.5
         frameProofFailure = reason('FRAME_BOUNDARY_INCONCLUSIVE', '画面内容过于相似，首尾帧证据无法唯一判定；已保留时长与时间线核验结果', false)
-      } else if (frameProofVerdict === 'mismatch') {
-        frameProofRatio = 0
-        frameProofFailure = reason('FRAME_BOUNDARY_MISMATCH', '成片首尾帧与决策切割点不符', true)
       } else {
         frameProofRatio = 0
         frameProofFailure = reason('FRAME_PROOF_UNAVAILABLE', '无法生成首尾帧边界证明，不能确认剪辑点', true)
       }
     }
     const frameProofDetail = requiresFrameProof && frameProof
-      ? `首帧差异 ${frameProof.first?.matchDiff ?? '未知'}、余量 ${frameProof.first?.margin ?? '未知'}；尾帧差异 ${frameProof.last?.matchDiff ?? '未知'}、余量 ${frameProof.last?.margin ?? '未知'}`
+      ? Array.isArray(frameProof.boundaries) && frameProof.boundaries.length
+        ? `${frameProof.boundaries.slice(0, 4).map((item, index) => `片段${index + 1}首差异 ${item.first?.matchDiff ?? '未知'}、余量 ${item.first?.margin ?? '未知'}；末差异 ${item.last?.matchDiff ?? '未知'}、余量 ${item.last?.margin ?? '未知'}`).join('｜')}${frameProof.boundaries.length > 4 ? `｜另${frameProof.boundaries.length - 4}个片段见完整回执` : ''}`
+        : `首帧差异 ${frameProof.first?.matchDiff ?? '未知'}、余量 ${frameProof.first?.margin ?? '未知'}；尾帧差异 ${frameProof.last?.matchDiff ?? '未知'}、余量 ${frameProof.last?.margin ?? '未知'}`
       : ''
     const timelineFailure = expectedSegmentCount > 0
       ? reason('SEGMENT_RECEIPT_INCOMPLETE', `拼接时间线回执不完整：期望 ${expectedSegmentCount} 段，实际 ${mappedTimelineReceipts.length} 段`, true)

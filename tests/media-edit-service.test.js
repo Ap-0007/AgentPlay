@@ -7,6 +7,15 @@ const path = require('node:path')
 const { MediaEditService } = require('../electron/media-edit-service')
 const { compileEditDecisionList } = require('../electron/media-edit-decision')
 
+function proofFrameReaders(sourcePath, mapOutputSeconds) {
+  const frame = (seconds) => Buffer.alloc(32 * 32, Math.max(0, Math.min(255, Math.round(Number(seconds) * 10))))
+  const sourceSeconds = (filePath, seconds) => filePath === sourcePath ? Number(seconds) : mapOutputSeconds(Number(seconds))
+  return {
+    readGrayFrame: async (filePath, seconds) => frame(sourceSeconds(filePath, seconds)),
+    readLastGrayFrame: async (filePath, boundary) => frame(sourceSeconds(filePath, boundary))
+  }
+}
+
 test('trim re-encodes the exact range, atomically saves a new file and probes its duration', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-trim-'))
   try {
@@ -64,6 +73,7 @@ test('remove-segment joins the retained head and tail with continuous video and 
       availability: () => ({ available: true }),
       probeDuration: async (filePath) => filePath === sourcePath ? 30 : 14.03,
       probeHasAudio: async () => true,
+      ...proofFrameReaders(sourcePath, (seconds) => seconds < 4 ? seconds : seconds + 16),
       run: async (args) => {
         runArgs = args
         fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
@@ -107,6 +117,7 @@ test('remove-segment recovery re-probes an existing artifact instead of encoding
       availability: () => ({ available: true }),
       probeDuration: async (filePath) => filePath === sourcePath ? 30 : 14.03,
       probeHasAudio: async () => true,
+      ...proofFrameReaders(sourcePath, (seconds) => seconds < 4 ? seconds : seconds + 16),
       run: async () => { runCount += 1 }
     }
     const service = new MediaEditService({ frames })
@@ -134,6 +145,7 @@ test('remove-segment supports a silent video and drops stale chapter timestamps'
       availability: () => ({ available: true }),
       probeDuration: async (filePath) => filePath === sourcePath ? 10 : 5.02,
       probeHasAudio: async () => false,
+      ...proofFrameReaders(sourcePath, (seconds) => seconds + 5),
       run: async (args) => {
         runArgs = args
         fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
@@ -164,6 +176,7 @@ test('concat-segments reorders every requested video and audio range on a contin
       availability: () => ({ available: true }),
       probeDuration: async (filePath) => filePath === sourcePath ? 20 : 8.03,
       probeHasAudio: async () => true,
+      ...proofFrameReaders(sourcePath, (seconds) => seconds < 4 ? seconds + 8 : seconds - 4),
       run: async (args) => {
         runArgs = args
         fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))

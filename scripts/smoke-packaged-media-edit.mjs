@@ -235,6 +235,8 @@ try {
       return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
     }, '删除片段任务完成')
     if (removeTask.state !== 'completed') throw new Error(removeTask.error || removeTask.status || '删除片段任务未完成')
+    if (removeTask.result?.frameProof?.verdict !== 'matched' || removeTask.result.frameProof.boundaries?.length !== 2) throw new Error('安装态删除片段没有证明两个保留片段的首尾边界')
+    if (!removeTask.quality?.checks?.find((item) => item.id === 'frame-proof')?.passed) throw new Error('安装态删除帧证明没有进入质量门')
     const removePreview = await waitFor(() => {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return video && Number.isFinite(video.duration) && Math.abs(video.duration - 12) <= 0.2
@@ -266,6 +268,8 @@ try {
       return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
     }, '拼接重排任务完成')
     if (concatTask.state !== 'completed') throw new Error(concatTask.error || concatTask.status || '拼接重排任务未完成')
+    if (concatTask.result?.frameProof?.verdict !== 'matched' || concatTask.result.frameProof.boundaries?.length !== 2) throw new Error('安装态拼接没有证明两个片段的首尾边界')
+    if (!concatTask.quality?.checks?.find((item) => item.id === 'frame-proof')?.passed) throw new Error('安装态拼接帧证明没有进入质量门')
     const concatPreview = await waitFor(() => {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return video && Number.isFinite(video.duration) && Math.abs(video.duration - 8) <= 0.2
@@ -320,7 +324,7 @@ try {
       concatPreview,
       concatUndoPreview,
       concatRedoPreview,
-      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('首尾帧边界已核对') && bodyText.includes('时间线：') && bodyText.includes('拼接片段 1：源片') && bodyText.includes('拼接片段 2：源片') && bodyText.includes('项目版本：4/4')
+      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('首尾帧边界已核对') && bodyText.includes('2个保留片段的首尾帧边界已核对') && bodyText.includes('2个拼接片段的首尾帧边界已核对') && bodyText.includes('时间线：') && bodyText.includes('拼接片段 1：源片') && bodyText.includes('拼接片段 2：源片') && bodyText.includes('项目版本：4/4')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -382,7 +386,7 @@ try {
   const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, removedOutputBytes: fs.statSync(removedOutputPath).size, concatOutputBytes: fs.statSync(concatOutputPath).size, orderEvidence, persistedOutputPath, persistedRemovedOutputPath, persistedConcatOutputPath, persistedProjectStatePath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, frameProof: pageResult.task.result.frameProof, qualityScore: pageResult.task.quality.score, removedDurationSeconds: pageResult.removeTask.result.durationSeconds, concatDurationSeconds: pageResult.concatTask.result.durationSeconds, removeQualityScore: pageResult.removeTask.quality.score, concatQualityScore: pageResult.concatTask.quality.score, orderEvidence, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration, removeUndoDurationSeconds: pageResult.removeUndoPreview.duration, removeRedoDurationSeconds: pageResult.removeRedoPreview.duration, concatUndoDurationSeconds: pageResult.concatUndoPreview.duration, concatRedoDurationSeconds: pageResult.concatRedoPreview.duration }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, frameProof: pageResult.task.result.frameProof, qualityScore: pageResult.task.quality.score, removedDurationSeconds: pageResult.removeTask.result.durationSeconds, removeFrameProof: pageResult.removeTask.result.frameProof, removeQualityScore: pageResult.removeTask.quality.score, concatDurationSeconds: pageResult.concatTask.result.durationSeconds, concatFrameProof: pageResult.concatTask.result.frameProof, concatQualityScore: pageResult.concatTask.quality.score, orderEvidence, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration, removeUndoDurationSeconds: pageResult.removeUndoPreview.duration, removeRedoDurationSeconds: pageResult.removeRedoPreview.duration, concatUndoDurationSeconds: pageResult.concatUndoPreview.duration, concatRedoDurationSeconds: pageResult.concatRedoPreview.duration }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

@@ -60,6 +60,7 @@ const removeResult = await service.removeSegment({ sourcePath: outputPath, outpu
 const trimAfterDelete = { bytes: fs.statSync(outputPath).size, fingerprint: quickFingerprint(outputPath) }
 if (trimBeforeDelete.bytes !== trimAfterDelete.bytes || trimBeforeDelete.fingerprint !== trimAfterDelete.fingerprint) throw new Error('继续编辑覆盖了上一版本')
 if (Math.abs(removeResult.durationSeconds - 12) > 0.2) throw new Error(`删除片段后的成品时长不合格：${removeResult.durationSeconds}`)
+if (removeResult.frameProof?.verdict !== 'matched' || removeResult.frameProof.boundaries?.length !== 2) throw new Error(`删除片段没有证明两个保留片段的首尾边界：${JSON.stringify(removeResult.frameProof)}`)
 const removedBeforeConcat = { bytes: fs.statSync(removedOutputPath).size, fingerprint: quickFingerprint(removedOutputPath) }
 const concatDecision = compileEditDecisionList({ instruction: '把第8秒到第12秒放前面，再接第0秒到第4秒', sourcePath: removedOutputPath })
 if (!concatDecision || concatDecision.kind !== 'media.concat-segments') throw new Error('明确拼接重排指令未生成决策')
@@ -67,6 +68,7 @@ const concatResult = await service.concatSegments({ sourcePath: removedOutputPat
 const removedAfterConcat = { bytes: fs.statSync(removedOutputPath).size, fingerprint: quickFingerprint(removedOutputPath) }
 if (removedBeforeConcat.bytes !== removedAfterConcat.bytes || removedBeforeConcat.fingerprint !== removedAfterConcat.fingerprint) throw new Error('拼接重排覆盖了上一版本')
 if (Math.abs(concatResult.durationSeconds - 8) > 0.2) throw new Error(`拼接重排后的成品时长不合格：${concatResult.durationSeconds}`)
+if (concatResult.frameProof?.verdict !== 'matched' || concatResult.frameProof.boundaries?.length !== 2) throw new Error(`拼接重排没有证明两个片段的首尾边界：${JSON.stringify(concatResult.frameProof)}`)
 
 const orderDir = path.join(evidenceDir, 'order-check')
 fs.rmSync(orderDir, { recursive: true, force: true })
@@ -112,4 +114,4 @@ const receipt = {
 }
 const receiptPath = path.join(evidenceDir, 'receipt.json')
 fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-process.stdout.write(`${JSON.stringify({ passed: true, outputPath, removedOutputPath, concatOutputPath, receiptPath, durationSeconds: result.durationSeconds, frameProof: result.frameProof, removedDurationSeconds: removeResult.durationSeconds, concatDurationSeconds: concatResult.durationSeconds, orderEvidence, sourceUnchanged: true, priorVersionsUnchanged: true }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ passed: true, outputPath, removedOutputPath, concatOutputPath, receiptPath, durationSeconds: result.durationSeconds, frameProof: result.frameProof, removedDurationSeconds: removeResult.durationSeconds, removeFrameProof: removeResult.frameProof, concatDurationSeconds: concatResult.durationSeconds, concatFrameProof: concatResult.frameProof, orderEvidence, sourceUnchanged: true, priorVersionsUnchanged: true }, null, 2)}\n`)

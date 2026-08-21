@@ -195,8 +195,7 @@ class MediaEditService {
         '-movflags', '+faststart', '-avoid_negative_ts', 'make_zero', '-y', tempPath
       ], { timeoutMs: 60 * 60 * 1000, signal })
       if (signal?.aborted) throw new Error('已取消')
-      const sourceAfter = this.fs.statSync(source)
-      if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('剪辑期间源视频发生变化，已拒绝交付')
+      this.assertSourceUnchanged(sourceBefore, source)
       if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('剪辑成果为空或不完整')
       const actualDuration = await this.frames.probeDuration(tempPath, { signal })
       const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.2)
@@ -205,6 +204,7 @@ class MediaEditService {
       }
       const frameProof = await this.frameProofForTrim({ source, output: tempPath, decision, sourceDuration, signal })
       this.assertFrameProofDeliverable(frameProof)
+      this.assertSourceUnchanged(sourceBefore, source)
       this.fs.renameSync(tempPath, output)
       return this.resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof })
     } catch (error) {
@@ -256,13 +256,135 @@ class MediaEditService {
     return { ...proofBase, verdict, first, last }
   }
 
+  async frameProofForSegments({ source, output, segments, sourceDuration, signal }) {
+    const proofBase = {
+      schemaVersion: 1,
+      method: 'gray-frame-mad-v1',
+      segments: Array.isArray(segments) ? segments : []
+    }
+    if (typeof this.frames.readGrayFrame !== 'function') return { ...proofBase, verdict: 'unavailable', reason: 'frame-reader-missing' }
+    const normalized = proofBase.segments.map((segment) => ({
+      sourceStartSeconds: Number(segment?.sourceStartSeconds),
+      sourceEndSeconds: Number(segment?.sourceEndSeconds),
+      targetStartSeconds: Number(segment?.targetStartSeconds),
+      targetEndSeconds: Number(segment?.targetEndSeconds)
+    }))
+    if (!(sourceDuration > 0) || !normalized.length || normalized.some((segment) => !Object.values(segment).every(Number.isFinite) || segment.sourceStartSeconds < 0 || segment.sourceEndSeconds <= segment.sourceStartSeconds || segment.sourceEndSeconds > sourceDuration + 0.05 || segment.targetStartSeconds < 0 || segment.targetEndSeconds <= segment.targetStartSeconds)) {
+      return { ...proofBase, verdict: 'unavailable', reason: 'invalid-segment-timeline' }
+    }
+    const outputDuration = await this.frames.probeDuration(output, { signal })
+    if (!(outputDuration > 0)) return { ...proofBase, verdict: 'unavailable', reason: 'output-duration-missing' }
+    const firstCache = new Map()
+    const lastCache = new Map()
+    const sampleAt = async (file, seconds) => {
+      const at = Math.max(0, Number(seconds.toFixed(3)))
+      const key = `${file}\n${at.toFixed(3)}`
+      if (!firstCache.has(key)) firstCache.set(key, await this.frames.readGrayFrame(file, at, { signal }))
+      return firstCache.get(key)
+    }
+    const sampleLast = async (file, boundary) => {
+      const at = Math.max(0.02, Number(boundary.toFixed(3)))
+      const key = `${file}\n${at.toFixed(3)}`
+      if (!lastCache.has(key)) {
+        const frame = typeof this.frames.readLastGrayFrame === 'function'
+          ? await this.frames.readLastGrayFrame(file, at, { signal })
+          : await sampleAt(file, Math.max(0.02, at - 0.06))
+        lastCache.set(key, frame)
+      }
+      return lastCache.get(key)
+    }
+    const boundaries = []
+    for (let index = 0; index < normalized.length; index += 1) {
+      const segment = normalized[index]
+      const segmentDuration = segment.sourceEndSeconds - segment.sourceStartSeconds
+      const delta = Math.min(0.5, Math.max(0.1, segmentDuration / 3))
+      const outputFirst = await sampleAt(output, segment.targetStartSeconds)
+      const sourceFirst = await sampleAt(source, segment.sourceStartSeconds)
+      const firstAlternatives = [
+        segment.sourceStartSeconds - delta >= 0 ? await sampleAt(source, segment.sourceStartSeconds - delta) : null,
+        segment.sourceStartSeconds + delta < sourceDuration ? await sampleAt(source, segment.sourceStartSeconds + delta) : null
+      ]
+      const outputLastCandidates = [
+        await sampleLast(output, segment.targetEndSeconds - 0.001),
+        await sampleLast(output, segment.targetEndSeconds + 0.067),
+        await sampleLast(output, segment.targetEndSeconds - 0.134)
+      ].filter(Boolean)
+      const sourceLastCandidates = [
+        await sampleLast(source, segment.sourceEndSeconds - 0.001),
+        await sampleLast(source, segment.sourceEndSeconds + 0.067),
+        await sampleLast(source, segment.sourceEndSeconds - 0.134)
+      ].filter(Boolean)
+      const lastAlternatives = [
+        segment.sourceEndSeconds - delta >= 0 ? await sampleLast(source, segment.sourceEndSeconds - delta) : null,
+        segment.sourceEndSeconds + delta < sourceDuration ? await sampleLast(source, segment.sourceEndSeconds + delta) : null
+      ]
+      if (!outputFirst || !sourceFirst || !outputLastCandidates.length || !sourceLastCandidates.length) {
+        return { ...proofBase, verdict: 'unavailable', reason: 'frame-sample-missing', segmentIndex: index }
+      }
+      boundaries.push({
+        segmentIndex: index,
+        sourceRangeSeconds: { start: segment.sourceStartSeconds, end: segment.sourceEndSeconds },
+        targetRangeSeconds: { start: segment.targetStartSeconds, end: segment.targetEndSeconds },
+        first: this.judgeFrameBoundary(outputFirst, [sourceFirst], firstAlternatives),
+        last: this.judgeFrameBoundaryCandidates(outputLastCandidates, sourceLastCandidates, lastAlternatives)
+      })
+    }
+    const everyBoundary = boundaries.flatMap((item) => [item.first, item.last])
+    const verdict = everyBoundary.some((item) => item.verdict === 'mismatch')
+      ? 'mismatch'
+      : everyBoundary.every((item) => item.verdict === 'matched') ? 'matched' : 'inconclusive'
+    return { ...proofBase, segments: normalized, outputDurationSeconds: Number(outputDuration.toFixed(3)), verdict, boundaries }
+  }
+
+  judgeFrameBoundaryCandidates(outputFrames, matchFrames, altFrames) {
+    const rank = { mismatch: 0, inconclusive: 1, matched: 2 }
+    return outputFrames
+      .filter(Boolean)
+      .map((frame) => this.judgeFrameBoundary(frame, matchFrames, altFrames))
+      .sort((a, b) => (rank[b.verdict] - rank[a.verdict]) || (a.matchDiff - b.matchDiff) || ((b.margin ?? -Infinity) - (a.margin ?? -Infinity)))[0]
+  }
+
   assertFrameProofDeliverable(frameProof) {
     if (!frameProof || frameProof.verdict === 'unavailable') {
       throw new Error(`帧边界证明不可用（${frameProof?.reason || 'unknown'}），为避免交付无法核对的剪辑结果已停止`)
     }
     if (frameProof.verdict === 'mismatch') {
-      throw new Error(`帧边界校验失败：成片首尾帧与决策切割点不符（首帧差异 ${frameProof.first?.matchDiff ?? '?'}、余量 ${frameProof.first?.margin ?? '?'}；尾帧差异 ${frameProof.last?.matchDiff ?? '?'}、余量 ${frameProof.last?.margin ?? '?'}），已拒绝交付`)
+      const segmentMismatch = Array.isArray(frameProof.boundaries)
+        ? frameProof.boundaries.flatMap((item, index) => ([['首', item.first], ['末', item.last]]).filter(([, boundary]) => boundary?.verdict === 'mismatch').map(([side, boundary]) => `片段${index + 1}${side}差异 ${boundary.matchDiff ?? '?'}、余量 ${boundary.margin ?? '?'}`))[0]
+        : null
+      const detail = segmentMismatch || `首帧差异 ${frameProof.first?.matchDiff ?? '?'}、余量 ${frameProof.first?.margin ?? '?'}；尾帧差异 ${frameProof.last?.matchDiff ?? '?'}、余量 ${frameProof.last?.margin ?? '?'}`
+      throw new Error(`帧边界校验失败：成片与决策切割点不符（${detail}），已拒绝交付`)
     }
+  }
+
+  frameProofSummary(frameProof, segmentLabel = '片段') {
+    if (frameProof?.verdict === 'matched') {
+      const count = Array.isArray(frameProof.boundaries) ? frameProof.boundaries.length : 1
+      return `；${count}个${segmentLabel}的首尾帧边界已核对`
+    }
+    if (frameProof?.verdict === 'inconclusive') return `；画面内容相似，${segmentLabel}帧边界无法唯一判定，已保留提示`
+    return ''
+  }
+
+  assertSourceUnchanged(sourceBefore, source) {
+    const current = this.fs.statSync(source)
+    if (sourceBefore.size !== current.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(current.mtimeMs)) throw new Error('剪辑期间源视频发生变化，已拒绝交付')
+  }
+
+  removeProofSegments(decision, sourceDuration) {
+    const startSeconds = Number(decision?.timeline?.startSeconds)
+    const endSeconds = Number(decision?.timeline?.endSeconds)
+    const segments = []
+    let targetCursor = 0
+    if (startSeconds > 0.001) {
+      segments.push({ sourceStartSeconds: 0, sourceEndSeconds: startSeconds, targetStartSeconds: 0, targetEndSeconds: startSeconds })
+      targetCursor = startSeconds
+    }
+    if (endSeconds < sourceDuration - 0.001) {
+      const duration = sourceDuration - endSeconds
+      segments.push({ sourceStartSeconds: endSeconds, sourceEndSeconds: sourceDuration, targetStartSeconds: targetCursor, targetEndSeconds: targetCursor + duration })
+    }
+    return segments
   }
 
   judgeFrameBoundary(outputFrame, matchFrames, altFrames) {
@@ -406,16 +528,19 @@ class MediaEditService {
         '-movflags', '+faststart', '-avoid_negative_ts', 'make_zero', '-y', tempPath
       ], { timeoutMs: 60 * 60 * 1000, signal })
       if (signal?.aborted) throw new Error('已取消')
-      const sourceAfter = this.fs.statSync(source)
-      if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('剪辑期间源视频发生变化，已拒绝交付')
+      this.assertSourceUnchanged(sourceBefore, source)
       if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('删除片段后的成果为空或不完整')
       const actualDuration = await this.frames.probeDuration(tempPath, { signal })
       const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.2)
       if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) {
         throw new Error(`删除片段后的时长校验失败：期望 ${expectedDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
       }
+      const proofSegments = this.removeProofSegments(decision, sourceDuration)
+      const frameProof = await this.frameProofForSegments({ source, output: tempPath, segments: proofSegments, sourceDuration, signal })
+      this.assertFrameProofDeliverable(frameProof)
+      this.assertSourceUnchanged(sourceBefore, source)
       this.fs.renameSync(tempPath, output)
-      return this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration })
+      return this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration, frameProof })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
@@ -460,16 +585,18 @@ class MediaEditService {
         '-movflags', '+faststart', '-avoid_negative_ts', 'make_zero', '-y', tempPath
       ], { timeoutMs: 60 * 60 * 1000, signal })
       if (signal?.aborted) throw new Error('已取消')
-      const sourceAfter = this.fs.statSync(source)
-      if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('剪辑期间源视频发生变化，已拒绝交付')
+      this.assertSourceUnchanged(sourceBefore, source)
       if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('拼接片段后的成果为空或不完整')
       const actualDuration = await this.frames.probeDuration(tempPath, { signal })
       const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.2)
       if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) {
         throw new Error(`拼接片段后的时长校验失败：期望 ${expectedDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
       }
+      const frameProof = await this.frameProofForSegments({ source, output: tempPath, segments, sourceDuration, signal })
+      this.assertFrameProofDeliverable(frameProof)
+      this.assertSourceUnchanged(sourceBefore, source)
       this.fs.renameSync(tempPath, output)
-      return this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration })
+      return this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration, frameProof })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
@@ -990,22 +1117,29 @@ class MediaEditService {
     if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) throw new Error('剪辑成果时长校验失败')
     if (isMuxSubtitles && !(await this.frames.probeHasSubtitle(output, { signal }))) throw new Error('封装成果没有字幕轨，已拒绝交付')
     const isPlainTrim = !isRemove && !isConcat && !isConcatSources && !isBurnSubtitles && !isMuxSubtitles && decision?.kind === 'media.trim'
-    let trimFrameProof = null
+    let editFrameProof = null
     if (isPlainTrim) {
-      trimFrameProof = await this.frameProofForTrim({ source, output, decision, sourceDuration, signal })
-      this.assertFrameProofDeliverable(trimFrameProof)
+      editFrameProof = await this.frameProofForTrim({ source, output, decision, sourceDuration, signal })
+      this.assertFrameProofDeliverable(editFrameProof)
+    } else if (isRemove) {
+      const proofSegments = this.removeProofSegments(decision, sourceDuration)
+      editFrameProof = await this.frameProofForSegments({ source, output, segments: proofSegments, sourceDuration, signal })
+      this.assertFrameProofDeliverable(editFrameProof)
+    } else if (isConcat) {
+      editFrameProof = await this.frameProofForSegments({ source, output, segments: concatTimeline.segments, sourceDuration, signal })
+      this.assertFrameProofDeliverable(editFrameProof)
     }
     return isRemove
-      ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration })
+      ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
       : isConcat
-        ? this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration })
+        ? this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
         : isConcatSources
           ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration })
           : isBurnSubtitles
             ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
             : isMuxSubtitles
               ? this.muxSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
-              : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof: trimFrameProof })
+              : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof: editFrameProof })
   }
 
   resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof = null }) {
@@ -1028,7 +1162,7 @@ class MediaEditService {
     }
   }
 
-  removeReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration }) {
+  removeReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration, frameProof = null }) {
     const { startSeconds, endSeconds } = decision.timeline
     const receipt = [{
       operation: '删除片段',
@@ -1053,12 +1187,13 @@ class MediaEditService {
       sourceDurationSeconds: sourceDuration,
       expectedDurationSeconds: expectedDuration,
       durationSeconds: Number(actualDuration.toFixed(3)),
+      ...(frameProof ? { frameProof } : {}),
       timelineReceipt: receipt,
-      summary: `已删除 ${formatTimestamp(startSeconds)} 到 ${formatTimestamp(endSeconds)}，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件未改动`
+      summary: `已删除 ${formatTimestamp(startSeconds)} 到 ${formatTimestamp(endSeconds)}，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件未改动${this.frameProofSummary(frameProof, '保留片段')}`
     }
   }
 
-  concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration }) {
+  concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration, frameProof = null }) {
     const segments = decision.timeline.segments
     return {
       success: true,
@@ -1068,12 +1203,13 @@ class MediaEditService {
       sourceDurationSeconds: sourceDuration,
       expectedDurationSeconds: expectedDuration,
       durationSeconds: Number(actualDuration.toFixed(3)),
+      ...(frameProof ? { frameProof } : {}),
       timelineReceipt: segments.map((segment, index) => ({
         operation: `拼接片段 ${index + 1}`,
         sourceRange: `${formatTimestamp(segment.sourceStartSeconds)} → ${formatTimestamp(segment.sourceEndSeconds)}`,
         outputRange: `${formatTimestamp(segment.targetStartSeconds)} → ${formatTimestamp(segment.targetEndSeconds)}`
       })),
-      summary: `已按指定顺序拼接 ${segments.length} 个片段，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件未改动`
+      summary: `已按指定顺序拼接 ${segments.length} 个片段，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件未改动${this.frameProofSummary(frameProof, '拼接片段')}`
     }
   }
 

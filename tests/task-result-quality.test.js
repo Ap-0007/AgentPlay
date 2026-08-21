@@ -108,6 +108,7 @@ test('removed-segment media uses the same artifact, duration, timeline and proje
       outputs: [output],
       durationSeconds: 14.03,
       expectedDurationSeconds: 14,
+      frameProof: { verdict: 'matched', boundaries: [{ first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } }] },
       timelineReceipt: [
         { operation: '删除片段', sourceRange: '00:04.000 → 00:20.000', outputRange: '未进入成片' },
         { operation: '保留片段', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:00.000 → 00:04.000' }
@@ -139,6 +140,10 @@ test('reordered concat quality requires a receipt for every frozen segment', () 
       outputs: [output],
       durationSeconds: 8.03,
       expectedDurationSeconds: 8,
+      frameProof: { verdict: 'matched', boundaries: [
+        { first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } },
+        { first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } }
+      ] },
       timelineReceipt: [
         { operation: '拼接片段 1', sourceRange: '00:08.000 → 00:12.000', outputRange: '00:00.000 → 00:04.000' },
         { operation: '拼接片段 2', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:04.000 → 00:08.000' }
@@ -147,6 +152,9 @@ test('reordered concat quality requires a receipt for every frozen segment', () 
     }
 
     assert.equal(evaluateTaskResult('media.edit-concat', result, spec).passed, true)
+    const incompleteProof = evaluateTaskResult('media.edit-concat', { ...result, frameProof: { verdict: 'matched', boundaries: result.frameProof.boundaries.slice(0, 1) } }, spec)
+    assert.equal(incompleteProof.passed, false)
+    assert.ok(incompleteProof.reasons.some((item) => item.code === 'FRAME_PROOF_INCOMPLETE'))
     const incomplete = evaluateTaskResult('media.edit-concat', { ...result, timelineReceipt: result.timelineReceipt.slice(0, 1) }, spec)
     assert.equal(incomplete.passed, false)
     assert.ok(incomplete.reasons.some((item) => item.code === 'SEGMENT_RECEIPT_INCOMPLETE'))
