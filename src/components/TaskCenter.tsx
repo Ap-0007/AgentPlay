@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useAgentStore, type AgentTask } from '../stores/agentStore'
 import UiIcon from './UiIcon'
+import { taskTimingForTask } from '../workspace-journey-policy.mjs'
 
 interface Props {
   onClose: () => void
@@ -43,7 +44,7 @@ export default function TaskCenter({ onClose, onRetry, onContinue, onCancel, can
         </div>
         {(task.instruction || task.source) && <p className="task-center-input" title={task.source}>{task.instruction || task.source}</p>}
         {task.phase === 'running' && (
-          <div className="task-center-progress"><i style={{ width: `${task.progress ?? 30}%` }} className={task.progress == null ? 'is-indeterminate' : ''} /><span>{task.status || '正在处理…'}</span></div>
+          <><div className="task-center-progress"><i style={task.progress == null ? undefined : { width: `${task.progress}%` }} className={task.progress == null ? 'is-indeterminate' : ''} /><span>{task.status || '正在处理…'}</span></div><small className="task-center-timing">{taskTimingForTask(task)}</small></>
         )}
         {task.steps.length > 0 && (
           <ol className="task-center-steps" aria-label="任务执行步骤">

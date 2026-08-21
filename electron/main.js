@@ -1284,6 +1284,7 @@ app.whenReady().then(async () => {
       signal,
       onStatus: status,
       onCheckpoint: checkpoint,
+      resumeCheckpoint: task.checkpoint,
       cloudApproved: task.spec.ocrRemote === true
     }
     if (task.spec.ocrRoute) {
@@ -1351,6 +1352,7 @@ app.whenReady().then(async () => {
       signal,
       onStatus: status,
       onCheckpoint: checkpoint,
+      resumeCheckpoint: task.checkpoint,
       workspace: documentWorkspace,
       complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'analysis' }),
       completeVisionMulti: (input) => llmCompleteVisionMulti({ ...input, modelConfig: config, taskKind: 'analysis-vision' }),
@@ -3508,9 +3510,15 @@ app.whenReady().then(async () => {
       const { translations, failed } = await translateEntries(entries, engine.complete, {
         targetLang,
         signal,
+        initialTranslations: task.checkpoint?.translationTarget === targetLang ? task.checkpoint?.translations : [],
         onProgress: ({ done, total, failed: failedCount }) => {
           reportStatus(`正在翻译成${targetLang} ${done}/${total}${failedCount ? `（${failedCount} 段待重试）` : ''}`)
-        }
+        },
+        onCheckpoint: ({ translations: savedTranslations, done, total, failed: failedCount }) => checkpoint({
+          stage: 'translation-progress', translations: savedTranslations, translationTarget: targetLang,
+          translationDone: done, translationTotal: total, translationFailed: failedCount,
+          ...(sourceTranscriptSnapshot ? { sourceTranscript: sourceTranscriptSnapshot } : {})
+        })
       })
       if (translations.size === 0) return failWithResult({ success: false, error: `翻译没有返回可用${targetLang}（${engine.label}），未写出无效字幕` })
       const translatedSrt = buildTranslationOnlySrt(entries, translations, { targetLang })

@@ -1081,12 +1081,30 @@ class DocumentWorkspaceService {
     const sourceLedger = buildBundleSourceLedger(plan, sourceText)
     const sections = {}
     const failures = {}
+    const resumedBundle = options.resumeCheckpoint?.bundle
+    if (resumedBundle?.sourceLedgerSha256 === sourceLedger.sha256 && resumedBundle.sections && typeof resumedBundle.sections === 'object') {
+      const allowedFacts = new Set(sourceLedger.facts.map((fact) => fact.id))
+      for (const format of plan.bundleFormats) {
+        const section = resumedBundle.sections[format]
+        const factIds = Array.isArray(section?.factIds) ? [...new Set(section.factIds.map(String))] : []
+        if (!section || factIds.length === 0 || factIds.some((id) => !allowedFacts.has(id)) || section.sourceLedgerSha256 !== sourceLedger.sha256) continue
+        sections[format] = JSON.parse(JSON.stringify({ ...section, factIds }))
+      }
+    }
     const total = plan.bundleFormats.length
     for (let index = 0; index < plan.bundleFormats.length; index++) {
       const format = plan.bundleFormats[index]
+      if (sections[format]) {
+        options.onStatus?.(`已从检查点恢复 ${format.toUpperCase()}（${index + 1}/${total}）`)
+        continue
+      }
       options.onStatus?.(`正在生成 ${format.toUpperCase()}（${index + 1}/${total}）`)
       try {
         sections[format] = await this.buildSectionPlan(plan, format, sourceText, sourceLedger, options)
+        options.onCheckpoint?.({
+          stage: 'bundle-section-complete',
+          bundle: { sourceLedgerSha256: sourceLedger.sha256, sections: JSON.parse(JSON.stringify(sections)) }
+        })
       } catch (error) {
         if (options.signal?.aborted) throw error
         failures[format] = error instanceof Error ? error.message : String(error)
@@ -1368,7 +1386,15 @@ class DocumentWorkspaceService {
       const bundle = await this.buildBundleSections(plan, options)
       result = await this.writeBundle(plan, bundle)
     } else {
-      result = await this.writeGenerated(plan, plan.requiresAi ? await this.buildAiPlan(plan, options) : null)
+      let aiPlan = null
+      if (plan.requiresAi) {
+        const resumedPlan = options.resumeCheckpoint?.aiPlan
+        aiPlan = resumedPlan && typeof resumedPlan === 'object'
+          ? JSON.parse(JSON.stringify(resumedPlan))
+          : await this.buildAiPlan(plan, options)
+        if (!resumedPlan) options.onCheckpoint?.({ stage: 'ai-plan-ready', aiPlan })
+      }
+      result = await this.writeGenerated(plan, aiPlan)
     }
     result.deliveryReceipt = this.createDeliveryReceipt(plan, result)
     options.onCheckpoint?.({ stage: 'outputs-written', result })

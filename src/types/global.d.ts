@@ -12,6 +12,7 @@ declare module '*.mjs' {
     stages: string[]
     activeStage: number
   }
+  export function taskTimingForTask(task?: WorkspaceJourneyTask): string
   export function dedupeAttachments<T>(files: T[]): T[]
   export const PLAYER_CHROME_HIDE_DELAY_MS: number
   export const PLAYER_MOUSE_WAKE_THRESHOLD_PX: number

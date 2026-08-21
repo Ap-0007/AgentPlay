@@ -57,6 +57,8 @@ test('task center exposes progress, results, safe retry and cancellation without
   assert.match(center, /再次执行/)
   assert.match(center, /继续修改/)
   assert.match(center, /取消任务/)
+  assert.match(center, /taskTimingForTask/)
+  assert.doesNotMatch(center, /task\.progress \?\? 30/)
   assert.match(center, /任务执行步骤/)
   assert.match(center, /份证据已验证/)
   assert.match(center, /成果证据/)
