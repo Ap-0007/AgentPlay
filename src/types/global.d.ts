@@ -97,6 +97,8 @@ interface PersistentRuntimeTask {
   state: 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
   status: string
   error: string
+  updatedAt: number
+  completedAt: number | null
   spec: {
     url?: string
     instruction?: string
@@ -233,6 +235,25 @@ interface AiPlayerAPI {
       summary?: string
       historyId?: string
       plan?: { kind: string; requiresAi: boolean; outputFormat: string }
+      failures?: Record<string, string>
+      deliveryReceipt?: {
+        schemaVersion: 1
+        kind: 'agentplay.delivery-receipt'
+        status: 'complete' | 'partial'
+        instructionSha256: string
+        sources: Array<{ path: string; name: string; bytes: number; sha256: string }>
+        artifacts: Array<{ path: string; name: string; format: string; bytes: number; sha256: string; factIds?: string[]; sourceLedgerSha256?: string }>
+        bundle?: {
+          requestedFormats: string[]
+          completedFormats: string[]
+          failedFormats: Record<string, string>
+          sourceLedgerSha256: string
+          consistency: { verdict: 'matched' | 'partial'; sharedSourceLedger: boolean }
+        }
+      }
+      quality?: import('../taskLifecycle').WorkspaceTaskQuality | null
+      repairHistory?: import('../taskLifecycle').WorkspaceTaskRepairReceipt[]
+      failure?: import('../taskLifecycle').WorkspaceTaskFailure | null
       error?: string
     }>
     cancel: (requestId: string) => Promise<boolean>

@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const { fingerprintArtifact } = require('./artifact-fingerprint')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.avi', '.m4v', '.wmv', '.flv', '.ts'])
 const OFFICE_ZIP_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.odt', '.ods', '.odp', '.epub'])
@@ -8,7 +9,9 @@ const HARD_FAILURES = new Set([
   'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE', 'PROJECT_CAPSULE_MISSING',
   'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
-  'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH'
+  'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
+  'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
+  'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -110,11 +113,48 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('semantic-quality', '专业内容质量', semanticScore / 100, 20, reason('SEMANTIC_QUALITY_LOW', '报告专业内容质量未达到标准', false, (result.domainQuality?.reasons || []).join('；')))
     add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 10, reason('SUMMARY_MISSING', '缺少结果说明', true))
   } else if (taskType === 'document.run') {
+    const receipt = result.deliveryReceipt
+    const receiptArtifacts = Array.isArray(receipt?.artifacts) ? receipt.artifacts : []
+    const receiptSources = Array.isArray(receipt?.sources) ? receipt.sources : []
+    const receiptSchemaOk = receipt?.schemaVersion === 1 && receipt?.kind === 'agentplay.delivery-receipt'
+    const receiptPaths = new Set(receiptArtifacts.map((item) => path.resolve(String(item?.path || ''))))
+    const artifactsMatch = receiptSchemaOk
+      && outputs.length === receiptArtifacts.length
+      && outputs.every((outputPath) => receiptPaths.has(path.resolve(outputPath)))
+      && receiptArtifacts.every((item) => {
+        try { return /^[a-f0-9]{64}$/i.test(String(item?.sha256 || '')) && fingerprintArtifact(item.path).sha256 === item.sha256 } catch { return false }
+      })
+    const expectedSources = Array.isArray(spec.sources) ? spec.sources.length : 0
+    const provenanceOk = receiptSchemaOk
+      && (expectedSources === 0 ? /^[a-f0-9]{64}$/i.test(String(receipt.instructionSha256 || '')) : receiptSources.length === expectedSources)
+      && receiptSources.every((item) => /^[a-f0-9]{64}$/i.test(String(item?.sha256 || '')))
+    const isBundle = result.plan?.kind === 'ai-bundle' || Boolean(receipt?.bundle)
+    const requestedFormats = Array.isArray(receipt?.bundle?.requestedFormats) ? receipt.bundle.requestedFormats : []
+    const completedFormats = new Set(Array.isArray(receipt?.bundle?.completedFormats) ? receipt.bundle.completedFormats : [])
+    const failedFormats = receipt?.bundle?.failedFormats && typeof receipt.bundle.failedFormats === 'object' ? receipt.bundle.failedFormats : {}
+    const bundleComplete = !isBundle || (
+      receipt.status === 'complete'
+      && requestedFormats.length >= 2
+      && requestedFormats.every((format) => completedFormats.has(format))
+      && Object.keys(failedFormats).length === 0
+    )
+    const bundleConsistent = !isBundle || (
+      receipt?.bundle?.consistency?.verdict === 'matched'
+      && receipt?.bundle?.consistency?.sharedSourceLedger === true
+      && /^[a-f0-9]{64}$/i.test(String(receipt?.bundle?.sourceLedgerSha256 || ''))
+      && receiptArtifacts.every((item) => item.sourceLedgerSha256 === receipt.bundle.sourceLedgerSha256 && Array.isArray(item.factIds) && item.factIds.length > 0)
+    )
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '成果文件', artifactRatio, 45, artifactFailure)
-    add('format', '文件结构', formatRatio, 15, formatFailure)
-    add('history', '历史记录', result.historyId ? 1 : 0, 20, reason('HISTORY_MISSING', '成果尚未写入历史记录', true))
-    add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 10, reason('SUMMARY_MISSING', '缺少结果说明', true))
+    add('artifacts', '成果文件', artifactRatio, 25, artifactFailure)
+    add('format', '文件结构', formatRatio, 10, formatFailure)
+    add('history', '历史记录', result.historyId ? 1 : 0, 10, reason('HISTORY_MISSING', '成果尚未写入历史记录', true))
+    add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 5, reason('SUMMARY_MISSING', '缺少结果说明', true))
+    add('provenance-receipt', '来源与成果哈希回执', artifactsMatch && provenanceOk ? 1 : 0, 20,
+      !receiptSchemaOk ? reason('DELIVERY_RECEIPT_MISSING', '缺少可核对的来源与成果交付回执', true)
+        : !artifactsMatch ? reason('DELIVERY_RECEIPT_MISMATCH', '成果文件与交付回执不一致或已被改写', true)
+          : reason('SOURCE_RECEIPT_MISSING', '交付回执没有覆盖全部来源', true))
+    add('bundle-completeness', '成果包完整性', bundleComplete ? 1 : 0, 10, reason('BUNDLE_INCOMPLETE', '成果包存在未完成格式，不能按完整交付处理', true))
+    add('bundle-consistency', '成果包共用冻结事实底稿', bundleConsistent ? 1 : 0, 10, reason('BUNDLE_INCONSISTENT', '成果包没有通过共享事实底稿一致性校验', true))
   } else if (taskType === 'media.edit-music') {
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)

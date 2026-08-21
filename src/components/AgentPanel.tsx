@@ -17,6 +17,7 @@ import useMediaCreativeTasks from './agent-panel/useMediaCreativeTasks'
 import useVoiceInput from './agent-panel/useVoiceInput'
 import useIncomingFiles from './agent-panel/useIncomingFiles'
 import usePersistentTaskRuntime from './agent-panel/usePersistentTaskRuntime'
+import useContinueTask from './agent-panel/useContinueTask'
 import { selectDocumentPreviewPath, selectPrimaryPreviewPath } from '../document-preview-routing.mjs'
 export default function AgentPanel() {
   const { messages, inputText, setInputText, send, cancel, thinking, listening, toggleListening, setListening, addMessage } =
@@ -39,6 +40,7 @@ export default function AgentPanel() {
   const updateTask = useAgentStore((s) => s.updateTask)
   const startTask = useAgentStore((s) => s.startTask)
   const tasks = useAgentStore((s) => s.tasks)
+  const selectTask = useAgentStore((s) => s.selectTask)
   const executionTaskIdRef = useRef('')
   const docRequestIdRef = useRef('')
   usePersistentTaskRuntime(docRequestIdRef)
@@ -56,7 +58,7 @@ export default function AgentPanel() {
     let evidence = patch.evidence || current?.evidence || []
     if (outputs.length > 0 && window.aiPlayer?.system?.verifyPaths) {
       const receipts = await window.aiPlayer.system.verifyPaths(outputs)
-      evidence = outputs.map((output, index) => {
+      const outputEvidence = outputs.map((output, index) => {
         const receipt = receipts.find((item) => item.path === output)
         return {
           id: `file-${Date.now()}-${index + 1}`,
@@ -68,6 +70,9 @@ export default function AgentPanel() {
           ...(typeof receipt?.bytes === 'number' ? { bytes: receipt.bytes } : {})
         }
       })
+      evidence = [...evidence, ...outputEvidence].filter((item, index, items) => (
+        items.findIndex((candidate) => candidate.kind === item.kind && candidate.value === item.value) === index
+      ))
     }
     const latest = useAgentStore.getState().tasks.find((item) => item.id === taskId)
     if (latest?.phase === 'cancelled') return
@@ -75,10 +80,10 @@ export default function AgentPanel() {
     if (taskId) updateTask(taskId, completed)
     else setActiveTask(completed)
   }
-  const failExecutionTask = (error: string) => {
+  const failExecutionTask = (error: string, patch: Partial<AgentTask> = {}) => {
     const current = useAgentStore.getState().tasks.find((item) => item.id === executionTaskIdRef.current)
     if (current?.phase === 'cancelled') return
-    mutateTask({ phase: 'failed', running: false, status: '', outputs: [], error })
+    mutateTask({ ...patch, phase: 'failed', running: false, status: '', outputs: patch.outputs || [], error })
   }
   const executionWasCancelled = () => useAgentStore.getState().tasks
     .some((item) => item.id === executionTaskIdRef.current && item.phase === 'cancelled')
@@ -341,6 +346,8 @@ export default function AgentPanel() {
     retryActiveDocumentAnalysis, retryActiveMediaCreative
   })
 
+  const continueFromTask = useContinueTask({ selectTask, closeTaskCenter: () => setShowTaskCenter(false), setAttachments, setInputText, inputRef })
+
   const handleSend = () => {
     void routeTextSend()
   }
@@ -384,7 +391,7 @@ export default function AgentPanel() {
           onAgentModeChange={setAgentMode}
         />
         {showTaskCenter && (
-          <TaskCenter onClose={() => setShowTaskCenter(false)} onRetry={retryStoredTask} onCancel={() => void cancelActiveTask()} cancellableTaskId={cancellableTaskId} />
+          <TaskCenter onClose={() => setShowTaskCenter(false)} onRetry={retryStoredTask} onContinue={(selectedTask) => void continueFromTask(selectedTask)} onCancel={() => void cancelActiveTask()} cancellableTaskId={cancellableTaskId} />
         )}
         {attachments.length > 0 && (
           <div className="px-4 py-2 border-b border-white/10 flex flex-wrap items-center gap-2">

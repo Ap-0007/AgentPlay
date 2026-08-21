@@ -34,6 +34,27 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         ? runtimeTask.result.outputs.map(String)
         : runtimeTask.result?.outputPath ? [String(runtimeTask.result.outputPath)] : []
       const outputPaths = isDedup ? [] : allOutputPaths
+      const deliveryReceipt = runtimeTask.result?.deliveryReceipt as {
+        sources?: Array<{ name?: string; sha256?: string; bytes?: number }>
+        bundle?: { requestedFormats?: string[]; sourceLedgerSha256?: string; consistency?: { verdict?: string } }
+      } | undefined
+      const deliveryEvidence = (deliveryReceipt?.sources || []).map((item, index) => ({
+        id: `source-${runtimeTask.id}-${index + 1}`,
+        kind: 'receipt' as const,
+        label: '来源指纹已冻结',
+        value: `${item.name || '来源文件'} · SHA-256 ${String(item.sha256 || '').slice(0, 12)}…`,
+        verified: /^[a-f0-9]{64}$/i.test(String(item.sha256 || '')),
+        createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now()),
+        ...(typeof item.bytes === 'number' ? { bytes: item.bytes } : {})
+      }))
+      if (deliveryReceipt?.bundle) deliveryEvidence.push({
+        id: `bundle-${runtimeTask.id}`,
+        kind: 'receipt' as const,
+        label: '成果包一致性已验证',
+        value: `${deliveryReceipt.bundle.requestedFormats?.join('、') || '成套成果'} · 共用事实底稿 ${String(deliveryReceipt.bundle.sourceLedgerSha256 || '').slice(0, 12)}…`,
+        verified: deliveryReceipt.bundle.consistency?.verdict === 'matched',
+        createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now())
+      })
       const batchKind = runtimeTask.spec?.kind === 'transcribe' ? 'transcribe' : 'compress'
       const compressMode = runtimeTask.spec?.mode === 'remux' ? 'remux' : 'compress'
       const trimDecision = runtimeTask.spec?.decision as { timeline?: { startSeconds?: number; endSeconds?: number; segments?: Array<{ sourceStartSeconds?: number; sourceEndSeconds?: number }> } } | undefined
@@ -98,7 +119,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
                     : isDedup ? '重复文件检查完成（已从哈希检查点恢复）' : '视频下载完成（已从检查点恢复）'
         store.updateTask(runtimeTask.workspaceTaskId, {
           phase: 'completed', status: '', error: '', outputs: outputPaths, summary: String(runtimeTask.result?.summary || fallbackSummary),
-          quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
+          evidence: deliveryEvidence, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
         })
         if ((isDownload || isCreative || isTimelineEdit) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
           surfacedOutputs.add(runtimeTask.id)

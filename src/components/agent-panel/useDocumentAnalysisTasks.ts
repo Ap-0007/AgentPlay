@@ -21,7 +21,7 @@ type DocumentAnalysisTaskOptions = {
   bindCancelableRequest: (requestId: string) => void
   releaseCancelableRequest: (requestId: string) => void
   completeExecutionTask: (patch?: Partial<AgentTask>) => void
-  failExecutionTask: (error: string) => void
+  failExecutionTask: (error: string, patch?: Partial<AgentTask>) => void
   executionWasCancelled: () => boolean
   addMessage: (role: 'user' | 'agent', text: string) => void
   inputText: string
@@ -123,9 +123,46 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
         requestCloudApproval()
         return
       }
-      if (!result.success) throw new Error(result.error || '文档处理失败')
+      const sourceEvidence = (result.deliveryReceipt?.sources || []).map((source, index) => ({
+        id: `source-${Date.now()}-${index + 1}`,
+        kind: 'receipt' as const,
+        label: '来源指纹已冻结',
+        value: `${source.name} · SHA-256 ${source.sha256.slice(0, 12)}…`,
+        verified: /^[a-f0-9]{64}$/i.test(source.sha256),
+        createdAt: Date.now(),
+        ...(typeof source.bytes === 'number' ? { bytes: source.bytes } : {})
+      }))
+      if (result.deliveryReceipt?.bundle) sourceEvidence.push({
+        id: `bundle-${Date.now()}`,
+        kind: 'receipt' as const,
+        label: '成果包一致性已验证',
+        value: `${result.deliveryReceipt.bundle.requestedFormats.join('、')} · 共用事实底稿 ${result.deliveryReceipt.bundle.sourceLedgerSha256.slice(0, 12)}…`,
+        verified: result.deliveryReceipt.bundle.consistency.verdict === 'matched',
+        createdAt: Date.now()
+      })
+      if (!result.success) {
+        const message = result.error || '文档处理失败'
+        const failedFormats = Object.entries(result.failures || {}).map(([format, reason]) => `${format.toUpperCase()}：${reason}`).join('；')
+        failExecutionTask(message, {
+          outputs: result.outputs || [],
+          summary: [result.summary, failedFormats].filter(Boolean).join('；'),
+          evidence: sourceEvidence,
+          quality: result.quality || null,
+          repairHistory: result.repairHistory || [],
+          failure: result.failure || null
+        })
+        addMessage('agent', `[错误] ${message}${failedFormats ? `\n未完成格式：${failedFormats}` : ''}`)
+        return
+      }
       addMessage('agent', result.summary || '处理完成')
-      completeExecutionTask({ outputs: result.outputs || [], summary: result.summary || '处理完成' })
+      completeExecutionTask({
+        outputs: result.outputs || [],
+        summary: result.summary || '处理完成',
+        evidence: sourceEvidence,
+        quality: result.quality || null,
+        repairHistory: result.repairHistory || [],
+        failure: result.failure || null
+      })
       clearAttachments()
       clearCloudApproval()
     } catch (error) {

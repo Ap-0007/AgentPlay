@@ -518,6 +518,12 @@ button, input, select { font: inherit; }
 .task-center-steps small { margin-top: 2px; color: rgb(100 116 139); font-size: 8px; }
 .task-center-receipts { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0 0 41px; }
 .task-center-receipts span { padding: 4px 6px; border-radius: 7px; color: rgb(148 163 184); font-size: 8px; background: rgb(255 255 255 / .045); }
+.task-center-evidence { display: grid; gap: 4px; margin: 7px 0 0 41px; padding: 0; list-style: none; }
+.task-center-evidence li { display: grid; grid-template-columns: 6px minmax(72px, auto) 1fr; align-items: center; gap: 6px; min-width: 0; color: rgb(148 163 184); font-size: 8px; }
+.task-center-evidence li > i { width: 5px; height: 5px; border-radius: 999px; background: rgb(148 163 184 / .45); }
+.task-center-evidence li > i.is-verified { background: rgb(52 211 153 / .9); box-shadow: 0 0 0 2px rgb(52 211 153 / .08); }
+.task-center-evidence strong { color: rgb(203 213 225); font-weight: 580; }
+.task-center-evidence span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-center-quality { margin: 9px 0 0 41px; padding: 8px; border: 1px solid rgb(148 163 184 / .12); border-radius: 9px; background: rgb(15 23 42 / .26); }
 .task-center-quality > div { display: flex; align-items: center; justify-content: space-between; color: rgb(148 163 184); font-size: 8px; }
 .task-center-quality strong { color: rgb(226 232 240); font-size: 9px; font-weight: 620; }

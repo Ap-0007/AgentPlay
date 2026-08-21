@@ -2823,7 +2823,18 @@ app.whenReady().then(async () => {
       }
       task = await persistentTaskRuntime.run(requestId)
       if (task.state !== 'completed') {
-        return { success: false, requestId, error: task.error || '文档处理未完成' }
+        return {
+          success: false,
+          requestId,
+          error: task.failure?.message || task.error || '文档处理未完成',
+          outputs: task.result?.outputs || [],
+          summary: task.result?.summary || '',
+          failures: task.result?.failures || {},
+          deliveryReceipt: task.result?.deliveryReceipt,
+          quality: task.quality || null,
+          repairHistory: task.repairHistory || [],
+          failure: task.failure || null
+        }
       }
       return { ...task.result, requestId }
     } catch (error) {
