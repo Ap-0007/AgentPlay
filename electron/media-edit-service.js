@@ -264,31 +264,35 @@ class MediaEditService {
     }
     if (typeof this.frames.readGrayFrame !== 'function') return { ...proofBase, verdict: 'unavailable', reason: 'frame-reader-missing' }
     const normalized = proofBase.segments.map((segment) => ({
+      sourcePath: path.resolve(String(segment?.sourcePath || source)),
+      sourceDurationSeconds: Number(segment?.sourceDurationSeconds ?? sourceDuration),
+      frameFitWidth: Number(segment?.frameFitWidth || 0),
+      frameFitHeight: Number(segment?.frameFitHeight || 0),
       sourceStartSeconds: Number(segment?.sourceStartSeconds),
       sourceEndSeconds: Number(segment?.sourceEndSeconds),
       targetStartSeconds: Number(segment?.targetStartSeconds),
       targetEndSeconds: Number(segment?.targetEndSeconds)
     }))
-    if (!(sourceDuration > 0) || !normalized.length || normalized.some((segment) => !Object.values(segment).every(Number.isFinite) || segment.sourceStartSeconds < 0 || segment.sourceEndSeconds <= segment.sourceStartSeconds || segment.sourceEndSeconds > sourceDuration + 0.05 || segment.targetStartSeconds < 0 || segment.targetEndSeconds <= segment.targetStartSeconds)) {
+    if (!(sourceDuration > 0) || !normalized.length || normalized.some((segment) => !segment.sourcePath || ![segment.sourceDurationSeconds, segment.sourceStartSeconds, segment.sourceEndSeconds, segment.targetStartSeconds, segment.targetEndSeconds].every(Number.isFinite) || segment.sourceDurationSeconds <= 0 || segment.sourceStartSeconds < 0 || segment.sourceEndSeconds <= segment.sourceStartSeconds || segment.sourceEndSeconds > segment.sourceDurationSeconds + 0.05 || segment.targetStartSeconds < 0 || segment.targetEndSeconds <= segment.targetStartSeconds)) {
       return { ...proofBase, verdict: 'unavailable', reason: 'invalid-segment-timeline' }
     }
     const outputDuration = await this.frames.probeDuration(output, { signal })
     if (!(outputDuration > 0)) return { ...proofBase, verdict: 'unavailable', reason: 'output-duration-missing' }
     const firstCache = new Map()
     const lastCache = new Map()
-    const sampleAt = async (file, seconds) => {
+    const sampleAt = async (file, seconds, frameOptions = {}) => {
       const at = Math.max(0, Number(seconds.toFixed(3)))
-      const key = `${file}\n${at.toFixed(3)}`
-      if (!firstCache.has(key)) firstCache.set(key, await this.frames.readGrayFrame(file, at, { signal }))
+      const key = `${file}\n${at.toFixed(3)}\n${Number(frameOptions.fitWidth || 0)}x${Number(frameOptions.fitHeight || 0)}`
+      if (!firstCache.has(key)) firstCache.set(key, await this.frames.readGrayFrame(file, at, { signal, ...frameOptions }))
       return firstCache.get(key)
     }
-    const sampleLast = async (file, boundary) => {
+    const sampleLast = async (file, boundary, frameOptions = {}) => {
       const at = Math.max(0.02, Number(boundary.toFixed(3)))
-      const key = `${file}\n${at.toFixed(3)}`
+      const key = `${file}\n${at.toFixed(3)}\n${Number(frameOptions.fitWidth || 0)}x${Number(frameOptions.fitHeight || 0)}`
       if (!lastCache.has(key)) {
         const frame = typeof this.frames.readLastGrayFrame === 'function'
-          ? await this.frames.readLastGrayFrame(file, at, { signal })
-          : await sampleAt(file, Math.max(0.02, at - 0.06))
+          ? await this.frames.readLastGrayFrame(file, at, { signal, ...frameOptions })
+          : await sampleAt(file, Math.max(0.02, at - 0.06), frameOptions)
         lastCache.set(key, frame)
       }
       return lastCache.get(key)
@@ -296,13 +300,16 @@ class MediaEditService {
     const boundaries = []
     for (let index = 0; index < normalized.length; index += 1) {
       const segment = normalized[index]
+      const segmentSource = segment.sourcePath
+      const segmentSourceDuration = segment.sourceDurationSeconds
+      const sourceFrameOptions = segment.frameFitWidth > 0 && segment.frameFitHeight > 0 ? { fitWidth: segment.frameFitWidth, fitHeight: segment.frameFitHeight } : {}
       const segmentDuration = segment.sourceEndSeconds - segment.sourceStartSeconds
       const delta = Math.min(0.5, Math.max(0.1, segmentDuration / 3))
       const outputFirst = await sampleAt(output, segment.targetStartSeconds)
-      const sourceFirst = await sampleAt(source, segment.sourceStartSeconds)
+      const sourceFirst = await sampleAt(segmentSource, segment.sourceStartSeconds, sourceFrameOptions)
       const firstAlternatives = [
-        segment.sourceStartSeconds - delta >= 0 ? await sampleAt(source, segment.sourceStartSeconds - delta) : null,
-        segment.sourceStartSeconds + delta < sourceDuration ? await sampleAt(source, segment.sourceStartSeconds + delta) : null
+        segment.sourceStartSeconds - delta >= 0 ? await sampleAt(segmentSource, segment.sourceStartSeconds - delta, sourceFrameOptions) : null,
+        segment.sourceStartSeconds + delta < segmentSourceDuration ? await sampleAt(segmentSource, segment.sourceStartSeconds + delta, sourceFrameOptions) : null
       ]
       const outputLastCandidates = [
         await sampleLast(output, segment.targetEndSeconds - 0.001),
@@ -310,19 +317,20 @@ class MediaEditService {
         await sampleLast(output, segment.targetEndSeconds - 0.134)
       ].filter(Boolean)
       const sourceLastCandidates = [
-        await sampleLast(source, segment.sourceEndSeconds - 0.001),
-        await sampleLast(source, segment.sourceEndSeconds + 0.067),
-        await sampleLast(source, segment.sourceEndSeconds - 0.134)
+        await sampleLast(segmentSource, segment.sourceEndSeconds - 0.001, sourceFrameOptions),
+        await sampleLast(segmentSource, segment.sourceEndSeconds + 0.067, sourceFrameOptions),
+        await sampleLast(segmentSource, segment.sourceEndSeconds - 0.134, sourceFrameOptions)
       ].filter(Boolean)
       const lastAlternatives = [
-        segment.sourceEndSeconds - delta >= 0 ? await sampleLast(source, segment.sourceEndSeconds - delta) : null,
-        segment.sourceEndSeconds + delta < sourceDuration ? await sampleLast(source, segment.sourceEndSeconds + delta) : null
+        segment.sourceEndSeconds - delta >= 0 ? await sampleLast(segmentSource, segment.sourceEndSeconds - delta, sourceFrameOptions) : null,
+        segment.sourceEndSeconds + delta < segmentSourceDuration ? await sampleLast(segmentSource, segment.sourceEndSeconds + delta, sourceFrameOptions) : null
       ]
       if (!outputFirst || !sourceFirst || !outputLastCandidates.length || !sourceLastCandidates.length) {
         return { ...proofBase, verdict: 'unavailable', reason: 'frame-sample-missing', segmentIndex: index }
       }
       boundaries.push({
         segmentIndex: index,
+        sourcePath: segmentSource,
         sourceRangeSeconds: { start: segment.sourceStartSeconds, end: segment.sourceEndSeconds },
         targetRangeSeconds: { start: segment.targetStartSeconds, end: segment.targetEndSeconds },
         first: this.judgeFrameBoundary(outputFirst, [sourceFirst], firstAlternatives),
@@ -334,6 +342,23 @@ class MediaEditService {
       ? 'mismatch'
       : everyBoundary.every((item) => item.verdict === 'matched') ? 'matched' : 'inconclusive'
     return { ...proofBase, segments: normalized, outputDurationSeconds: Number(outputDuration.toFixed(3)), verdict, boundaries }
+  }
+
+  async frameProofForSources({ sources, output, probes, signal }) {
+    const proofBase = { schemaVersion: 1, method: 'gray-frame-mad-v1', sources: Array.isArray(sources) ? sources : [] }
+    if (typeof this.frames.readGrayFrame !== 'function') return { ...proofBase, verdict: 'unavailable', reason: 'frame-reader-missing' }
+    if (!Array.isArray(probes) || proofBase.sources.length !== probes.length || !proofBase.sources.length) return { ...proofBase, verdict: 'unavailable', reason: 'invalid-source-timeline' }
+    let cursor = 0
+    const fitWidth = Math.ceil(Number(probes[0]?.width) / 2) * 2
+    const fitHeight = Math.ceil(Number(probes[0]?.height) / 2) * 2
+    const segments = proofBase.sources.map((sourcePath, index) => {
+      const duration = Number(probes[index]?.duration)
+      const segment = { sourcePath, sourceDurationSeconds: duration, frameFitWidth: fitWidth, frameFitHeight: fitHeight, sourceStartSeconds: 0, sourceEndSeconds: duration, targetStartSeconds: cursor, targetEndSeconds: cursor + duration }
+      cursor += duration
+      return segment
+    })
+    const proof = await this.frameProofForSegments({ source: proofBase.sources[0], output, segments, sourceDuration: Number(probes[0]?.duration), signal })
+    return { ...proof, sources: proofBase.sources }
   }
 
   judgeFrameBoundaryCandidates(outputFrames, matchFrames, altFrames) {
@@ -667,8 +692,14 @@ class MediaEditService {
       if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) {
         throw new Error(`跨素材拼接时长校验失败：期望 ${expectedDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
       }
+      const frameProof = await this.frameProofForSources({ sources, output: tempPath, probes, signal })
+      this.assertFrameProofDeliverable(frameProof)
+      sources.forEach((item, index) => {
+        const after = this.fs.statSync(item)
+        if (sourcesBefore[index].size !== after.size || Math.trunc(sourcesBefore[index].mtimeMs) !== Math.trunc(after.mtimeMs)) throw new Error(`拼接期间素材发生变化，已拒绝交付：${path.basename(item)}`)
+      })
       this.fs.renameSync(tempPath, output)
-      return this.concatSourcesReceipt({ output, decision, probes, expectedDuration, actualDuration })
+      return this.concatSourcesReceipt({ output, decision, probes, expectedDuration, actualDuration, frameProof })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
@@ -1098,13 +1129,18 @@ class MediaEditService {
     const concatTimeline = isConcat ? validateConcatTimeline(decision) : null
     if (concatTimeline) assertSegmentsWithinSource(concatTimeline.segments, sourceDuration)
     let concatSourcesProbes = null
+    let concatSourcePaths = null
     if (isConcatSources) {
-      const others = (Array.isArray(decision.sources) ? decision.sources : []).slice(1)
-      concatSourcesProbes = [{ duration: sourceDuration }]
-      for (const item of others) {
-        const duration = await this.frames.probeDuration(path.resolve(String(item?.path || '')), { signal })
-        if (!(duration > 0)) throw new Error(`无法读取拼接素材时长：${path.basename(String(item?.path || ''))}`)
-        concatSourcesProbes.push({ duration })
+      if (typeof this.frames.probeDimensions !== 'function') throw new Error('无法确认拼接素材分辨率')
+      concatSourcePaths = (Array.isArray(decision.sources) ? decision.sources : []).map((item) => path.resolve(String(item?.path || '')))
+      concatSourcesProbes = []
+      for (let index = 0; index < concatSourcePaths.length; index += 1) {
+        const item = concatSourcePaths[index]
+        const duration = index === 0 ? sourceDuration : await this.frames.probeDuration(item, { signal })
+        if (!(duration > 0)) throw new Error(`无法读取拼接素材时长：${path.basename(item)}`)
+        const dimensions = await this.frames.probeDimensions(item, { signal })
+        if (!(Number(dimensions?.width) > 0) || !(Number(dimensions?.height) > 0)) throw new Error(`无法读取拼接素材分辨率：${path.basename(item)}`)
+        concatSourcesProbes.push({ duration, width: Number(dimensions.width), height: Number(dimensions.height) })
       }
     }
     const expectedDuration = isRemove
@@ -1128,13 +1164,16 @@ class MediaEditService {
     } else if (isConcat) {
       editFrameProof = await this.frameProofForSegments({ source, output, segments: concatTimeline.segments, sourceDuration, signal })
       this.assertFrameProofDeliverable(editFrameProof)
+    } else if (isConcatSources) {
+      editFrameProof = await this.frameProofForSources({ sources: concatSourcePaths, output, probes: concatSourcesProbes, signal })
+      this.assertFrameProofDeliverable(editFrameProof)
     }
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
       : isConcat
         ? this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
         : isConcatSources
-          ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration })
+          ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration, frameProof: editFrameProof })
           : isBurnSubtitles
             ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
             : isMuxSubtitles
@@ -1213,7 +1252,7 @@ class MediaEditService {
     }
   }
 
-  concatSourcesReceipt({ output, decision, probes, expectedDuration, actualDuration }) {
+  concatSourcesReceipt({ output, decision, probes, expectedDuration, actualDuration, frameProof = null }) {
     const names = (Array.isArray(decision.sources) ? decision.sources : []).map((item) => String(item?.name || path.basename(String(item?.path || ''))))
     let cursor = 0
     const timelineReceipt = probes.map((probe, index) => {
@@ -1232,8 +1271,9 @@ class MediaEditService {
       outputBytes: this.fs.statSync(output).size,
       expectedDurationSeconds: expectedDuration,
       durationSeconds: Number(actualDuration.toFixed(3)),
+      ...(frameProof ? { frameProof } : {}),
       timelineReceipt,
-      summary: `已按顺序拼接 ${probes.length} 个素材，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件均未改动`
+      summary: `已按顺序拼接 ${probes.length} 个素材，生成 ${expectedDuration.toFixed(3)} 秒新视频；原文件均未改动${this.frameProofSummary(frameProof, '跨素材片段')}`
     }
   }
 

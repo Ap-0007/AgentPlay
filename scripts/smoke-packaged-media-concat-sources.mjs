@@ -135,6 +135,18 @@ function cleanup() {
 let session
 try {
   if (!fs.existsSync(path.join(installedFfmpeg, 'bin', 'ffmpeg.exe'))) throw new Error(`缺少已安装 FFmpeg：${installedFfmpeg}`)
+  const ffprobe = path.join(installedFfmpeg, 'bin', 'ffprobe.exe')
+  const probeFixture = async (filePath) => JSON.parse(await runExecutable(ffprobe, ['-v', 'error', '-show_entries', 'stream=codec_type,width,height,r_frame_rate', '-of', 'json', filePath]))
+  const [metaA, metaB] = await Promise.all([probeFixture(sourceA), probeFixture(sourceB)])
+  const videoA = metaA.streams?.find((item) => item.codec_type === 'video')
+  const videoB = metaB.streams?.find((item) => item.codec_type === 'video')
+  const fixtureMeta = {
+    a: { width: videoA?.width, height: videoA?.height, frameRate: videoA?.r_frame_rate, hasAudio: metaA.streams?.some((item) => item.codec_type === 'audio') === true },
+    b: { width: videoB?.width, height: videoB?.height, frameRate: videoB?.r_frame_rate, hasAudio: metaB.streams?.some((item) => item.codec_type === 'audio') === true }
+  }
+  if (!(fixtureMeta.a.width > 0) || !(fixtureMeta.b.width > 0) || (fixtureMeta.a.width === fixtureMeta.b.width && fixtureMeta.a.height === fixtureMeta.b.height)) throw new Error('拼接验收夹具必须使用不同分辨率')
+  if (fixtureMeta.a.frameRate === fixtureMeta.b.frameRate) throw new Error('拼接验收夹具必须使用不同帧率')
+  if (!fixtureMeta.a.hasAudio || fixtureMeta.b.hasAudio) throw new Error('拼接验收夹具必须为A有声、B无声')
   fs.mkdirSync(path.dirname(stagedFfmpeg), { recursive: true })
   fs.symlinkSync(installedFfmpeg, stagedFfmpeg, 'junction')
   fs.mkdirSync(evidenceDir, { recursive: true })
@@ -158,6 +170,8 @@ try {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return input && video && video.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0 ? { duration: video.duration } : null
     }, '本地视频与对话框就绪', 60000)
+    window.aiPlayer.menu.confirmOpenFile?.(${JSON.stringify(sourceB)})
+    await wait(100)
     const directPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(directInstruction)}, sourcePath: ${JSON.stringify(sourceA)} })
     if (!directPlan.matched || directPlan.decision?.kind !== 'media.concat-sources' || directPlan.decision.sources?.length !== 2) throw new Error('安装态跨素材拼接计划不合格：' + JSON.stringify(directPlan).slice(0, 300))
     const vaguePlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(vagueInstruction)}, sourcePath: ${JSON.stringify(sourceA)} })
@@ -181,13 +195,22 @@ try {
     await waitFor(() => document.body.innerText.includes('要把当前视频和哪个视频拼在一起？'), '缺素材追问出现在对话里', 10000)
     const tasksWhileClarifying = await window.aiPlayer.taskRuntime.list()
     if (tasksWhileClarifying.length !== tasksBefore.length) throw new Error('追问阶段错误创建了持久任务')
+    const taskStartedAt = Date.now()
     await sendText(${JSON.stringify(sourceB)})
-    const task = await waitFor(async () => {
+    let task
+    try {
+      task = await waitFor(async () => {
+        const tasks = await window.aiPlayer.taskRuntime.list()
+        const candidate = [...tasks].reverse().find((item) => item.type === 'media.edit-concat-sources')
+        return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
+      }, '跨素材拼接任务完成', 120000)
+    } catch (error) {
       const tasks = await window.aiPlayer.taskRuntime.list()
-      const candidate = [...tasks].reverse().find((item) => item.type === 'media.edit-concat-sources')
-      return candidate && ['completed', 'failed', 'cancelled'].includes(candidate.state) ? candidate : null
-    }, '跨素材拼接任务完成')
+      throw new Error(error.message + '；任务快照：' + JSON.stringify(tasks.slice(-3)).slice(0, 4000))
+    }
     if (task.state !== 'completed') throw new Error(task.error || task.status || '跨素材拼接任务未完成')
+    if (task.result?.frameProof?.verdict !== 'matched' || task.result.frameProof.boundaries?.length !== 2) throw new Error('安装态跨素材拼接没有证明两个素材的首尾边界')
+    if (!task.quality?.checks?.find((item) => item.id === 'frame-proof')?.passed || task.quality?.score !== 100) throw new Error('安装态跨素材帧证明没有进入100分质量门')
     const preview = await waitFor(() => {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return video && Number.isFinite(video.duration) && Math.abs(video.duration - 7) <= 0.4
@@ -203,8 +226,9 @@ try {
       directPlan: { kind: directPlan.decision.kind, sources: directPlan.decision.sources },
       resolvedPlan: { kind: resolvedPlan.decision.kind, sources: resolvedPlan.decision.sources },
       task,
+      taskElapsedMs: Date.now() - taskStartedAt,
       preview,
-      uiReceiptVisible: bodyText.includes('原文件均未改动') && bodyText.includes('拼接素材 1') && bodyText.includes('拼接素材 2')
+      uiReceiptVisible: bodyText.includes('原文件均未改动') && bodyText.includes('2个跨素材片段的首尾帧边界已核对') && bodyText.includes('拼接素材 1') && bodyText.includes('拼接素材 2')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -216,9 +240,8 @@ try {
   const bAfter = quickFingerprint(sourceB)
   if (aBefore.bytes !== aAfter.bytes || aBefore.sha256 !== aAfter.sha256) throw new Error('安装态拼接改动了主视频')
   if (bBefore.bytes !== bAfter.bytes || bBefore.sha256 !== bAfter.sha256) throw new Error('安装态拼接改动了第二素材')
-  if (pageResult.task.quality?.passed !== true) throw new Error(`安装态跨素材拼接质量门未通过：${JSON.stringify(pageResult.task.quality?.reasons || []).slice(0, 400)}`)
+  if (pageResult.task.quality?.passed !== true || pageResult.task.quality?.score !== 100) throw new Error(`安装态跨素材拼接质量门未通过：${JSON.stringify(pageResult.task.quality?.reasons || []).slice(0, 400)}`)
   if (!pageResult.uiReceiptVisible) throw new Error('对话框没有显示逐素材时间线与原文件回执')
-  const ffprobe = path.join(installedFfmpeg, 'bin', 'ffprobe.exe')
   const durationOut = await runExecutable(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', outputPath])
   const outputDuration = Number(String(durationOut).trim())
   if (!(outputDuration > 0) || Math.abs(outputDuration - 7) > 0.4) throw new Error(`安装态合并成品时长不合格：${outputDuration}`)
@@ -228,10 +251,10 @@ try {
   if (!String(audioOut).includes('audio')) throw new Error('安装态合并成品没有音轨')
   const persistedOutputPath = path.join(evidenceDir, 'packaged-concat-sources-7s.mp4')
   fs.copyFileSync(outputPath, persistedOutputPath)
-  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceA, sourceB, aBefore, aAfter, bBefore, bAfter, outputBytes: fs.statSync(outputPath).size, outputDuration, persistedOutputPath, screenshotPath, pageResult }
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceA, sourceB, fixtureMeta, aBefore, aAfter, bBefore, bAfter, outputBytes: fs.statSync(outputPath).size, outputDuration, persistedOutputPath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, outputDuration, qualityScore: pageResult.task.quality?.score, persistedOutputPath }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, fixtureMeta, taskElapsedMs: pageResult.taskElapsedMs, outputDuration, frameProof: pageResult.task.result.frameProof, qualityScore: pageResult.task.quality?.score, persistedOutputPath }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

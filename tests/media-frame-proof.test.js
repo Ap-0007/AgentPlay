@@ -107,9 +107,20 @@ test('frame-proof quality: matched is complete, inconclusive is an honest warnin
     assert.match(boundedDetail, /另2个片段见完整回执/)
     assert.doesNotMatch(boundedDetail, /片段5首差异/)
 
-    const crossSource = evaluateTaskResult('media.edit-concat-sources', { ...base }, { decision: { kind: 'media.concat-sources', verification: { toleranceSeconds: 0.2 } } })
-    assert.equal(crossSource.score, 100)
-    assert.equal(crossSource.checks.some((item) => item.id === 'frame-proof'), false, '跨素材本轮未实现帧证明，不得显示伪通过检查')
+    const crossSourceSpec = { decision: { kind: 'media.concat-sources', sources: [{}, {}], verification: { toleranceSeconds: 0.2 } } }
+    const crossSourceBase = { ...base, timelineReceipt: [
+      { sourceRange: '00:00.000 → 00:04.000', outputRange: '00:00.000 → 00:04.000' },
+      { sourceRange: '00:00.000 → 00:03.000', outputRange: '00:04.000 → 00:07.000' }
+    ], durationSeconds: 7, expectedDurationSeconds: 7 }
+    const crossSourceMissing = evaluateTaskResult('media.edit-concat-sources', crossSourceBase, crossSourceSpec)
+    assert.equal(crossSourceMissing.passed, false)
+    assert.ok(crossSourceMissing.reasons.some((item) => item.code === 'FRAME_PROOF_MISSING'))
+    const crossSourceMatched = evaluateTaskResult('media.edit-concat-sources', { ...crossSourceBase, frameProof: { verdict: 'matched', boundaries: [
+      { first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } },
+      { first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } }
+    ] } }, crossSourceSpec)
+    assert.equal(crossSourceMatched.passed, true)
+    assert.equal(crossSourceMatched.score, 100)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

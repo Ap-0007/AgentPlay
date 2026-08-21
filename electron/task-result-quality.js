@@ -122,14 +122,14 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const mappedTimelineReceipts = timelineReceipt.filter((item) => String(item?.sourceRange || '').includes('→') && String(item?.outputRange || '').includes('→'))
     const expectedSegmentCount = taskType === 'media.edit-concat' && Array.isArray(spec.decision?.timeline?.segments)
       ? spec.decision.timeline.segments.length
-      : 0
+      : taskType === 'media.edit-concat-sources' && Array.isArray(spec.decision?.sources) ? spec.decision.sources.length : 0
     const hasTimelineReceipt = expectedSegmentCount > 0
       ? timelineReceipt.length === expectedSegmentCount && mappedTimelineReceipts.length === expectedSegmentCount
       : mappedTimelineReceipts.length > 0
-    const requiresFrameProof = taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat'
+    const requiresFrameProof = taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat' || taskType === 'media.edit-concat-sources'
     const frameProof = result.frameProof
     const frameProofVerdict = String(frameProof?.verdict || '')
-    const expectedFrameBoundaryCount = taskType === 'media.edit-trim' ? 1 : taskType === 'media.edit-concat' ? expectedSegmentCount : taskType === 'media.edit-remove' ? mappedTimelineReceipts.length : 0
+    const expectedFrameBoundaryCount = taskType === 'media.edit-trim' ? 1 : taskType === 'media.edit-concat' || taskType === 'media.edit-concat-sources' ? expectedSegmentCount : taskType === 'media.edit-remove' ? mappedTimelineReceipts.length : 0
     const frameProofComplete = taskType === 'media.edit-trim'
       ? Boolean(frameProof?.first && frameProof?.last)
       : Array.isArray(frameProof?.boundaries) && frameProof.boundaries.length === expectedFrameBoundaryCount && frameProof.boundaries.every((item) => item?.first && item?.last)

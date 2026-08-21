@@ -7,11 +7,13 @@ const { spawnSync } = require('child_process')
 
 const { compileConcatSourcesDecisionList, planEditInstruction, resolveEditClarification } = require('../electron/media-edit-decision')
 const { MediaEditService } = require('../electron/media-edit-service')
+const { VideoFrameService } = require('../electron/video-frame-service')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8')
 const panel = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'agent-panel', 'useMediaCreativeTasks.ts'), 'utf8')
 const runtime = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'agent-panel', 'usePersistentTaskRuntime.ts'), 'utf8')
 const quality = fs.readFileSync(path.join(__dirname, '..', 'electron', 'task-result-quality.js'), 'utf8')
+const packagedSmoke = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'smoke-packaged-media-concat-sources.mjs'), 'utf8')
 
 const SOURCE = 'D:/视频/第一段.mp4'
 const FFMPEG = process.env.AIPLAYER_FFMPEG || 'C:/Program Files/ffmpeg/ffmpeg-8.0.1-essentials_build/bin/ffmpeg.exe'
@@ -62,6 +64,32 @@ test('concat-sources wiring: task registered, decision routed, renderer gate acc
   assert.match(panel, /按顺序合并/)
   assert.match(runtime, /media\.edit-concat-sources/)
   assert.match(quality, /media\.edit-concat-sources/, '质量核查必须覆盖跨素材拼接')
+  assert.match(packagedSmoke, /task\.result\?\.frameProof\?\.verdict !== 'matched'/)
+  assert.match(packagedSmoke, /2个跨素材片段的首尾帧边界已核对/)
+  assert.match(packagedSmoke, /fixtureMeta/)
+})
+
+test('concatSources fails before delivery when cross-source frame proof is unavailable', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'concat-sources-proof-missing-'))
+  try {
+    const videoA = path.join(dir, 'a.mp4')
+    const videoB = path.join(dir, 'b.mp4')
+    const output = path.join(dir, 'joined.mp4')
+    fs.writeFileSync(videoA, Buffer.alloc(2048, 1))
+    fs.writeFileSync(videoB, Buffer.alloc(2048, 2))
+    const frames = {
+      availability: () => ({ available: true }),
+      probeDuration: async (file) => file === videoA ? 4 : file === videoB ? 3 : 7,
+      probeHasAudio: async () => false,
+      probeDimensions: async () => ({ width: 640, height: 360 }),
+      run: async (args) => fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    }
+    const decision = compileConcatSourcesDecisionList({ instruction: `把 ${videoA} 和 ${videoB} 拼起来`, sourcePath: videoA })
+    await assert.rejects(new MediaEditService({ frames }).concatSources({ sourcePath: videoA, outputPath: output, decision }), /帧边界证明不可用/)
+    assert.equal(fs.existsSync(output), false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('real concatSources: mixed resolutions + silent source, output duration = sum, sources untouched', { timeout: 180000 }, async (t) => {
@@ -71,34 +99,15 @@ test('real concatSources: mixed resolutions + silent source, output duration = s
     const videoA = path.join(dir, '第一段.mp4')
     const videoB = path.join(dir, '第二段.mp4')
     const output = path.join(dir, '合并版.mp4')
-    // A：640x360 有声 4 秒；B：320x240 无声 3 秒（考验 scale+pad 与补静音轨）
+    // A：640x360/15fps 有声 4 秒；B：320x240/24fps 无声 3 秒且不同色相（考验帧率、scale+pad 与补静音轨）
     let r = spawnSync(FFMPEG, ['-y', '-f', 'lavfi', '-i', 'testsrc2=duration=4:size=640x360:rate=15', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', videoA, '-loglevel', 'error'], { timeout: 60000 })
     assert.equal(r.status, 0, String(r.stderr).slice(0, 200))
-    r = spawnSync(FFMPEG, ['-y', '-f', 'lavfi', '-i', 'testsrc2=duration=3:size=320x240:rate=15', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', videoB, '-loglevel', 'error'], { timeout: 60000 })
+    r = spawnSync(FFMPEG, ['-y', '-f', 'lavfi', '-i', 'testsrc2=duration=3:size=320x240:rate=24,hue=h=90', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', videoB, '-loglevel', 'error'], { timeout: 60000 })
     assert.equal(r.status, 0, String(r.stderr).slice(0, 200))
     const sizeA = fs.statSync(videoA).size
     const sizeB = fs.statSync(videoB).size
 
-    const frames = {
-      availability: () => ({ available: true }),
-      probeDuration: async (file) => {
-        const p = spawnSync(FFMPEG.replace('ffmpeg.exe', 'ffprobe.exe'), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { timeout: 30000 })
-        return Number(String(p.stdout).trim())
-      },
-      probeHasAudio: async (file) => {
-        const p = spawnSync(FFMPEG.replace('ffmpeg.exe', 'ffprobe.exe'), ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', file], { timeout: 30000 })
-        return String(p.stdout).includes('audio')
-      },
-      probeDimensions: async (file) => {
-        const p = spawnSync(FFMPEG.replace('ffmpeg.exe', 'ffprobe.exe'), ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', file], { timeout: 30000 })
-        const match = String(p.stdout).trim().match(/^(\d+),(\d+)/)
-        return match ? { width: Number(match[1]), height: Number(match[2]) } : null
-      },
-      run: async (args) => {
-        const p = spawnSync(FFMPEG, args, { timeout: 120000 })
-        if (p.status !== 0) throw new Error(String(p.stderr).slice(0, 300))
-      }
-    }
+    const frames = new VideoFrameService({ ffmpegPath: FFMPEG, ffprobePath: FFMPEG.replace('ffmpeg.exe', 'ffprobe.exe') })
     const service = new MediaEditService({ frames })
     const decision = compileConcatSourcesDecisionList({ instruction: `把 ${videoA} 和 ${videoB} 拼起来`, sourcePath: videoA })
     const result = await service.concatSources({ sourcePath: videoA, outputPath: output, decision })
@@ -109,6 +118,10 @@ test('real concatSources: mixed resolutions + silent source, output duration = s
     const dims = await frames.probeDimensions(output)
     assert.deepEqual(dims, { width: 640, height: 360 }, '成果分辨率必须跟随第一段')
     assert.equal(result.timelineReceipt.length, 2)
+    assert.equal(result.frameProof?.verdict, 'matched', JSON.stringify(result.frameProof))
+    assert.equal(result.frameProof.boundaries?.length, 2)
+    assert.ok(result.frameProof.boundaries.every((item) => item.first?.verdict === 'matched' && item.last?.verdict === 'matched'))
+    assert.match(result.summary, /2个跨素材片段的首尾帧边界已核对/)
     // 源文件不动
     assert.equal(fs.statSync(videoA).size, sizeA)
     assert.equal(fs.statSync(videoB).size, sizeB)
@@ -117,6 +130,15 @@ test('real concatSources: mixed resolutions + silent source, output duration = s
     // verify 路径（断点续跑复核）也要通过
     const verified = await service.verify({ sourcePath: videoA, outputPath: output, decision })
     assert.ok(Math.abs(verified.expectedDurationSeconds - 7) < 0.35)
+
+    const wrongOrderOutput = path.join(dir, '错误顺序.mp4')
+    const wrongOrderDecision = compileConcatSourcesDecisionList({ instruction: `把 ${videoB} 和 ${videoA} 拼起来`, sourcePath: videoB })
+    await service.concatSources({ sourcePath: videoB, outputPath: wrongOrderOutput, decision: wrongOrderDecision })
+    await assert.rejects(
+      service.verify({ sourcePath: videoA, outputPath: wrongOrderOutput, decision }),
+      /帧边界校验失败/,
+      '恢复必须拒绝素材顺序相反但总时长相同的成品'
+    )
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

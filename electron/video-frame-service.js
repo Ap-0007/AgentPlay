@@ -216,22 +216,33 @@ class VideoFrameService {
     }
   }
 
+  frameProofScaleFilter({ fitWidth = 0, fitHeight = 0 } = {}) {
+    const width = Math.round(Number(fitWidth) || 0)
+    const height = Math.round(Number(fitHeight) || 0)
+    return width > 0 && height > 0
+      ? `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,scale=32:32,format=gray`
+      : 'scale=32:32,format=gray'
+  }
+
   // 单帧灰度读取（32x32 gray 裸数据经 stdout 管道，不落临时文件）；用于帧边界级证明。失败返回 null。
-  async readGrayFrame(sourcePath, seconds, { signal } = {}) {
-    const buffer = await this.readRawFrameBuffer(['-v', 'error', '-ss', Number(seconds).toFixed(3), '-i', sourcePath, '-frames:v', '1', '-vf', 'scale=32:32,format=gray', '-f', 'rawvideo', '-'], { signal })
+  // 跨素材时可先按成片画布执行与拼接管线一致的 scale+pad，再缩成证明样本。
+  async readGrayFrame(sourcePath, seconds, { signal, fitWidth = 0, fitHeight = 0 } = {}) {
+    const filter = this.frameProofScaleFilter({ fitWidth, fitHeight })
+    const buffer = await this.readRawFrameBuffer(['-v', 'error', '-ss', Number(seconds).toFixed(3), '-i', sourcePath, '-frames:v', '1', '-vf', filter, '-f', 'rawvideo', '-'], { signal })
     return buffer?.length === 32 * 32 ? buffer : null
   }
 
   // 边界末帧读取：B 帧重排时按 PTS seek 可能拿不到最后几帧，且 -t 截断会丢未 flush 的 B 帧尾。
   // 改为解码 [boundary-0.7, boundary+1.05] 窗口（留足 flush 余量），select 只收 boundary 之前的帧，取最后一块 32x32 灰度帧。
-  async readLastGrayFrame(sourcePath, boundarySeconds, { signal } = {}) {
+  async readLastGrayFrame(sourcePath, boundarySeconds, { signal, fitWidth = 0, fitHeight = 0 } = {}) {
     if (!this.ffmpegPath || !fs.existsSync(this.ffmpegPath)) return null
     const boundary = Number(boundarySeconds)
     if (!Number.isFinite(boundary) || boundary <= 0) return null
     const start = Math.max(0, boundary - 0.7)
     const windowSeconds = Number((boundary - start + 1.05).toFixed(3))
     const keepBefore = Number((boundary - start - 0.033).toFixed(3))
-    const buffer = await this.readRawFrameBuffer(['-v', 'error', '-ss', start.toFixed(3), '-i', sourcePath, '-t', windowSeconds.toFixed(3), '-vf', `select='lte(t,${keepBefore})',scale=32:32,format=gray`, '-vsync', '0', '-f', 'rawvideo', '-'], { signal })
+    const filter = `select='lte(t,${keepBefore})',${this.frameProofScaleFilter({ fitWidth, fitHeight })}`
+    const buffer = await this.readRawFrameBuffer(['-v', 'error', '-ss', start.toFixed(3), '-i', sourcePath, '-t', windowSeconds.toFixed(3), '-vf', filter, '-vsync', '0', '-f', 'rawvideo', '-'], { signal })
     if (!buffer || buffer.length < 32 * 32) return null
     return buffer.subarray(buffer.length - 32 * 32)
   }
