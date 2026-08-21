@@ -71,6 +71,7 @@ test('media trim quality requires a verified timeline and duration receipt', () 
       outputs: [output],
       durationSeconds: 16.04,
       expectedDurationSeconds: 16,
+      frameProof: { verdict: 'matched', first: { matchDiff: 0.1, margin: 8 }, last: { matchDiff: 0.2, margin: 7 } },
       timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }],
       projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
     }, spec)
@@ -78,7 +79,8 @@ test('media trim quality requires a verified timeline and duration receipt', () 
     assert.ok(passed.checks.some((item) => item.id === 'duration-receipt' && item.passed))
 
     const failed = evaluateTaskResult('media.edit-trim', {
-      success: true, outputs: [output], durationSeconds: 14.8, expectedDurationSeconds: 16, timelineReceipt: []
+      success: true, outputs: [output], durationSeconds: 14.8, expectedDurationSeconds: 16,
+      frameProof: { verdict: 'matched' }, timelineReceipt: []
     }, spec)
     assert.equal(failed.passed, false)
     assert.ok(failed.reasons.some((item) => item.code === 'DURATION_MISMATCH'))
@@ -86,6 +88,7 @@ test('media trim quality requires a verified timeline and duration receipt', () 
 
     const missingProject = evaluateTaskResult('media.edit-trim', {
       success: true, outputs: [output], durationSeconds: 16.04, expectedDurationSeconds: 16,
+      frameProof: { verdict: 'matched' },
       timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }]
     }, spec)
     assert.equal(missingProject.passed, false)

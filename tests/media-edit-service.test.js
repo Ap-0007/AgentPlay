@@ -18,6 +18,12 @@ test('trim re-encodes the exact range, atomically saves a new file and probes it
     const frames = {
       availability: () => ({ available: true }),
       probeDuration: async (filePath) => filePath === sourcePath ? 30 : 16.04,
+      readGrayFrame: async (filePath, seconds) => filePath !== sourcePath || Math.abs(seconds - 4) < 0.01
+        ? Buffer.alloc(32 * 32, 10)
+        : Buffer.alloc(32 * 32, 50),
+      readLastGrayFrame: async (filePath, boundary) => filePath !== sourcePath || (boundary >= 19.8 && boundary <= 20.1)
+        ? Buffer.alloc(32 * 32, 20)
+        : Buffer.alloc(32 * 32, 60),
       run: async (args) => {
         runArgs = args
         fs.writeFileSync(args.at(-1), Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
@@ -32,6 +38,7 @@ test('trim re-encodes the exact range, atomically saves a new file and probes it
     assert.equal(result.outputPath, outputPath)
     assert.equal(result.expectedDurationSeconds, 16)
     assert.equal(result.durationSeconds, 16.04)
+    assert.equal(result.frameProof?.verdict, 'matched')
     assert.equal(result.timelineReceipt[0].sourceRange, '00:04.000 → 00:20.000')
     assert.deepEqual(fs.readFileSync(sourcePath), original)
     assert.ok(fs.statSync(outputPath).size > 1024)

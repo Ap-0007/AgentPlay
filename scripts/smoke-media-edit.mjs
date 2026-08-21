@@ -52,6 +52,7 @@ const result = await service.trim({ sourcePath, outputPath, decision })
 const sourceAfter = { bytes: fs.statSync(sourcePath).size, fingerprint: quickFingerprint(sourcePath) }
 if (sourceBefore.bytes !== sourceAfter.bytes || sourceBefore.fingerprint !== sourceAfter.fingerprint) throw new Error('源视频被修改')
 if (Math.abs(result.durationSeconds - 16) > 0.2) throw new Error(`成品时长不合格：${result.durationSeconds}`)
+if (result.frameProof?.verdict !== 'matched') throw new Error(`真实素材首尾帧边界未获得明确匹配证明：${JSON.stringify(result.frameProof)}`)
 const trimBeforeDelete = { bytes: fs.statSync(outputPath).size, fingerprint: quickFingerprint(outputPath) }
 const removeDecision = compileEditDecisionList({ instruction: '删除第4秒到第8秒', sourcePath: outputPath })
 if (!removeDecision || removeDecision.kind !== 'media.remove-segment') throw new Error('明确删除片段指令未生成决策')
@@ -111,4 +112,4 @@ const receipt = {
 }
 const receiptPath = path.join(evidenceDir, 'receipt.json')
 fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-process.stdout.write(`${JSON.stringify({ passed: true, outputPath, removedOutputPath, concatOutputPath, receiptPath, durationSeconds: result.durationSeconds, removedDurationSeconds: removeResult.durationSeconds, concatDurationSeconds: concatResult.durationSeconds, orderEvidence, sourceUnchanged: true, priorVersionsUnchanged: true }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ passed: true, outputPath, removedOutputPath, concatOutputPath, receiptPath, durationSeconds: result.durationSeconds, frameProof: result.frameProof, removedDurationSeconds: removeResult.durationSeconds, concatDurationSeconds: concatResult.durationSeconds, orderEvidence, sourceUnchanged: true, priorVersionsUnchanged: true }, null, 2)}\n`)

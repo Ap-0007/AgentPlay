@@ -64,10 +64,11 @@ function thinToBudget(indices, budget) {
 }
 
 class VideoFrameService {
-  constructor({ ffmpegPath, ffprobePath, spawnImpl } = {}) {
+  constructor({ ffmpegPath, ffprobePath, spawnImpl, frameReadTimeoutMs = 60000 } = {}) {
     this.ffmpegPath = ffmpegPath ? path.resolve(ffmpegPath) : ''
     this.ffprobePath = ffprobePath ? path.resolve(ffprobePath) : ''
     this.spawnImpl = spawnImpl || spawn
+    this.frameReadTimeoutMs = Math.max(10, Number(frameReadTimeoutMs) || 60000)
   }
 
   availability() {
@@ -172,6 +173,67 @@ class VideoFrameService {
       child.once('exit', (code) => code === 0 ? finish(resolve) : finish(reject, new Error(`ffprobe 退出码 ${code}`)))
     })
     return out.trim().length > 0
+  }
+
+  async readRawFrameBuffer(args, { signal } = {}) {
+    if (!this.ffmpegPath || !fs.existsSync(this.ffmpegPath)) return null
+    try {
+      const child = this.spawnImpl(this.ffmpegPath, args, { windowsHide: true, shell: false })
+      const chunks = []
+      return await new Promise((resolve, reject) => {
+        let settled = false
+        let timer = null
+        const finish = (fn, value) => {
+          if (settled) return
+          settled = true
+          if (timer) clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
+          fn(value)
+        }
+        const onAbort = () => {
+          try { child.kill() } catch { /* 已退出 */ }
+          finish(reject, new Error('已取消'))
+        }
+        if (signal) {
+          if (signal.aborted) {
+            onAbort()
+            return
+          }
+          signal.addEventListener('abort', onAbort, { once: true })
+        }
+        timer = setTimeout(() => {
+          try { child.kill() } catch { /* 已退出 */ }
+          finish(resolve, null)
+        }, this.frameReadTimeoutMs)
+        child.stdout?.on('data', (chunk) => chunks.push(chunk))
+        child.stderr?.resume?.()
+        child.once('error', () => finish(resolve, null))
+        child.once('exit', (code) => finish(resolve, code === 0 ? Buffer.concat(chunks) : null))
+      })
+    } catch (error) {
+      if (signal?.aborted) throw error
+      return null
+    }
+  }
+
+  // 单帧灰度读取（32x32 gray 裸数据经 stdout 管道，不落临时文件）；用于帧边界级证明。失败返回 null。
+  async readGrayFrame(sourcePath, seconds, { signal } = {}) {
+    const buffer = await this.readRawFrameBuffer(['-v', 'error', '-ss', Number(seconds).toFixed(3), '-i', sourcePath, '-frames:v', '1', '-vf', 'scale=32:32,format=gray', '-f', 'rawvideo', '-'], { signal })
+    return buffer?.length === 32 * 32 ? buffer : null
+  }
+
+  // 边界末帧读取：B 帧重排时按 PTS seek 可能拿不到最后几帧，且 -t 截断会丢未 flush 的 B 帧尾。
+  // 改为解码 [boundary-0.7, boundary+1.05] 窗口（留足 flush 余量），select 只收 boundary 之前的帧，取最后一块 32x32 灰度帧。
+  async readLastGrayFrame(sourcePath, boundarySeconds, { signal } = {}) {
+    if (!this.ffmpegPath || !fs.existsSync(this.ffmpegPath)) return null
+    const boundary = Number(boundarySeconds)
+    if (!Number.isFinite(boundary) || boundary <= 0) return null
+    const start = Math.max(0, boundary - 0.7)
+    const windowSeconds = Number((boundary - start + 1.05).toFixed(3))
+    const keepBefore = Number((boundary - start - 0.033).toFixed(3))
+    const buffer = await this.readRawFrameBuffer(['-v', 'error', '-ss', start.toFixed(3), '-i', sourcePath, '-t', windowSeconds.toFixed(3), '-vf', `select='lte(t,${keepBefore})',scale=32:32,format=gray`, '-vsync', '0', '-f', 'rawvideo', '-'], { signal })
+    if (!buffer || buffer.length < 32 * 32) return null
+    return buffer.subarray(buffer.length - 32 * 32)
   }
 
   // 读取首个视频流的宽高；失败返回 null（调用方自行决定拒绝还是降级）

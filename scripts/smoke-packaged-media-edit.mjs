@@ -195,6 +195,9 @@ try {
     }, '剪辑任务完成')
     if (task.state !== 'completed') throw new Error(task.error || task.status || '剪辑任务未完成')
     if (task.spec?.instruction !== '保留第4秒到第20秒') throw new Error('追问补齐后没有冻结成完整剪辑指令')
+    if (task.result?.frameProof?.verdict !== 'matched') throw new Error('安装态剪辑没有得到明确的首尾帧边界匹配证明')
+    const frameProofCheck = task.quality?.checks?.find((item) => item.id === 'frame-proof')
+    if (!frameProofCheck?.passed || task.quality?.score !== 100) throw new Error('安装态帧边界证明没有进入质量门或未获得满分')
     const preview = await waitFor(() => {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return video && Number.isFinite(video.duration) && Math.abs(video.duration - 16) <= 0.2
@@ -317,7 +320,7 @@ try {
       concatPreview,
       concatUndoPreview,
       concatRedoPreview,
-      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('时间线：') && bodyText.includes('拼接片段 1：源片') && bodyText.includes('拼接片段 2：源片') && bodyText.includes('项目版本：4/4')
+      uiReceiptVisible: bodyText.includes('原文件未改动') && bodyText.includes('首尾帧边界已核对') && bodyText.includes('时间线：') && bodyText.includes('拼接片段 1：源片') && bodyText.includes('拼接片段 2：源片') && bodyText.includes('项目版本：4/4')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -328,7 +331,7 @@ try {
   if (!outputPath || !fs.existsSync(outputPath)) throw new Error('安装态任务没有真实成果文件')
   if (sourceBefore.bytes !== sourceAfter.bytes || sourceBefore.sha256 !== sourceAfter.sha256) throw new Error('安装态剪辑修改了源视频')
   if (Math.abs(Number(pageResult.task.result.durationSeconds) - 16) > 0.2) throw new Error('安装态成品时长不合格')
-  if (pageResult.task.quality?.passed !== true) throw new Error('安装态任务质量门未通过')
+  if (pageResult.task.quality?.passed !== true || pageResult.task.quality?.score !== 100) throw new Error('安装态任务质量门未通过或帧证明未满分')
   if (!pageResult.uiReceiptVisible) throw new Error('对话框没有显示时间线与原文件回执')
   if (Math.abs(Number(pageResult.undoPreview?.duration) - Number(pageResult.originalDuration)) > 0.2) throw new Error('安装态撤销没有回到原片')
   if (Math.abs(Number(pageResult.redoPreview?.duration) - 16) > 0.2) throw new Error('安装态重做没有回到成片')
@@ -379,7 +382,7 @@ try {
   const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, outputBytes: fs.statSync(outputPath).size, removedOutputBytes: fs.statSync(removedOutputPath).size, concatOutputBytes: fs.statSync(concatOutputPath).size, orderEvidence, persistedOutputPath, persistedRemovedOutputPath, persistedConcatOutputPath, persistedProjectStatePath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, removedDurationSeconds: pageResult.removeTask.result.durationSeconds, concatDurationSeconds: pageResult.concatTask.result.durationSeconds, qualityScore: pageResult.task.quality.score, removeQualityScore: pageResult.removeTask.quality.score, concatQualityScore: pageResult.concatTask.quality.score, orderEvidence, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration, removeUndoDurationSeconds: pageResult.removeUndoPreview.duration, removeRedoDurationSeconds: pageResult.removeRedoPreview.duration, concatUndoDurationSeconds: pageResult.concatUndoPreview.duration, concatRedoDurationSeconds: pageResult.concatRedoPreview.duration }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, durationSeconds: pageResult.task.result.durationSeconds, frameProof: pageResult.task.result.frameProof, qualityScore: pageResult.task.quality.score, removedDurationSeconds: pageResult.removeTask.result.durationSeconds, concatDurationSeconds: pageResult.concatTask.result.durationSeconds, removeQualityScore: pageResult.removeTask.quality.score, concatQualityScore: pageResult.concatTask.quality.score, orderEvidence, undoDurationSeconds: pageResult.undoPreview.duration, redoDurationSeconds: pageResult.redoPreview.duration, removeUndoDurationSeconds: pageResult.removeUndoPreview.duration, removeRedoDurationSeconds: pageResult.removeRedoPreview.duration, concatUndoDurationSeconds: pageResult.concatUndoPreview.duration, concatRedoDurationSeconds: pageResult.concatRedoPreview.duration }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

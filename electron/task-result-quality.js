@@ -5,7 +5,8 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.avi', '.m4v
 const OFFICE_ZIP_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.odt', '.ods', '.odp', '.epub'])
 const HARD_FAILURES = new Set([
   'RESULT_FAILED', 'ARTIFACT_MISSING', 'ARTIFACT_EMPTY', 'INVALID_FORMAT', 'SUBTITLE_EMPTY',
-  'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE'
+  'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE', 'PROJECT_CAPSULE_MISSING',
+  'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_BOUNDARY_MISMATCH'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -125,6 +126,31 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const hasTimelineReceipt = expectedSegmentCount > 0
       ? timelineReceipt.length === expectedSegmentCount && mappedTimelineReceipts.length === expectedSegmentCount
       : mappedTimelineReceipts.length > 0
+    const requiresFrameProof = taskType === 'media.edit-trim'
+    const frameProof = result.frameProof
+    const frameProofVerdict = String(frameProof?.verdict || '')
+    let frameProofRatio = 1
+    let frameProofFailure = null
+    if (requiresFrameProof) {
+      if (!frameProof) {
+        frameProofRatio = 0
+        frameProofFailure = reason('FRAME_PROOF_MISSING', '缺少首尾帧边界证明，不能确认剪辑点', true)
+      } else if (frameProofVerdict === 'matched') {
+        frameProofRatio = 1
+      } else if (frameProofVerdict === 'inconclusive') {
+        frameProofRatio = 0.5
+        frameProofFailure = reason('FRAME_BOUNDARY_INCONCLUSIVE', '画面内容过于相似，首尾帧证据无法唯一判定；已保留时长与时间线核验结果', false)
+      } else if (frameProofVerdict === 'mismatch') {
+        frameProofRatio = 0
+        frameProofFailure = reason('FRAME_BOUNDARY_MISMATCH', '成片首尾帧与决策切割点不符', true)
+      } else {
+        frameProofRatio = 0
+        frameProofFailure = reason('FRAME_PROOF_UNAVAILABLE', '无法生成首尾帧边界证明，不能确认剪辑点', true)
+      }
+    }
+    const frameProofDetail = requiresFrameProof && frameProof
+      ? `首帧差异 ${frameProof.first?.matchDiff ?? '未知'}、余量 ${frameProof.first?.margin ?? '未知'}；尾帧差异 ${frameProof.last?.matchDiff ?? '未知'}、余量 ${frameProof.last?.margin ?? '未知'}`
+      : ''
     const timelineFailure = expectedSegmentCount > 0
       ? reason('SEGMENT_RECEIPT_INCOMPLETE', `拼接时间线回执不完整：期望 ${expectedSegmentCount} 段，实际 ${mappedTimelineReceipts.length} 段`, true)
       : reason('TIMELINE_RECEIPT_MISSING', '缺少可核对的源片段与成品时间线回执', true)
@@ -137,11 +163,12 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       && projectCapsule.canUndo === true
       && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '剪辑视频', artifactRatio, 25, artifactFailure)
+    add('artifacts', '剪辑视频', artifactRatio, requiresFrameProof ? 20 : 25, artifactFailure)
     add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
     add('duration-receipt', '成品时长', durationOk ? 1 : 0, 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
     add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, 10, timelineFailure)
-    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+    if (requiresFrameProof) add('frame-proof', '帧边界证明', frameProofRatio, 10, frameProofFailure, frameProofDetail)
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, requiresFrameProof ? 20 : 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.shift-subtitles') {
     const cueCount = Number(result.cueCount)
     const sourceCueCount = Number(result.sourceCueCount)

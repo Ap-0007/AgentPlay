@@ -61,6 +61,13 @@ function msToSrtTime(value) {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(fraction).padStart(3, '0')}`
 }
 
+function meanAbsDiff(a, b) {
+  if (!a || !b || a.length !== b.length || a.length === 0) return 255
+  let sum = 0
+  for (let index = 0; index < a.length; index += 1) sum += Math.abs(a[index] - b[index])
+  return sum / a.length
+}
+
 // srt 解码：BOM 直读；否则先严格 UTF-8，失败退 GBK（中文圈常见）；写出统一 UTF-8
 function decodeSubtitleText(buffer) {
   if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) return buffer.subarray(3).toString('utf8')
@@ -196,12 +203,77 @@ class MediaEditService {
       if (!(actualDuration > 0) || Math.abs(actualDuration - durationSeconds) > tolerance) {
         throw new Error(`剪辑成果时长校验失败：期望 ${durationSeconds.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
       }
+      const frameProof = await this.frameProofForTrim({ source, output: tempPath, decision, sourceDuration, signal })
+      this.assertFrameProofDeliverable(frameProof)
       this.fs.renameSync(tempPath, output)
-      return this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
+      return this.resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
     }
+  }
+
+  // 帧边界级证明：成片首帧应来自源片决策起点、尾帧应来自决策终点。
+  // 首帧按帧位精确采样（剪辑是输出侧精确 seek，成片第 0 帧 = 源片第一个 PTS≥start 的帧）；
+  // 尾帧因 PTS 可能越界取不到帧，用回退链采样并允许多候选匹配；内容过于均匀时如实记 inconclusive 不硬判。
+  async frameProofForTrim({ source, output, decision, sourceDuration, signal }) {
+    const { startSeconds, endSeconds } = decision.timeline || {}
+    const proofBase = {
+      schemaVersion: 1,
+      method: 'gray-frame-mad-v1',
+      sourceRangeSeconds: { start: startSeconds, end: endSeconds },
+      sample: { width: 32, height: 32, color: 'gray' }
+    }
+    if (typeof this.frames.readGrayFrame !== 'function') return { ...proofBase, verdict: 'unavailable', reason: 'frame-reader-missing' }
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds)) return { ...proofBase, verdict: 'unavailable', reason: 'invalid-timeline' }
+    const sampleAt = (file, t) => this.frames.readGrayFrame(file, Math.max(0, Number(t.toFixed(3))), { signal })
+    const sampleLast = async (file, boundary) => {
+      if (typeof this.frames.readLastGrayFrame === 'function') return this.frames.readLastGrayFrame(file, boundary, { signal })
+      return sampleAt(file, Math.max(0.02, boundary - 0.06))
+    }
+    const outputDuration = await this.frames.probeDuration(output, { signal })
+    const outputFirst = await sampleAt(output, 0)
+    // 尾帧两侧采样：重编码会重置 PTS 网格，-t 严格排除边界帧；用 ±1 帧的包含/排除双候选覆盖
+    const outputLast = await sampleLast(output, outputDuration + 0.067)
+    const matchFirst = await sampleAt(source, startSeconds)
+    const matchLastCandidates = [
+      await sampleLast(source, endSeconds - 0.001),
+      await sampleLast(source, endSeconds + 0.067),
+      await sampleLast(source, endSeconds - 0.134)
+    ].filter(Boolean)
+    if (!outputFirst || !outputLast || !matchFirst || !matchLastCandidates.length) return { ...proofBase, verdict: 'unavailable', reason: 'frame-sample-missing' }
+    const first = this.judgeFrameBoundary(outputFirst, [matchFirst], [
+      startSeconds - 0.5 >= 0 ? await sampleAt(source, startSeconds - 0.5) : null,
+      startSeconds + 0.5 < sourceDuration ? await sampleAt(source, startSeconds + 0.5) : null
+    ])
+    const last = this.judgeFrameBoundary(outputLast, matchLastCandidates, [
+      endSeconds - 0.62 >= startSeconds ? await sampleAt(source, endSeconds - 0.62) : null,
+      endSeconds + 0.44 < sourceDuration ? await sampleAt(source, endSeconds + 0.44) : null
+    ])
+    const verdict = first.verdict === 'mismatch' || last.verdict === 'mismatch'
+      ? 'mismatch'
+      : first.verdict === 'matched' && last.verdict === 'matched' ? 'matched' : 'inconclusive'
+    return { ...proofBase, verdict, first, last }
+  }
+
+  assertFrameProofDeliverable(frameProof) {
+    if (!frameProof || frameProof.verdict === 'unavailable') {
+      throw new Error(`帧边界证明不可用（${frameProof?.reason || 'unknown'}），为避免交付无法核对的剪辑结果已停止`)
+    }
+    if (frameProof.verdict === 'mismatch') {
+      throw new Error(`帧边界校验失败：成片首尾帧与决策切割点不符（首帧差异 ${frameProof.first?.matchDiff ?? '?'}、余量 ${frameProof.first?.margin ?? '?'}；尾帧差异 ${frameProof.last?.matchDiff ?? '?'}、余量 ${frameProof.last?.margin ?? '?'}），已拒绝交付`)
+    }
+  }
+
+  judgeFrameBoundary(outputFrame, matchFrames, altFrames) {
+    const candidates = (Array.isArray(matchFrames) ? matchFrames : [matchFrames]).filter(Boolean)
+    const dMatch = Math.min(...candidates.map((frame) => meanAbsDiff(outputFrame, frame)))
+    const altDiffs = (altFrames || []).filter(Boolean).map((frame) => meanAbsDiff(outputFrame, frame))
+    const bestAlt = altDiffs.length ? Math.min(...altDiffs) : null
+    const margin = bestAlt == null ? null : Number((bestAlt - dMatch).toFixed(3))
+    if (dMatch < 0.5 && altDiffs.every((d) => d < 0.5)) return { verdict: 'inconclusive', matchDiff: Number(dMatch.toFixed(3)), margin }
+    if (dMatch <= 1.5 && (margin == null || margin > 0.3)) return { verdict: 'matched', matchDiff: Number(dMatch.toFixed(3)), margin }
+    return { verdict: 'mismatch', matchDiff: Number(dMatch.toFixed(3)), margin }
   }
 
   // 配乐：用户本地/合法音乐 + 音量 + 淡入淡出 + 对白闪避（sidechain）；音乐短于视频自动循环。
@@ -917,6 +989,12 @@ class MediaEditService {
     const tolerance = Math.max(0.05, Number(decision?.verification?.toleranceSeconds) || 0.2)
     if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) throw new Error('剪辑成果时长校验失败')
     if (isMuxSubtitles && !(await this.frames.probeHasSubtitle(output, { signal }))) throw new Error('封装成果没有字幕轨，已拒绝交付')
+    const isPlainTrim = !isRemove && !isConcat && !isConcatSources && !isBurnSubtitles && !isMuxSubtitles && decision?.kind === 'media.trim'
+    let trimFrameProof = null
+    if (isPlainTrim) {
+      trimFrameProof = await this.frameProofForTrim({ source, output, decision, sourceDuration, signal })
+      this.assertFrameProofDeliverable(trimFrameProof)
+    }
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration })
       : isConcat
@@ -927,10 +1005,10 @@ class MediaEditService {
             ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
             : isMuxSubtitles
               ? this.muxSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
-              : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration })
+              : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof: trimFrameProof })
   }
 
-  resultReceipt({ source, output, decision, sourceDuration, actualDuration }) {
+  resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof = null }) {
     const { startSeconds, endSeconds, durationSeconds } = decision.timeline
     return {
       success: true,
@@ -940,12 +1018,13 @@ class MediaEditService {
       sourceDurationSeconds: sourceDuration,
       expectedDurationSeconds: durationSeconds,
       durationSeconds: Number(actualDuration.toFixed(3)),
+      ...(frameProof ? { frameProof } : {}),
       timelineReceipt: [{
         operation: '保留片段',
         sourceRange: `${formatTimestamp(startSeconds)} → ${formatTimestamp(endSeconds)}`,
         outputRange: `${formatTimestamp(0)} → ${formatTimestamp(durationSeconds)}`
       }],
-      summary: `已保留 ${formatTimestamp(startSeconds)} 到 ${formatTimestamp(endSeconds)}，生成 ${durationSeconds.toFixed(3)} 秒新视频；原文件未改动`
+      summary: `已保留 ${formatTimestamp(startSeconds)} 到 ${formatTimestamp(endSeconds)}，生成 ${durationSeconds.toFixed(3)} 秒新视频；原文件未改动${frameProof?.verdict === 'matched' ? '；首尾帧边界已核对' : frameProof?.verdict === 'inconclusive' ? '；画面内容相似，帧边界证据无法唯一判定，已保留提示' : ''}`
     }
   }
 
