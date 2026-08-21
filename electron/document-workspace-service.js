@@ -1138,7 +1138,7 @@ class DocumentWorkspaceService {
       content: plan.files.length ? await extractText(plan.files[0].path, this.ocr) : plan.instruction,
       slides: [], sheets: []
     }
-    const outputDir = plan.files[0] ? path.dirname(plan.files[0].path) : this.outputRoot
+    const outputDir = plan.outputDir ? path.resolve(plan.outputDir) : plan.files[0] ? path.dirname(plan.files[0].path) : this.outputRoot
     const sourceBase = path.parse(plan.files[0]?.name || result.title).name
     const baseName = `${cleanFileName(sourceBase)}-AgentPlay处理版`
     const finalPath = uniqueOutputPath(outputDir, baseName, result.outputFormat)

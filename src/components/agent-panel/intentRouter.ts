@@ -20,6 +20,7 @@ type IntentRouterOptions = {
   runCompressTask: (text: string) => Promise<void>
   runDedupTask: (text: string) => Promise<void>
   runDocumentTask: () => Promise<void>
+  runOutcomeWorkflow: () => Promise<void>
   setAnalysisFormat: (format: string) => void
   runAnalysisTask: () => Promise<void>
   send: (contextNote?: string) => Promise<void>
@@ -41,7 +42,7 @@ export function createIntentRouter(options: IntentRouterOptions) {
   const {
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
     isVideoGenerationIntent, runBatchTask, runVideoGenTask, runEditHistoryTask, runTrimTask,
-    runCompressTask, runDedupTask, runDocumentTask, setAnalysisFormat,
+    runCompressTask, runDedupTask, runDocumentTask, runOutcomeWorkflow, setAnalysisFormat,
     runAnalysisTask, send
   } = options
 
@@ -106,6 +107,15 @@ export function createIntentRouter(options: IntentRouterOptions) {
           return
         }
       } catch { /* 链接检测失败时继续当前视频分析 */ }
+    }
+    if (text && videoSrc && !/^(https?|blob):/i.test(videoSrc) && window.aiPlayer?.outcomeWorkflow) {
+      try {
+        const outcome = await window.aiPlayer.outcomeWorkflow.detect({ sourcePath: videoSrc, instruction: text })
+        if (outcome?.matched) {
+          await runOutcomeWorkflow()
+          return
+        }
+      } catch { /* 多成果编排不可用时继续普通拉片或对话 */ }
     }
     if (text && videoSrc && !/^(https?|blob):/i.test(videoSrc) && window.aiPlayer?.analysis) {
       try {

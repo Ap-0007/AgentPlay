@@ -234,10 +234,12 @@ export default function AgentPanel() {
     runDocumentTask: runDocTask,
     resumeLocalDocumentTask,
     runAnalysisTask,
+    runOutcomeWorkflow,
     setAnalysisFormat,
     resumePendingTask: resumeDocumentAnalysis,
     retryActiveTask: retryActiveDocumentAnalysis,
-    retryStoredAnalysisTask
+    retryStoredAnalysisTask,
+    retryStoredOutcomeTask
   } = useDocumentAnalysisTasks({
     busyRef: docBusyRef,
     requestIdRef: docRequestIdRef,
@@ -303,7 +305,7 @@ export default function AgentPanel() {
   const routeTextSend = createIntentRouter({
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
     isVideoGenerationIntent, runBatchTask, runVideoGenTask, runEditHistoryTask, runTrimTask,
-    runCompressTask, runDedupTask, runDocumentTask: runDocTask, setAnalysisFormat,
+    runCompressTask, runDedupTask, runDocumentTask: runDocTask, runOutcomeWorkflow, setAnalysisFormat,
     runAnalysisTask, send
   })
   routeTextSendRef.current = routeTextSend
@@ -342,7 +344,7 @@ export default function AgentPanel() {
     pendingTaskRef, requestIdRef: docRequestIdRef, cancellableTaskId,
     closeTaskCenter: () => setShowTaskCenter(false), updateTask, mutateTask,
     addMessage, releaseCancelableRequest, runDownloadTask, runLinkAnalysisTask,
-    retryStoredAnalysisTask, retryStoredMediaCreative, retryActiveLinkTask,
+    retryStoredAnalysisTask, retryStoredOutcomeTask, retryStoredMediaCreative, retryActiveLinkTask,
     retryActiveDocumentAnalysis, retryActiveMediaCreative
   })
 

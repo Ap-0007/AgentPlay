@@ -145,7 +145,7 @@ function assertAnalyzableVideo(sourcePath) {
 async function runChatAnalysis({
   sourcePath, mediaName, duration, instruction = '', outputFormat = 'auto',
   cloudApproved = false, signal, onStatus = () => {}, workspace, complete, completeVisionMulti, frames,
-  translateToChinese, model = {}, onCheckpoint, resumeCheckpoint
+  translateToChinese, model = {}, onCheckpoint, resumeCheckpoint, outputDir
 }) {
   const resolved = assertAnalyzableVideo(sourcePath)
   const format = outputFormat && outputFormat !== 'auto' ? outputFormat : resolveAnalysisOutput(instruction)
@@ -324,7 +324,8 @@ async function runChatAnalysis({
     : `已生成《${displayName}》证据化中文拆解（${context.cues.length} 条字幕证据；未交付低质量模型结果）`
   const plan = {
     kind: 'video-analysis', instruction, summary, outputFormat: format,
-    files: [{ name: displayName, path: resolved, ext: path.extname(resolved).toLowerCase() }]
+    files: [{ name: displayName, path: resolved, ext: path.extname(resolved).toLowerCase() }],
+    ...(outputDir ? { outputDir: path.resolve(outputDir) } : {})
   }
   const aiPlan = {
     title: `${displayName}·深度解剖`, summary, outputFormat: format,

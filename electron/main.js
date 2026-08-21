@@ -67,6 +67,8 @@ const { LocalAiDownloadService } = require('./local-ai-download-service')
 const { PersistentTaskRuntime } = require('./persistent-task-runtime')
 const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = require('./persistent-document-task')
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
+const { compileOutcomeWorkflow, assertOutcomeWorkflow } = require('./outcome-workflow')
+const { OutcomeWorkflowRunner } = require('./outcome-workflow-runner')
 const { compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
 const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decision-list')
@@ -1112,6 +1114,9 @@ app.whenReady().then(async () => {
     if (task.type === 'analysis.run') {
       mainWindow.webContents.send('analysis:status', { requestId: task.id, status: task.status || '' })
     }
+    if (task.type === 'outcome.workflow') {
+      mainWindow.webContents.send('outcome:status', { requestId: task.id, status: task.status || '' })
+    }
     if (task.type === 'subtitle.generate') {
       mainWindow.webContents.send('subtitle:bilingual-status', { requestId: task.id, status: task.status || '' })
     }
@@ -1363,6 +1368,74 @@ app.whenReady().then(async () => {
         local: config ? isLocalModelConfig(config) : false,
         provider: config?.providerName || config?.providerId || '',
         model: config?.model || ''
+      }
+    })
+    for (const outputPath of result.outputs || []) userAuthorizedPaths.add(path.resolve(outputPath))
+    return result
+  }, { autoResume: true })
+  const preparePersistentOutcomeTask = (input) => {
+    const sourcePath = assertAllowedPath(input.sourcePath)
+    const workflow = compileOutcomeWorkflow({ sourcePath, instruction: input.instruction })
+    if (!workflow) throw new Error('当前要求不是可执行的多成果视频工作流；请至少明确两个最终格式')
+    const visionDecision = selectModelForTaskPlan({ taskKind: 'analysis-vision', requirements: { vision: true } })
+    const textDecision = visionDecision.selected ? null : selectModelForTaskPlan({ taskKind: 'analysis', requirements: { text: true } })
+    const config = visionDecision.selected || textDecision?.selected || modelConfigStore.resolved('chat')
+    const requiresKey = config?.requiresKey !== false
+    if (config?.configured === false || !config?.baseUrl || !config?.model || (requiresKey && !config.apiKey)) {
+      throw new Error('这个成果工作流需要模型理解视频并生成多格式内容，请先在模型接入中心配置模型')
+    }
+    const modelRoute = freezeTaskModelRoute(config, { taskKind: visionDecision.selected ? 'analysis-vision' : 'analysis' })
+    return {
+      spec: {
+        sources: snapshotDocumentSources([sourcePath]),
+        workflow,
+        mediaName: String(input.mediaName || path.basename(sourcePath)),
+        duration: Number(input.duration) || 0,
+        modelRoute
+      },
+      approval: modelRoute.local ? null : {
+        action: 'cloud',
+        summary: `把视频关键画面、字幕证据和成果底稿发送给 ${modelRoute.providerName} · ${modelRoute.model}，生成 ${workflow.deliverables.formats.map((item) => item.toUpperCase()).join('、')}`
+      }
+    }
+  }
+  const outcomeWorkflowRunner = new OutcomeWorkflowRunner({ outputsStillExist })
+  persistentTaskRuntime.register('outcome.workflow', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath] = validateDocumentSources(task.spec.sources)
+    userAuthorizedPaths.add(sourcePath)
+    const workflow = assertOutcomeWorkflow(task.spec.workflow)
+    if (path.resolve(workflow.source.path) !== path.resolve(sourcePath)) throw new Error('成果工作流来源与冻结素材不一致')
+    const config = resolveTaskModelRoute(task.spec.modelRoute)
+    const workflowRoot = path.join(app.getPath('documents'), 'AgentPlay 输出', `视频成果包-${task.id}`)
+    fs.mkdirSync(workflowRoot, { recursive: true })
+
+    const formatNames = { docx: 'Word 报告', pptx: 'PPT 汇报', xlsx: 'Excel 分析表', pdf: 'PDF 交付版', md: 'Markdown 文档' }
+    const bundleInstruction = `严格依据这份视频解剖底稿，生成一套相互一致的中文成果：${workflow.deliverables.formats.map((format) => formatNames[format] || format.toUpperCase()).join(' + ')}。不得补写底稿没有的事实。`
+    const result = await outcomeWorkflowRunner.run({
+      workflow,
+      sourceReceipt: task.spec.sources[0],
+      checkpoint: task.checkpoint,
+      status,
+      saveCheckpoint: checkpoint,
+      runAnalysis: ({ resumeCheckpoint, onCheckpoint }) => runChatAnalysis({
+        sourcePath, mediaName: task.spec.mediaName, duration: task.spec.duration,
+        instruction: workflow.instruction, outputFormat: 'md', outputDir: workflowRoot,
+        cloudApproved: !isLocalModelConfig(config), signal,
+        onStatus: (value) => status(`（1/2）${value}`), onCheckpoint, resumeCheckpoint,
+        workspace: documentWorkspace,
+        complete: (call) => llmComplete({ ...call, modelConfig: config, taskKind: 'analysis' }),
+        completeVisionMulti: (call) => llmCompleteVisionMulti({ ...call, modelConfig: config, taskKind: 'analysis-vision' }),
+        frames: videoFrames, translateToChinese: translateAnalysisCuesToChinese,
+        model: { configured: true, local: isLocalModelConfig(config), provider: config.providerName || config.providerId || '', model: config.model }
+      }),
+      runPackage: async ({ analysisResult, resumeCheckpoint, onCheckpoint }) => {
+        const analysisPath = String(analysisResult.outputs?.[0] || '')
+        if (!analysisPath || !fs.existsSync(analysisPath)) throw new Error('成果工作流缺少可复用的视频分析底稿')
+        return documentWorkspace.run([analysisPath], bundleInstruction, 'auto', {
+          signal, onStatus: (value) => status(`（2/2）${value}`), onCheckpoint, resumeCheckpoint,
+          modelConfig: config, contextWindow: contextWindowForConfig(config), maxOutputTokens: maxOutputTokensForConfig(config),
+          modelLabel: `${config.providerName || config.providerId} · ${config.model}`
+        })
       }
     })
     for (const outputPath of result.outputs || []) userAuthorizedPaths.add(path.resolve(outputPath))
@@ -3873,6 +3946,45 @@ app.whenReady().then(async () => {
   ipcMain.handle('studio:offline-analysis', (event, input = {}) => {
     assertTrustedSender(event)
     return buildOfflineAnalysis(input)
+  })
+  ipcMain.handle('outcome:detect', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const sourcePath = assertAllowedPath(input.sourcePath)
+      const workflow = compileOutcomeWorkflow({ sourcePath, instruction: input.instruction })
+      return workflow ? { matched: true, formats: workflow.deliverables.formats, steps: workflow.steps.map((step) => step.id) } : { matched: false, formats: [], steps: [] }
+    } catch {
+      return { matched: false, formats: [], steps: [] }
+    }
+  })
+  ipcMain.handle('outcome:run', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'outcome')
+    try {
+      const prepared = preparePersistentOutcomeTask(input)
+      let task = persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'outcome.workflow',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: prepared.spec,
+        approval: prepared.approval
+      })
+      if (task.state === 'waiting_approval') {
+        if (input.cloudApproved === true) task = persistentTaskRuntime.approve(task.approval.id, task.approval.token)
+        else return { success: false, requiresApproval: true, requestId, approval: task.approval }
+      }
+      task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') {
+        return { success: false, requestId, error: task.failure?.message || task.error || '成果工作流未完成', outputs: task.result?.outputs || [], quality: task.quality || null, failure: task.failure || null }
+      }
+      return { ...task.result, requestId }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('outcome:cancel', (event, requestId) => {
+    assertTrustedSender(event)
+    return persistentTaskRuntime.cancel(String(requestId || ''))
   })
   // 对话流视频解剖：AI 助手面板直接对当前视频发起，报告经文档工作台另存，原文件不动
   ipcMain.handle('analysis:detect', (event, text) => {

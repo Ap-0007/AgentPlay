@@ -50,7 +50,7 @@ test('task command dispatcher owns stored retry, foreground retry and confirmed 
   const dispatcher = read('src/components/agent-panel/taskCommandDispatcher.ts')
   assert.doesNotMatch(panel, /mediaDownload\?\.cancel|analysis\?\.cancel|mediaBatch\?\.cancel|mediaTools\?\.cancel|studio\?\.cancelTask/)
   assert.doesNotMatch(panel, /retry\.kind === 'download'|retryStoredMediaCreative\(retry\)/)
-  for (const kind of ['download', 'link-analysis', 'analysis', 'dedup', 'batch', 'compress', 'video-gen', 'recut', 'doc']) {
+  for (const kind of ['download', 'link-analysis', 'analysis', 'outcome', 'dedup', 'batch', 'compress', 'video-gen', 'recut', 'doc']) {
     assert.match(dispatcher, new RegExp(`case '${kind}':`), `${kind} 必须有显式取消或重试路由`)
   }
   assert.match(dispatcher, /if \(!cancelled\) throw new Error\('后台没有确认取消，任务状态保持不变'\)/)

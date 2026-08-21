@@ -11,7 +11,7 @@ const HARD_FAILURES = new Set([
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
-  'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT'
+  'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -89,6 +89,34 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('batch-results', '逐项结果', expected > 0 ? results.length / expected : 0, 20, reason('NO_BATCH_RESULTS', '批量任务没有完整逐项结果', true))
     add('batch-success', '批量成功率', expected > 0 ? succeeded / expected : 0, 50, reason('PARTIAL_BATCH', `批量任务只完成 ${succeeded}/${expected} 项`, true))
     add('artifacts', '成果文件', artifactRatio, 20, artifactFailure)
+  } else if (taskType === 'outcome.workflow') {
+    const workflowReceipt = result.workflowReceipt
+    const steps = Array.isArray(workflowReceipt?.steps) ? workflowReceipt.steps : []
+    const validSteps = steps.filter((item) => item?.state === 'completed' && Array.isArray(item?.outputs) && item.outputs.length > 0 && item.outputs.every((outputPath) => {
+      const artifact = inspectArtifact(outputPath)
+      return artifact.exists && artifact.nonEmpty && artifact.formatOk
+    }))
+    const stepIds = new Set(validSteps.map((item) => item.id))
+    const workflowComplete = workflowReceipt?.schemaVersion === 1
+      && workflowReceipt?.kind === 'agentplay.outcome-workflow-receipt'
+      && /^[a-f0-9]{64}$/i.test(String(workflowReceipt?.source?.sha256 || ''))
+      && stepIds.has('evidence-analysis')
+      && stepIds.has('consistent-package')
+    const receipt = result.deliveryReceipt
+    const receiptArtifacts = Array.isArray(receipt?.artifacts) ? receipt.artifacts : []
+    const deliveryPaths = new Set(receiptArtifacts.map((item) => path.resolve(String(item?.path || ''))))
+    const deliveryOk = receipt?.schemaVersion === 1
+      && receipt?.kind === 'agentplay.delivery-receipt'
+      && outputs.length === receiptArtifacts.length
+      && outputs.every((outputPath) => deliveryPaths.has(path.resolve(outputPath)))
+      && receiptArtifacts.every((item) => {
+        try { return fingerprintArtifact(item.path).sha256 === item.sha256 } catch { return false }
+      })
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
+    add('artifacts', '最终成果文件', artifactRatio, 30, artifactFailure)
+    add('format', '最终成果格式', formatRatio, 15, formatFailure)
+    add('workflow-receipt', '逐步成果回执', workflowComplete ? 1 : 0, 25, reason('WORKFLOW_RECEIPT_INCOMPLETE', '成果工作流缺少完整的上游分析或最终打包回执', true))
+    add('delivery-receipt', '最终交付回执', deliveryOk ? 1 : 0, 20, !receipt ? reason('DELIVERY_RECEIPT_MISSING', '缺少最终成果交付回执', true) : reason('DELIVERY_RECEIPT_MISMATCH', '最终成果与交付回执不一致', true))
   } else if (taskType === 'document.run' && result.chatOnly) {
     add('declared-success', '执行状态', success ? 1 : 0, 20, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('chat-result', '回答内容', String(result.summary || '').trim().length >= 8 ? 1 : 0, 50, reason('EMPTY_CHAT_RESULT', '回答内容为空或过短', true))

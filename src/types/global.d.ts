@@ -295,6 +295,24 @@ interface AiPlayerAPI {
     cancel: (requestId: string) => Promise<boolean>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
   }
+  outcomeWorkflow?: {
+    detect: (input: { sourcePath: string; instruction: string }) => Promise<{ matched: boolean; formats: string[]; steps: string[] }>
+    run: (input: { sourcePath: string; mediaName: string | null; duration: number; instruction: string; cloudApproved: boolean; requestId: string; workspaceTaskId?: string }) => Promise<{
+      success: boolean
+      requestId: string
+      requiresApproval?: boolean
+      approval?: { id: string; action: 'cloud' | 'paid' | 'publish' | 'delete' | 'credential'; summary: string; status: string; expiresAt: number; token?: string }
+      outputs?: string[]
+      summary?: string
+      workflowReceipt?: { schemaVersion: 1; kind: 'agentplay.outcome-workflow-receipt'; source: { path: string; size: number; mtimeMs: number; sha256: string }; steps: Array<{ id: string; state: string; outputs: string[]; historyId?: string }> }
+      deliveryReceipt?: { schemaVersion: 1; kind: 'agentplay.delivery-receipt'; sources: Array<{ path: string; name: string; bytes: number; sha256: string }>; artifacts: Array<{ path: string; name: string; format: string; bytes: number; sha256: string }> }
+      quality?: import('../taskLifecycle').WorkspaceTaskQuality | null
+      failure?: import('../taskLifecycle').WorkspaceTaskFailure | null
+      error?: string
+    }>
+    cancel: (requestId: string) => Promise<boolean>
+    onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
+  }
   localAI?: {
     status: () => Promise<LocalAiComponentStatus>
     download: () => Promise<{ success: boolean; error?: string; status?: BundledModelStatus }>

@@ -16,6 +16,7 @@ type TaskCommandOptions = {
   runDownloadTask: (url: string, instruction: string, direct?: boolean) => Promise<void>
   runLinkAnalysisTask: (url: string, instruction: string, forceApprove?: boolean) => Promise<void>
   retryStoredAnalysisTask: (retry: WorkspaceTaskRetry) => Promise<void> | undefined
+  retryStoredOutcomeTask: (retry: WorkspaceTaskRetry) => Promise<void> | undefined
   retryStoredMediaCreative: (retry: WorkspaceTaskRetry) => boolean
   retryActiveLinkTask: () => Promise<void>
   retryActiveDocumentAnalysis: () => Promise<void>
@@ -26,7 +27,7 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
   const {
     pendingTaskRef, requestIdRef, cancellableTaskId, closeTaskCenter,
     updateTask, mutateTask, addMessage, releaseCancelableRequest,
-    runDownloadTask, runLinkAnalysisTask, retryStoredAnalysisTask,
+    runDownloadTask, runLinkAnalysisTask, retryStoredAnalysisTask, retryStoredOutcomeTask,
     retryStoredMediaCreative, retryActiveLinkTask,
     retryActiveDocumentAnalysis, retryActiveMediaCreative
   } = options
@@ -47,6 +48,10 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
       void retryStoredAnalysisTask(retry)
       return
     }
+    if (retry.kind === 'outcome' && retry.sourcePath) {
+      void retryStoredOutcomeTask(retry)
+      return
+    }
     if (retryStoredMediaCreative(retry)) return
     addMessage('agent', retry.kind === 'doc' || retry.kind === 'batch'
       ? '这个任务需要重新授权原文件。请再次添加文件，原任务和结果记录不会丢失。'
@@ -61,6 +66,7 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
         void retryActiveLinkTask()
         return
       case 'analysis':
+      case 'outcome':
       case 'doc':
         void retryActiveDocumentAnalysis()
         return
@@ -88,6 +94,9 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
           break
         case 'analysis':
           cancelled = await window.aiPlayer?.analysis?.cancel(requestId) || false
+          break
+        case 'outcome':
+          cancelled = await window.aiPlayer?.outcomeWorkflow?.cancel(requestId) || false
           break
         case 'dedup':
           cancelled = await window.aiPlayer?.media?.cancel(requestId) || false

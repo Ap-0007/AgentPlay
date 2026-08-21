@@ -13,6 +13,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const existing = store.tasks.find((item) => item.id === runtimeTask.workspaceTaskId)
       const isDocument = runtimeTask.type === 'document.run'
       const isAnalysis = runtimeTask.type === 'analysis.run'
+      const isOutcome = runtimeTask.type === 'outcome.workflow'
       const isSubtitle = runtimeTask.type === 'subtitle.generate'
       const isVideoGeneration = runtimeTask.type === 'creative.video-generate'
       const isRecut = runtimeTask.type === 'creative.recut-short'
@@ -38,10 +39,14 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         sources?: Array<{ name?: string; sha256?: string; bytes?: number }>
         bundle?: { requestedFormats?: string[]; sourceLedgerSha256?: string; consistency?: { verdict?: string } }
       } | undefined
-      const deliveryEvidence = (deliveryReceipt?.sources || []).map((item, index) => ({
+      const workflowSource = (runtimeTask.result?.workflowReceipt as { source?: { path?: string; sha256?: string; size?: number } } | undefined)?.source
+      const evidenceSources = isOutcome && workflowSource
+        ? [{ name: String(workflowSource.path || '').split(/[\\/]/).pop() || '视频来源', sha256: workflowSource.sha256, bytes: workflowSource.size }]
+        : (deliveryReceipt?.sources || [])
+      const deliveryEvidence = evidenceSources.map((item, index) => ({
         id: `source-${runtimeTask.id}-${index + 1}`,
         kind: 'receipt' as const,
-        label: '来源指纹已冻结',
+        label: isOutcome ? '工作流来源已验证' : '来源指纹已冻结',
         value: `${item.name || '来源文件'} · SHA-256 ${String(item.sha256 || '').slice(0, 12)}…`,
         verified: /^[a-f0-9]{64}$/i.test(String(item.sha256 || '')),
         createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now()),
@@ -55,9 +60,21 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         verified: deliveryReceipt.bundle.consistency?.verdict === 'matched',
         createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now())
       })
+      if (isOutcome) {
+        const workflowSteps = (runtimeTask.result?.workflowReceipt as { steps?: Array<{ id?: string; state?: string }> } | undefined)?.steps || []
+        deliveryEvidence.push({
+          id: `outcome-steps-${runtimeTask.id}`,
+          kind: 'receipt' as const,
+          label: '逐步成果回执已完成',
+          value: workflowSteps.map((step) => String(step.id || '')).filter(Boolean).join(' → '),
+          verified: workflowSteps.length === 2 && workflowSteps.every((step) => step.state === 'completed'),
+          createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now())
+        })
+      }
       const batchKind = runtimeTask.spec?.kind === 'transcribe' ? 'transcribe' : 'compress'
       const compressMode = runtimeTask.spec?.mode === 'remux' ? 'remux' : 'compress'
       const trimDecision = runtimeTask.spec?.decision as { timeline?: { startSeconds?: number; endSeconds?: number; segments?: Array<{ sourceStartSeconds?: number; sourceEndSeconds?: number }> } } | undefined
+      const outcomeWorkflow = runtimeTask.spec?.workflow as { instruction?: string } | undefined
 
       let kind: WorkspaceTaskKind = 'download'
       let label = runtimeTask.type === 'download.site' ? '站点视频下载' : '视频下载'
@@ -70,6 +87,9 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       } else if (isAnalysis) {
         kind = 'analysis'; label = '视频解剖'; instruction = String(runtimeTask.spec?.instruction || ''); source = firstSourcePath
         retry = { kind: 'analysis', instruction, sourcePath: firstSourcePath, outputFormat: String(runtimeTask.spec?.outputFormat || 'docx') }
+      } else if (isOutcome) {
+        kind = 'analysis'; label = '视频内容成果包'; instruction = String(outcomeWorkflow?.instruction || runtimeTask.spec?.instruction || ''); source = firstSourcePath
+        retry = { kind: 'outcome', instruction, sourcePath: firstSourcePath }
       } else if (isSubtitle) {
         kind = 'media'; label = '自动翻译字幕'; instruction = `生成${runtimeTask.spec?.targetLang || '目标语言'}字幕`; source = firstSourcePath; retry = null
       } else if (isCreative) {
@@ -108,6 +128,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       if (runtimeTask.state === 'completed') {
         const fallbackSummary = isDocument ? '文档处理完成（已从检查点恢复）'
           : isAnalysis ? '视频解剖完成（已从检查点恢复）'
+            : isOutcome ? '视频内容成果包完成（已从检查点恢复）'
             : isSubtitle ? '字幕生成完成（已从检查点恢复）'
               : isCreative ? '创作任务完成（已从检查点恢复）'
                 : isBatch ? `批量${batchKind === 'transcribe' ? '转写' : '压缩'}完成（已从检查点恢复）`

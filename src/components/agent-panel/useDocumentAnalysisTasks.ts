@@ -51,6 +51,8 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
   const analysisInstructionRef = useRef('')
   const analysisFormatRef = useRef('docx')
   const analysisApprovalRequestIdRef = useRef('')
+  const outcomeInstructionRef = useRef('')
+  const outcomeApprovalRequestIdRef = useRef('')
 
   useEffect(() => {
     const offDocument = window.aiPlayer?.documents?.onStatus((event) => {
@@ -59,9 +61,13 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
     const offAnalysis = window.aiPlayer?.analysis?.onStatus((event) => {
       if (event.requestId === requestIdRef.current) setTaskStatus(event.status)
     })
+    const offOutcome = window.aiPlayer?.outcomeWorkflow?.onStatus((event) => {
+      if (event.requestId === requestIdRef.current) setTaskStatus(event.status)
+    })
     return () => {
       offDocument?.()
       offAnalysis?.()
+      offOutcome?.()
     }
   }, [])
 
@@ -258,13 +264,80 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
     analysisFormatRef.current = format || 'docx'
   }
 
+  const runOutcomeWorkflow = async (forceApprove = false, instructionOverride = '') => {
+    const api = window.aiPlayer?.outcomeWorkflow
+    const instruction = forceApprove ? outcomeInstructionRef.current : instructionOverride || inputText.trim()
+    if (!api || !instruction || busyRef.current) return
+    const { videoSrc, mediaName, duration } = usePlayerStore.getState()
+    if (!videoSrc || /^(https?|blob):/i.test(videoSrc)) {
+      addMessage('agent', '[错误] 当前没有可编排的本地视频，请先打开视频。')
+      return
+    }
+    busyRef.current = true
+    outcomeInstructionRef.current = instruction
+    if (!forceApprove && !instructionOverride) {
+      addMessage('user', `${instruction}\n（当前视频：${mediaName || videoSrc}）`)
+      setInputText('')
+    }
+    pendingTaskRef.current = 'outcome'
+    if (forceApprove && executionTaskIdRef.current) mutateTask({ phase: 'queued', error: '' })
+    else executionTaskIdRef.current = startTask({ kind: 'analysis', label: '视频内容成果包', instruction, source: videoSrc, retry: { kind: 'outcome', instruction, sourcePath: videoSrc } })
+    setTaskBusy(true)
+    setTaskStatus('正在冻结最终成果与执行步骤')
+    setTaskOutputs([])
+    let requestId = ''
+    let waitingApproval = false
+    try {
+      requestId = forceApprove && outcomeApprovalRequestIdRef.current
+        ? outcomeApprovalRequestIdRef.current
+        : `outcome-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      bindCancelableRequest(requestId)
+      const result = await api.run({ sourcePath: videoSrc, mediaName, duration, instruction, cloudApproved: cloudApproved || forceApprove, requestId, workspaceTaskId: executionTaskIdRef.current })
+      if (result.requiresApproval) {
+        waitingApproval = true
+        outcomeApprovalRequestIdRef.current = requestId
+        mutateTask({ phase: 'waiting', status: result.approval?.summary || '等待允许云端处理' })
+        requestCloudApproval()
+        return
+      }
+      if (!result.success) throw new Error(result.error || '视频内容成果包未完成')
+      outcomeApprovalRequestIdRef.current = ''
+      const workflowSource = result.workflowReceipt?.source
+      const sourceEvidence = workflowSource ? [{
+        id: `outcome-source-${Date.now()}`,
+        kind: 'receipt' as const,
+        label: '工作流来源已验证',
+        value: `${workflowSource.path.split(/[\\/]/).pop() || '视频来源'} · SHA-256 ${workflowSource.sha256.slice(0, 12)}…`,
+        verified: /^[a-f0-9]{64}$/i.test(workflowSource.sha256),
+        createdAt: Date.now(), bytes: workflowSource.size
+      }] : []
+      sourceEvidence.push({ id: `outcome-steps-${Date.now()}`, kind: 'receipt' as const, label: '逐步成果回执已完成', value: (result.workflowReceipt?.steps || []).map((step) => step.id).join(' → '), verified: result.workflowReceipt?.steps?.every((step) => step.state === 'completed') === true, createdAt: Date.now(), bytes: 0 })
+      addMessage('agent', result.summary || '视频内容成果包已完成')
+      completeExecutionTask({ outputs: result.outputs || [], summary: result.summary || '视频内容成果包已完成', evidence: sourceEvidence, quality: result.quality || null, failure: result.failure || null })
+      clearCloudApproval()
+    } catch (error) {
+      if (executionWasCancelled()) return
+      const message = error instanceof Error ? error.message : String(error)
+      failExecutionTask(message)
+      addMessage('agent', `[错误] ${message}`)
+    } finally {
+      if (requestId && !waitingApproval) {
+        releaseCancelableRequest(requestId)
+        if (outcomeApprovalRequestIdRef.current === requestId) outcomeApprovalRequestIdRef.current = ''
+      }
+      busyRef.current = false
+      setTaskBusy(false)
+      setTaskStatus('')
+    }
+  }
+
   const resumePendingTask = () => pendingTaskRef.current === 'analysis'
     ? runAnalysisTask(true)
-    : runDocumentTask(true)
+    : pendingTaskRef.current === 'outcome' ? runOutcomeWorkflow(true) : runDocumentTask(true)
 
   const retryActiveTask = () => pendingTaskRef.current === 'analysis'
     ? runAnalysisTask(false, analysisInstructionRef.current)
-    : runDocumentTask(false, docInstructionRef.current)
+    : pendingTaskRef.current === 'outcome' ? runOutcomeWorkflow(false, outcomeInstructionRef.current) : runDocumentTask(false, docInstructionRef.current)
 
   const retryStoredAnalysisTask = (retry: WorkspaceTaskRetry) => {
     if (!retry.sourcePath) return
@@ -273,13 +346,21 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
     return runAnalysisTask(false, retry.instruction || '深度解剖这个视频')
   }
 
+  const retryStoredOutcomeTask = (retry: WorkspaceTaskRetry) => {
+    if (!retry.sourcePath) return
+    usePlayerStore.getState().setMedia(retry.sourcePath.split(/[\\/]/).pop() || '待编排视频', retry.sourcePath)
+    return runOutcomeWorkflow(false, retry.instruction || '做成中文拉片报告和 PPT 成果包')
+  }
+
   return {
     runDocumentTask,
     resumeLocalDocumentTask: () => runDocumentTask(false, docInstructionRef.current, true),
     runAnalysisTask,
+    runOutcomeWorkflow,
     setAnalysisFormat,
     resumePendingTask,
     retryActiveTask,
-    retryStoredAnalysisTask
+    retryStoredAnalysisTask,
+    retryStoredOutcomeTask
   }
 }
