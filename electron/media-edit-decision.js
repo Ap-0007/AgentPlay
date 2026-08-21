@@ -35,6 +35,18 @@ function extractVideoPaths(text) {
 
 const AUDIO_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:mp3|wav|m4a|aac|flac|ogg|wma))["'“”‘’]?/i
 const VOLUME_PATTERN = /(?:音量|声音|小声点|调到|降到|减到|改为)[^\d]{0,6}(\d+(?:\.\d+)?)\s*%/
+const MUSIC_SELECTION_PATTERN = new RegExp(`(?:音乐|配乐|歌曲|这首歌)[^，。；]{0,12}?${RANGE_SOURCE}`, 'i')
+const LOUDNESS_TARGET_PATTERN = /(?:响度(?:归一(?:化)?|标准化)?(?:到|为)?|归一(?:化)?到)\s*(-?\d+(?:\.\d+)?)\s*LUFS/i
+const MUSIC_NO_LOOP_PATTERN = /(?:只播放一次|只播一次|不要循环|不循环|无需循环|别循环)/
+const MUSIC_NO_LOUDNESS_PATTERN = /(?:不要|不做|无需|关闭|取消).{0,6}(?:响度归一(?:化)?|响度标准化|归一(?:化)?响度|音量归一(?:化)?)/
+const DEFAULT_MUSIC_LOUDNESS = Object.freeze({
+  enabled: true,
+  targetLufs: -16,
+  targetTruePeakDbtp: -1.5,
+  maxTruePeakDbtp: -1,
+  lra: 11,
+  toleranceLufs: 0.7
+})
 
 // 硬字幕烧录：用户本地 .srt/.vtt/.ass/.ssa 逐条烧进画面；只说"烧字幕"不给文件时只追问唯一一项
 const SUBTITLE_BURN_PATTERN = /(?:烧进|烧录|烧到|压进|嵌入|合成到视频|硬字幕)/
@@ -265,13 +277,38 @@ function extractMusicVolume(text) {
   return Number((percent / 100).toFixed(3))
 }
 
+function extractMusicSelection(text) {
+  const match = MUSIC_SELECTION_PATTERN.exec(String(text || ''))
+  if (!match) return null
+  const startSeconds = parseTimeSeconds(match[1])
+  const endSeconds = parseTimeSeconds(match[2])
+  if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) return null
+  return { startSeconds, endSeconds, durationSeconds: Number((endSeconds - startSeconds).toFixed(3)) }
+}
+
+function extractLoudnessPolicy(text) {
+  if (MUSIC_NO_LOUDNESS_PATTERN.test(String(text || ''))) return { ...DEFAULT_MUSIC_LOUDNESS, enabled: false }
+  const match = LOUDNESS_TARGET_PATTERN.exec(String(text || ''))
+  if (!match) return { ...DEFAULT_MUSIC_LOUDNESS }
+  const targetLufs = Number(match[1])
+  if (!Number.isFinite(targetLufs) || targetLufs < -24 || targetLufs > -10) return { ...DEFAULT_MUSIC_LOUDNESS }
+  return {
+    ...DEFAULT_MUSIC_LOUDNESS,
+    targetLufs,
+  }
+}
+
 function compileMusicDecisionList({ instruction, sourcePath, audioPath, volume }) {
   const text = String(instruction || '').trim()
   const source = String(sourcePath || '').trim()
   if (!MUSIC_EDIT_PATTERN.test(text) || MUSIC_REMOVE_PATTERN.test(text)) return null
+  const safetyText = text.replace(MUSIC_NO_LOOP_PATTERN, '').replace(MUSIC_NO_LOUDNESS_PATTERN, '')
+  if (CONSULTATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text) || NEGATION_PATTERN.test(safetyText)) return null
   const audio = String(audioPath || extractAudioPath(text) || '').trim()
   if (!audio) return null
   const musicVolume = Number.isFinite(volume) ? volume : extractMusicVolume(text)
+  const selection = extractMusicSelection(text)
+  const loudness = extractLoudnessPolicy(text)
   return {
     schemaVersion: 1,
     kind: 'media.add-music',
@@ -283,7 +320,9 @@ function compileMusicDecisionList({ instruction, sourcePath, audioPath, volume }
       fadeInSeconds: 1,
       fadeOutSeconds: 1.5,
       duck: true,
-      loop: true
+      loop: !MUSIC_NO_LOOP_PATTERN.test(text),
+      ...(selection ? { selection } : {}),
+      loudness
     },
     output: {
       container: 'mp4',

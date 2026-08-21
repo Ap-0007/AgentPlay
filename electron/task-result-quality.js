@@ -7,7 +7,8 @@ const HARD_FAILURES = new Set([
   'RESULT_FAILED', 'ARTIFACT_MISSING', 'ARTIFACT_EMPTY', 'INVALID_FORMAT', 'SUBTITLE_EMPTY',
   'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE', 'PROJECT_CAPSULE_MISSING',
   'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH',
-  'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING'
+  'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
+  'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -138,6 +139,15 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     else if (!changed) audioFailure = reason('AUDIO_CHANGE_MISSING', '成片声音与原声采样没有可确认的变化，无法证明背景音乐已混入', true)
     else if (!overloadFree) audioFailure = reason('AUDIO_OVERLOAD', '成片声音样本峰值达到或超过安全上限', true)
     else if (!fadesOk) audioFailure = reason('AUDIO_FADE_PROOF_MISSING', '背景音乐淡入淡出窗口没有通过声音采样核对', true)
+    const loudnessRequired = spec.decision?.audio?.loudness?.enabled === true
+    const loudnessProof = result.loudnessProof
+    const loudnessSchemaOk = loudnessProof?.schemaVersion === 1 && loudnessProof?.method === 'ebur128-post-encode-v1'
+    const loudnessOk = !loudnessRequired || (loudnessSchemaOk && loudnessProof.verdict === 'matched' && Number.isFinite(Number(loudnessProof.integratedLufs)) && Number.isFinite(Number(loudnessProof.truePeakDbtp)))
+    const loudnessFailure = !loudnessRequired
+      ? null
+      : !loudnessSchemaOk
+        ? reason('LOUDNESS_PROOF_MISSING', '缺少 AAC 编码后的 EBU R128 响度与 true peak 回执', true)
+        : reason('LOUDNESS_MISMATCH', `编码后响度未达到冻结目标：${loudnessProof.integratedLufs ?? '未知'} LUFS / ${loudnessProof.truePeakDbtp ?? '未知'} dBTP`, true)
     const projectCapsule = result.projectCapsule
     const hasProjectCapsule = projectCapsule?.schemaVersion === 1
       && String(projectCapsule.projectId || '').startsWith('edit-')
@@ -150,12 +160,13 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       ? `样本峰值 ${Number(audioProof.output?.samplePeakDbfs).toFixed(2)} dBFS；${Number(audioProof.change?.changedWindows) || 0}/${Number(audioProof.change?.comparedWindows) || 0} 个窗口确认变化`
       : ''
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '配乐视频', artifactRatio, 20, artifactFailure)
+    add('artifacts', '配乐视频', artifactRatio, 15, artifactFailure)
     add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '配乐成果不是受支持的视频格式', true))
     add('duration-receipt', '成品时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', `成品时长与源片不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
     add('timeline-receipt', '配乐范围回执', hasTimelineReceipt ? 1 : 0, 10, reason('TIMELINE_RECEIPT_MISSING', '缺少背景音乐覆盖范围回执', true))
-    add('audio-proof', '声音质量证明', proofOk ? 1 : 0, 20, audioFailure, proofDetail)
-    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 15, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+    add('audio-proof', '声音质量证明', proofOk ? 1 : 0, 15, audioFailure, proofDetail)
+    add('loudness-proof', '编码后响度', loudnessOk ? 1 : 0, 15, loudnessFailure, loudnessSchemaOk ? `${loudnessProof.integratedLufs} LUFS；true peak ${loudnessProof.truePeakDbtp} dBTP` : '')
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat' || taskType === 'media.edit-concat-sources' || taskType === 'media.edit-burn-subtitles' || taskType === 'media.edit-mux-subtitles') {
     const expectedDuration = Number(result.expectedDurationSeconds || spec.decision?.timeline?.durationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)

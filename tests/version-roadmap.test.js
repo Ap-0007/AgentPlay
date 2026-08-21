@@ -28,11 +28,12 @@ test('0.8.0 is feature-frozen while signed public release remains incomplete', (
   assert.match(content, /不得把未签名候选写成稳定公开版/)
 })
 
-test('0.9.0 owns the usable conversational media editor v1 with 25 open acceptance items', () => {
+test('0.9.0 records the first completed media-editor acceptance item against the fixed denominator', () => {
   const content = section('### 0.9.0：', '### 0.9.1：')
-  assert.match(content, /功能交付完成率：\*\*0%（0\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 5, 'only the reusable foundations may be checked')
-  assert.equal(checkboxCount(content, false), 25)
+  assert.match(content, /功能交付完成率：\*\*4%（1\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 6, 'five reusable foundations plus one completed feature')
+  assert.equal(checkboxCount(content, false), 24)
+  assert.match(content, /#### D\. 自然语言影音编辑 Agent v1（1\/5）/)
   assert.match(content, /EditDecisionList v1/)
   assert.match(content, /第 4 秒到第 20 秒/)
   assert.match(content, /合法公版\/授权录音/)

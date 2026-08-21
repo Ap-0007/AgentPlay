@@ -136,6 +136,44 @@ test('music edit quality requires decoded audio proof instead of trusting an aud
   }
 })
 
+test('normalized music quality requires an encoded EBU R128 receipt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-loudness-'))
+  try {
+    const output = path.join(dir, 'normalized-music.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const spec = { decision: { kind: 'media.add-music', audio: { loudness: { enabled: true } }, verification: { toleranceSeconds: 0.2 } } }
+    const result = {
+      success: true,
+      outputs: [output],
+      durationSeconds: 12.04,
+      expectedDurationSeconds: 12,
+      timelineReceipt: [{ operation: '添加背景音乐', sourceRange: '00:00.000 → 00:12.000', outputRange: '00:00.000 → 00:12.000' }],
+      audioProof: {
+        schemaVersion: 1,
+        method: 'decoded-pcm-s16le-v1',
+        verdict: 'matched',
+        output: { hasAudio: true, nonSilent: true, samplePeakDbfs: -1.2, overloadFree: true },
+        change: { verdict: 'changed', comparedWindows: 3, changedWindows: 3 },
+        fades: { verdict: 'matched', fadeIn: { verdict: 'matched' }, fadeOut: { verdict: 'matched' } }
+      },
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }
+
+    const missing = evaluateTaskResult('media.edit-music', result, spec)
+    assert.equal(missing.passed, false)
+    assert.ok(missing.reasons.some((item) => item.code === 'LOUDNESS_PROOF_MISSING'))
+
+    const passed = evaluateTaskResult('media.edit-music', {
+      ...result,
+      loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 }
+    }, spec)
+    assert.equal(passed.passed, true)
+    assert.ok(passed.checks.some((item) => item.id === 'loudness-proof' && item.passed))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('removed-segment media uses the same artifact, duration, timeline and project quality gate', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-remove-segment-'))
   try {

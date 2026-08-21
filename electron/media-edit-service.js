@@ -141,6 +141,19 @@ function comparePcmWindows(sourceBuffer, outputBuffer, { maxLagSamples = 640 } =
   }
 }
 
+function parseLoudnormMeasurement(stderr) {
+  const blocks = [...String(stderr || '').matchAll(/\{\s*"input_i"\s*:[\s\S]*?"target_offset"\s*:\s*"[^"]+"\s*\}/g)]
+  if (!blocks.length) return null
+  try {
+    const value = JSON.parse(blocks.at(-1)[0])
+    const fields = ['input_i', 'input_tp', 'input_lra', 'input_thresh', 'target_offset']
+    if (fields.some((field) => !Number.isFinite(Number(value[field])))) return null
+    return Object.fromEntries(fields.map((field) => [field, Number(value[field])]))
+  } catch {
+    return null
+  }
+}
+
 // srt 解码：BOM 直读；否则先严格 UTF-8，失败退 GBK（中文圈常见）；写出统一 UTF-8
 function decodeSubtitleText(buffer) {
   if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) return buffer.subarray(3).toString('utf8')
@@ -464,9 +477,9 @@ class MediaEditService {
     return ''
   }
 
-  assertSourceUnchanged(sourceBefore, source) {
+  assertSourceUnchanged(sourceBefore, source, message = '剪辑期间源视频发生变化，已拒绝交付') {
     const current = this.fs.statSync(source)
-    if (sourceBefore.size !== current.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(current.mtimeMs)) throw new Error('剪辑期间源视频发生变化，已拒绝交付')
+    if (sourceBefore.size !== current.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(current.mtimeMs)) throw new Error(message)
   }
 
   removeProofSegments(decision, sourceDuration) {
@@ -524,17 +537,19 @@ class MediaEditService {
     const loopMusic = decision.audio?.loop !== false
     const musicDuration = await this.frames.probeDuration(audio, { signal })
     if (!(musicDuration > 0)) return { ...proofBase, verdict: 'unavailable', reason: 'music-duration-missing' }
-    const edgeDuration = Math.min(0.2, Math.max(0.08, duration / 20))
-    const innerDuration = Math.min(0.35, Math.max(0.14, duration / 16))
-    const startAt = Math.min(0.02, Math.max(0, duration - edgeDuration))
-    const endAt = Math.max(0, duration - edgeDuration - 0.02)
-    const innerMin = Math.min(duration - innerDuration, Math.max(edgeDuration + 0.05, fadeInSeconds + 0.08))
-    const innerMax = Math.max(innerMin, Math.min(duration - edgeDuration - innerDuration - 0.05, duration - fadeOutSeconds - innerDuration - 0.08))
+    const selection = this.musicSelection(decision, musicDuration)
+    const musicPlaybackDuration = loopMusic ? duration : Math.min(duration, selection.durationSeconds)
+    const edgeDuration = Math.min(0.2, Math.max(0.08, musicPlaybackDuration / 20))
+    const innerDuration = Math.min(0.35, Math.max(0.14, musicPlaybackDuration / 16))
+    const startAt = Math.min(0.02, Math.max(0, musicPlaybackDuration - edgeDuration))
+    const endAt = Math.max(0, musicPlaybackDuration - edgeDuration - 0.02)
+    const innerMin = Math.min(musicPlaybackDuration - innerDuration, Math.max(edgeDuration + 0.05, fadeInSeconds + 0.08))
+    const innerMax = Math.max(innerMin, Math.min(musicPlaybackDuration - edgeDuration - innerDuration - 0.05, musicPlaybackDuration - fadeOutSeconds - innerDuration - 0.08))
     const innerStarts = []
     if (innerMax > innerMin + 0.03) {
       for (let index = 0; index < 5; index += 1) innerStarts.push(innerMin + ((innerMax - innerMin) * index) / 4)
     } else {
-      for (const fraction of [0.2, 0.35, 0.5, 0.65, 0.8]) innerStarts.push(Math.max(edgeDuration, Math.min(duration - edgeDuration - innerDuration, duration * fraction - innerDuration / 2)))
+      for (const fraction of [0.2, 0.35, 0.5, 0.65, 0.8]) innerStarts.push(Math.max(edgeDuration, Math.min(musicPlaybackDuration - edgeDuration - innerDuration, musicPlaybackDuration * fraction - innerDuration / 2)))
     }
     const readMeasurement = async (atSeconds, windowSeconds, label) => {
       const outputPcm = await this.frames.readPcmWindow(output, atSeconds, { durationSeconds: windowSeconds, sampleRateHz: proofBase.sampleRateHz, signal })
@@ -560,15 +575,16 @@ class MediaEditService {
       }
     }
     const readMusicEnvelope = async (atSeconds, windowSeconds, label) => {
-      const musicAt = loopMusic ? ((atSeconds % musicDuration) + musicDuration) % musicDuration : atSeconds
-      const musicPcm = musicAt < musicDuration
+      const relativeAt = loopMusic ? ((atSeconds % selection.durationSeconds) + selection.durationSeconds) % selection.durationSeconds : atSeconds
+      const musicAt = selection.startSeconds + relativeAt
+      const musicPcm = relativeAt < selection.durationSeconds && musicAt < selection.endSeconds
         ? await this.frames.readPcmWindow(audio, musicAt, { durationSeconds: windowSeconds, sampleRateHz: proofBase.sampleRateHz, signal })
         : Buffer.alloc(2)
       if (!musicPcm) return null
       const raw = pcmStats(musicPcm)
       const gainAt = (seconds) => {
         const fadeInGain = fadeInSeconds > 0 ? Math.max(0, Math.min(1, seconds / fadeInSeconds)) : 1
-        const remaining = duration - seconds
+        const remaining = musicPlaybackDuration - seconds
         const fadeOutGain = fadeOutSeconds > 0 ? Math.max(0, Math.min(1, remaining / fadeOutSeconds)) : 1
         return fadeInGain * fadeOutGain
       }
@@ -627,6 +643,8 @@ class MediaEditService {
     const fadesMatched = (fadeIn.verdict === 'matched' || fadeIn.verdict === 'not-requested') && (fadeOut.verdict === 'matched' || fadeOut.verdict === 'not-requested')
     return {
       ...proofBase,
+      selection: { startSeconds: selection.startSeconds, endSeconds: selection.endSeconds, durationSeconds: selection.durationSeconds },
+      loop: loopMusic,
       verdict: nonSilent && overloadFree && changed && fadesMatched ? 'matched' : 'mismatch',
       output: {
         hasAudio: true,
@@ -658,6 +676,80 @@ class MediaEditService {
     }
   }
 
+  musicLoudnessPolicy(decision) {
+    const loudness = decision?.audio?.loudness
+    if (!loudness || loudness.enabled !== true) return { enabled: false }
+    const targetLufs = Number(loudness.targetLufs)
+    const targetTruePeakDbtp = Number(loudness.targetTruePeakDbtp)
+    const maxTruePeakDbtp = Number(loudness.maxTruePeakDbtp)
+    const lra = Number(loudness.lra)
+    const toleranceLufs = Number(loudness.toleranceLufs)
+    if (!Number.isFinite(targetLufs) || targetLufs < -24 || targetLufs > -10
+      || !Number.isFinite(targetTruePeakDbtp) || targetTruePeakDbtp > -1 || targetTruePeakDbtp < -3
+      || !Number.isFinite(maxTruePeakDbtp) || maxTruePeakDbtp > -0.5 || maxTruePeakDbtp < targetTruePeakDbtp
+      || !Number.isFinite(lra) || lra < 1 || lra > 20
+      || !Number.isFinite(toleranceLufs) || toleranceLufs < 0.2 || toleranceLufs > 2) throw new Error('配乐响度策略无效')
+    return { enabled: true, targetLufs, targetTruePeakDbtp, maxTruePeakDbtp, lra, toleranceLufs }
+  }
+
+  musicSelection(decision, musicDuration) {
+    const raw = decision?.audio?.selection
+    if (!raw) return { startSeconds: 0, endSeconds: musicDuration, durationSeconds: musicDuration, explicit: false }
+    const startSeconds = Number(raw.startSeconds)
+    const endSeconds = Number(raw.endSeconds)
+    const durationSeconds = Number(raw.durationSeconds)
+    if (![startSeconds, endSeconds, durationSeconds].every(Number.isFinite)
+      || startSeconds < 0 || endSeconds <= startSeconds
+      || Math.abs(durationSeconds - (endSeconds - startSeconds)) > 0.001
+      || endSeconds > musicDuration + 0.05) throw new Error(`音乐选段超出文件时长：选择 ${startSeconds}–${endSeconds} 秒，音乐共 ${musicDuration.toFixed(3)} 秒`)
+    return { startSeconds, endSeconds, durationSeconds, explicit: true }
+  }
+
+  async analyzeMusicMixLoudness({ inputArgs, mixFilter, durationSeconds, policy, signal }) {
+    const result = await this.frames.run([
+      '-hide_banner', '-nostdin', ...inputArgs,
+      '-filter_complex', `${mixFilter};[mix]loudnorm=I=${policy.targetLufs}:TP=${policy.targetTruePeakDbtp}:LRA=${policy.lra}:print_format=json[analysis]`,
+      '-map', '[analysis]', '-t', Number(durationSeconds).toFixed(3), '-f', 'null', '-'
+    ], { timeoutMs: 60 * 60 * 1000, signal })
+    const measurement = parseLoudnormMeasurement(result.stderr)
+    if (!measurement) throw new Error('无法读取第一遍 EBU R128 响度测量，已拒绝生成未核对的配乐成果')
+    return measurement
+  }
+
+  secondPassLoudnormFilter(policy, measurement) {
+    return `loudnorm=I=${policy.targetLufs}:TP=${policy.targetTruePeakDbtp}:LRA=${policy.lra}:measured_I=${measurement.input_i}:measured_TP=${measurement.input_tp}:measured_LRA=${measurement.input_lra}:measured_thresh=${measurement.input_thresh}:offset=${measurement.target_offset}:linear=true:print_format=summary`
+  }
+
+  async loudnessProofForMusic({ output, decision, signal }) {
+    const policy = this.musicLoudnessPolicy(decision)
+    const proofBase = { schemaVersion: 1, method: 'ebur128-post-encode-v1', policy }
+    if (!policy.enabled) return { ...proofBase, verdict: 'not-requested' }
+    if (typeof this.frames.probeLoudness !== 'function') return { ...proofBase, verdict: 'unavailable', reason: 'ebur128-reader-missing' }
+    const measured = await this.frames.probeLoudness(output, { signal })
+    if (!measured) return { ...proofBase, verdict: 'unavailable', reason: 'ebur128-measurement-missing' }
+    const loudnessDelta = Number((measured.integratedLufs - policy.targetLufs).toFixed(2))
+    const integratedMatched = Math.abs(loudnessDelta) <= policy.toleranceLufs
+    const truePeakMatched = measured.truePeakDbtp <= policy.maxTruePeakDbtp
+    return {
+      ...proofBase,
+      verdict: integratedMatched && truePeakMatched ? 'matched' : 'mismatch',
+      integratedLufs: measured.integratedLufs,
+      truePeakDbtp: measured.truePeakDbtp,
+      loudnessDelta,
+      integratedMatched,
+      truePeakMatched,
+      claims: { integrated: 'EBU-R128-integrated-loudness', peak: 'EBU-R128-true-peak' }
+    }
+  }
+
+  assertLoudnessProofDeliverable(loudnessProof) {
+    if (loudnessProof?.verdict === 'not-requested') return
+    if (!loudnessProof || loudnessProof.verdict === 'unavailable') throw new Error(`配乐响度证明不可用（${loudnessProof?.reason || 'unknown'}），已拒绝交付`)
+    if (loudnessProof.verdict !== 'matched') {
+      throw new Error(`配乐响度未达标：目标 ${loudnessProof.policy?.targetLufs} LUFS / 最大 ${loudnessProof.policy?.maxTruePeakDbtp} dBTP，实测 ${loudnessProof.integratedLufs} LUFS / ${loudnessProof.truePeakDbtp} dBTP`)
+    }
+  }
+
   // 配乐：用户本地/合法音乐 + 音量 + 淡入淡出 + 对白闪避（sidechain）；音乐短于视频自动循环。
   // 红线：不下载任何音乐；原视频不动；成果时长必须等于源视频时长。
   async addMusic({ sourcePath, outputPath, decision, signal } = {}) {
@@ -683,26 +775,53 @@ class MediaEditService {
     const duck = decision.audio?.duck !== false
     const sourceDuration = await this.frames.probeDuration(source, { signal })
     if (!(sourceDuration > 0)) throw new Error('无法读取源视频时长')
+    const musicSourceDuration = await this.frames.probeDuration(audio, { signal })
+    if (!(musicSourceDuration > 0)) throw new Error('无法读取音乐文件时长')
+    const selection = this.musicSelection(decision, musicSourceDuration)
+    const loop = decision.audio?.loop !== false
+    const musicPlaybackDuration = loop ? sourceDuration : Math.min(sourceDuration, selection.durationSeconds)
     const dur = sourceDuration.toFixed(3)
-    const fadeOutStart = Math.max(0, sourceDuration - fadeOut).toFixed(3)
+    const fadeOutStart = Math.max(0, musicPlaybackDuration - fadeOut).toFixed(3)
     const hasAudio = await this.frames.probeHasAudio(source, { signal })
-
-    // 有原声：原声为 key 做 sidechain 闪避；无原声：纯视频+音乐
-    const musicChain = `[1:a]volume=${volume.toFixed(3)},afade=t=in:st=0:d=${fadeIn.toFixed(3)},afade=t=out:st=${fadeOutStart}:d=${fadeOut.toFixed(3)}`
-    const filter = hasAudio
-      ? (duck
-        ? `[0:a]volume=1.0,asplit=2[voice][key];${musicChain}[mu];[mu][key]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=500[ducked];[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.850:level=0[aout]`
-        : `[0:a]volume=1.0[voice];${musicChain}[mu];[voice][mu]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.850:level=0[aout]`)
-      : `${musicChain},alimiter=limit=0.850:level=0[aout]`
+    const loudnessPolicy = this.musicLoudnessPolicy(decision)
 
     const sourceBefore = this.fs.statSync(source)
+    const musicBefore = this.fs.statSync(audio)
     const parsed = path.parse(output)
     const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-edit-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    const selectedAudioPath = selection.explicit ? path.join(parsed.dir, `.${parsed.name}.agentplay-music-${process.pid}-${Date.now()}.wav`) : ''
     try {
+      let playbackAudio = audio
+      if (selection.explicit) {
+        await this.frames.run([
+          '-hide_banner', '-nostdin', '-i', audio,
+          '-ss', selection.startSeconds.toFixed(3), '-t', selection.durationSeconds.toFixed(3),
+          '-vn', '-ar', '48000', '-c:a', 'pcm_s16le', '-y', selectedAudioPath
+        ], { timeoutMs: 30 * 60 * 1000, signal })
+        const selectedDuration = await this.frames.probeDuration(selectedAudioPath, { signal })
+        if (!(selectedDuration > 0) || Math.abs(selectedDuration - selection.durationSeconds) > 0.05) throw new Error('音乐选段写出时长与冻结决策不一致')
+        playbackAudio = selectedAudioPath
+      }
+      // 有原声：原声为 key 做 sidechain 闪避；无原声：纯视频+音乐；不循环且提前结束时补有限静音到成片全长。
+      const musicChain = `[1:a]volume=${volume.toFixed(3)},afade=t=in:st=0:d=${fadeIn.toFixed(3)},afade=t=out:st=${fadeOutStart}:d=${fadeOut.toFixed(3)}`
+      const mixFilter = hasAudio
+        ? (duck
+          ? `[0:a]volume=1.0,asplit=2[voice][key];${musicChain}[mu];[mu][key]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=500[ducked];[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mix]`
+          : `[0:a]volume=1.0[voice];${musicChain}[mu];[voice][mu]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mix]`)
+        : loop
+          ? `${musicChain}[mix]`
+          : `${musicChain},apad=pad_dur=${dur},atrim=duration=${dur}[mix]`
+      const inputArgs = ['-i', source, ...(loop ? ['-stream_loop', '-1'] : []), '-i', playbackAudio]
+      const loudnessMeasurement = loudnessPolicy.enabled
+        ? await this.analyzeMusicMixLoudness({ inputArgs, mixFilter, durationSeconds: sourceDuration, policy: loudnessPolicy, signal })
+        : null
+      const finishingFilter = loudnessMeasurement
+        ? `${this.secondPassLoudnormFilter(loudnessPolicy, loudnessMeasurement)},alimiter=limit=0.850:level=0`
+        : 'alimiter=limit=0.850:level=0'
+      const filter = `${mixFilter};[mix]${finishingFilter}[aout]`
       await this.frames.run([
         '-hide_banner', '-nostdin',
-        '-i', source,
-        ...(decision.audio?.loop !== false ? ['-stream_loop', '-1'] : []), '-i', audio,
+        ...inputArgs,
         '-filter_complex', filter,
         '-map', '0:v:0', '-map', '[aout]', '-t', dur,
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
@@ -713,6 +832,7 @@ class MediaEditService {
       if (signal?.aborted) throw new Error('已取消')
       const sourceAfter = this.fs.statSync(source)
       if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('配乐期间源视频发生变化，已拒绝交付')
+      this.assertSourceUnchanged(musicBefore, audio, '配乐期间音乐文件发生变化，已拒绝交付')
       if (!this.fs.existsSync(tempPath) || this.fs.statSync(tempPath).size <= 1024) throw new Error('配乐成果为空或不完整')
       const actualDuration = await this.frames.probeDuration(tempPath, { signal })
       const tolerance = Math.max(0.05, Number(decision.verification?.toleranceSeconds) || 0.2)
@@ -722,14 +842,19 @@ class MediaEditService {
       if (typeof this.frames.probeHasAudio === 'function' && !(await this.frames.probeHasAudio(tempPath, { signal }))) {
         throw new Error('配乐成果没有音轨，已拒绝交付')
       }
+      const loudnessProof = await this.loudnessProofForMusic({ output: tempPath, decision, signal })
+      this.assertLoudnessProofDeliverable(loudnessProof)
       const audioProof = await this.audioProofForMusic({ source, audio, output: tempPath, sourceDuration, hasSourceAudio: hasAudio, decision, signal })
       this.assertAudioProofDeliverable(audioProof)
       this.assertSourceUnchanged(sourceBefore, source)
+      this.assertSourceUnchanged(musicBefore, audio, '声音证明期间音乐文件发生变化，已拒绝交付')
       this.fs.renameSync(tempPath, output)
-      return this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, music: { path: audio, volume, duck, fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut } })
+      return this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, loudnessProof, music: { path: audio, volume, duck, loop, selection, fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut } })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
+    } finally {
+      if (selectedAudioPath && this.fs.existsSync(selectedAudioPath)) this.fs.rmSync(selectedAudioPath, { force: true })
     }
   }
 
@@ -1401,10 +1526,13 @@ class MediaEditService {
       this.assertFrameProofDeliverable(editFrameProof)
     }
     let musicAudioProof = null
+    let musicLoudnessProof = null
     if (isMusic) {
       const hasSourceAudio = await this.frames.probeHasAudio(source, { signal })
       const audio = path.resolve(String(decision.audio?.path || ''))
       if (!this.fs.existsSync(audio) || !this.fs.statSync(audio).isFile()) throw new Error('冻结的背景音乐文件不存在，无法恢复核验')
+      musicLoudnessProof = await this.loudnessProofForMusic({ output, decision, signal })
+      this.assertLoudnessProofDeliverable(musicLoudnessProof)
       musicAudioProof = await this.audioProofForMusic({ source, audio, output, sourceDuration, hasSourceAudio, decision, signal })
       this.assertAudioProofDeliverable(musicAudioProof)
     }
@@ -1415,7 +1543,7 @@ class MediaEditService {
         : isConcatSources
           ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration, frameProof: editFrameProof })
           : isMusic
-            ? this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof: musicAudioProof })
+            ? this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof: musicAudioProof, loudnessProof: musicLoudnessProof })
           : isBurnSubtitles
             ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
             : isMuxSubtitles
@@ -1443,13 +1571,19 @@ class MediaEditService {
     }
   }
 
-  musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, music = null }) {
+  musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, loudnessProof, music = null }) {
     const volume = Math.max(0.01, Math.min(1, Number(music?.volume ?? decision.audio?.volume) || 0.15))
     const duck = (music?.duck ?? decision.audio?.duck) !== false
     const fadeInSeconds = Math.max(0, Number(music?.fadeInSeconds ?? decision.audio?.fadeInSeconds) || 0)
     const fadeOutSeconds = Math.max(0, Number(music?.fadeOutSeconds ?? decision.audio?.fadeOutSeconds) || 0)
     const audioPath = path.resolve(String(music?.path || decision.audio?.path || ''))
+    const loop = (music?.loop ?? decision.audio?.loop) !== false
+    const rawSelection = music?.selection?.explicit ? music.selection : decision.audio?.selection
+    const selection = rawSelection
+      ? { startSeconds: Number(rawSelection.startSeconds), endSeconds: Number(rawSelection.endSeconds), durationSeconds: Number(rawSelection.durationSeconds) }
+      : null
     const fullRange = `${formatTimestamp(0)} → ${formatTimestamp(sourceDuration)}`
+    const musicRange = selection ? `${formatTimestamp(selection.startSeconds)} → ${formatTimestamp(selection.endSeconds)}` : '音乐文件全段'
     return {
       success: true,
       outputPath: output,
@@ -1458,14 +1592,15 @@ class MediaEditService {
       sourceDurationSeconds: sourceDuration,
       expectedDurationSeconds: sourceDuration,
       durationSeconds: Number(actualDuration.toFixed(3)),
-      music: { path: audioPath, volume, duck, fadeInSeconds, fadeOutSeconds },
+      music: { path: audioPath, volume, duck, loop, ...(selection ? { selection } : {}), fadeInSeconds, fadeOutSeconds },
       audioProof,
+      loudnessProof,
       timelineReceipt: [{
-        operation: `添加背景音乐（${Math.round(volume * 100)}%${duck ? '、对白闪避' : ''}）`,
-        sourceRange: fullRange,
+        operation: `添加背景音乐（${Math.round(volume * 100)}%${duck ? '、对白闪避' : ''}${loop ? '、循环铺满' : '、播放一次'}）`,
+        sourceRange: musicRange,
         outputRange: fullRange
       }],
-      summary: `已生成 ${Number(actualDuration.toFixed(3)).toFixed(3)} 秒配乐版新视频（音乐音量 ${Math.round(volume * 100)}%${duck ? '，对白闪避' : ''}）；原文件未改动；音轨非静音、声音变化、样本峰值与淡入淡出窗口已核对`
+      summary: `已生成 ${Number(actualDuration.toFixed(3)).toFixed(3)} 秒配乐版新视频（音乐${selection ? ` ${musicRange}` : '全段'}${loop ? '循环铺满' : '播放一次'}，音量 ${Math.round(volume * 100)}%${duck ? '，对白闪避' : ''}）；原文件未改动；音轨非静音、声音变化、样本峰值与淡入淡出窗口已核对${loudnessProof?.verdict === 'matched' ? `；编码后响度 ${loudnessProof.integratedLufs} LUFS、true peak ${loudnessProof.truePeakDbtp} dBTP` : ''}`
     }
   }
 

@@ -1914,13 +1914,17 @@ app.whenReady().then(async () => {
   }, { autoResume: true })
 
   persistentTaskRuntime.register('media.edit-music', async ({ task, signal, checkpoint, status }) => {
-    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const [sourcePath, frozenAudioPath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.add-music') throw new Error('冻结的配乐决策无效')
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的配乐决策与源视频不一致')
     const audioPath = assertAllowedPath(decision.audio?.path || '')
+    if (!frozenAudioPath || (path.resolve(audioPath) !== path.resolve(frozenAudioPath) && path.resolve(audioPath).toLowerCase() !== path.resolve(frozenAudioPath).toLowerCase())) throw new Error('冻结的配乐任务缺少音乐文件快照或路径不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(`正在配乐（音量 ${Math.round((Number(decision.audio?.volume) || 0.15) * 100)}%${decision.audio?.duck !== false ? '、对白闪避' : ''}）`)
+    const loudnessStatus = decision.audio?.loudness?.enabled === true
+      ? `、响度两遍测量并归一到 ${Number(decision.audio.loudness.targetLufs)} LUFS`
+      : '、不做响度归一'
+    status(`正在配乐（音量 ${Math.round((Number(decision.audio?.volume) || 0.15) * 100)}%${decision.audio?.duck !== false ? '、对白闪避' : ''}${loudnessStatus}）`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
       : await mediaEditService.addMusic({ sourcePath, outputPath, decision: { ...decision, audio: { ...decision.audio, path: audioPath } }, signal })
@@ -2252,9 +2256,11 @@ app.whenReady().then(async () => {
       if (taskType !== 'media.shift-subtitles' && taskType !== 'media.translate-subtitles' && taskType !== 'media.edit-subtitle-cues' && !videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
       const allSourcePaths = decision.kind === 'media.concat-sources'
         ? decision.sources.map((item) => assertAllowedPath(item?.path || ''))
-        : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'
-          ? [assertAllowedPath(decision.subtitle?.path || '')]
-          : [sourcePath]
+        : decision.kind === 'media.add-music'
+          ? [sourcePath, assertAllowedPath(decision.audio?.path || '')]
+          : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'
+            ? [assertAllowedPath(decision.subtitle?.path || '')]
+            : [sourcePath]
       const outputExtension = decision.output?.container === 'vtt' ? '.vtt' : decision.output?.container === 'srt' ? '.srt' : '.mp4'
       const outputAnchor = decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues' ? allSourcePaths[0] : sourcePath
       // 字幕翻译：在入队前冻结引擎与模型路由；云端先过原生同意框，拒绝则回退本地离线组件（仅英译中）

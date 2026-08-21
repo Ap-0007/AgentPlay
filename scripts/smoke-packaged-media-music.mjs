@@ -20,7 +20,7 @@ const stagedFfmpeg = path.join(profileDir, 'yt-dlp', 'ffmpeg-8.0.1-essentials_bu
 const ffmpeg = path.join(installedFfmpeg, 'bin', 'ffmpeg.exe')
 const ffprobe = path.join(installedFfmpeg, 'bin', 'ffprobe.exe')
 const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-music-packaged')
-const instruction = `给视频加背景音乐 ${musicPath}`
+const instruction = `给视频加背景音乐 ${musicPath}，用音乐第1秒到第3秒，循环铺满，响度归一到-16 LUFS`
 
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 
@@ -167,6 +167,8 @@ try {
     const plan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(instruction)}, sourcePath: ${JSON.stringify(sourcePath)} })
     if (!plan.matched || plan.decision?.kind !== 'media.add-music') throw new Error('安装态配乐计划不合格：' + JSON.stringify(plan).slice(0, 400))
     if (plan.decision.audio?.volume !== 0.15 || plan.decision.audio?.fadeInSeconds !== 1 || plan.decision.audio?.fadeOutSeconds !== 1.5 || plan.decision.audio?.duck !== true) throw new Error('安装态配乐参数没有按默认规则冻结')
+    if (plan.decision.audio?.selection?.startSeconds !== 1 || plan.decision.audio?.selection?.endSeconds !== 3 || plan.decision.audio?.loop !== true) throw new Error('安装态音乐选段或循环策略没有冻结')
+    if (plan.decision.audio?.loudness?.enabled !== true || plan.decision.audio?.loudness?.targetLufs !== -16) throw new Error('安装态响度策略没有冻结')
     const input = document.querySelector('.agent-composer input[type="text"], input[placeholder*="完成什么"], input[placeholder*="下一步"], input[placeholder*="素材"]')
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
     setter.call(input, ${JSON.stringify(instruction)})
@@ -183,7 +185,8 @@ try {
     }, '配乐任务完成', 180000)
     if (task.state !== 'completed') throw new Error(task.error || task.status || '配乐任务未完成')
     if (task.result?.audioProof?.verdict !== 'matched') throw new Error('安装态配乐没有通过声音质量证明')
-    if (!task.quality?.checks?.find((item) => item.id === 'audio-proof')?.passed || task.quality?.score !== 100) throw new Error('安装态声音证明没有进入 100 分质量门')
+    if (task.result?.loudnessProof?.verdict !== 'matched') throw new Error('安装态配乐没有通过编码后 EBU R128 响度证明')
+    if (!task.quality?.checks?.find((item) => item.id === 'audio-proof')?.passed || !task.quality?.checks?.find((item) => item.id === 'loudness-proof')?.passed || task.quality?.score !== 100) throw new Error('安装态声音与响度证明没有进入 100 分质量门')
     const preview = await waitFor(() => {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return video && Number.isFinite(video.duration) && Math.abs(video.duration - initial.duration) <= 0.25
@@ -196,7 +199,7 @@ try {
       task,
       taskElapsedMs: Date.now() - taskStartedAt,
       preview,
-      uiReceiptVisible: bodyText.includes('音轨非静音') && bodyText.includes('样本峰值') && bodyText.includes('淡入淡出窗口已核对')
+      uiReceiptVisible: bodyText.includes('音轨非静音') && bodyText.includes('淡入淡出窗口已核对') && bodyText.includes('编码后响度') && bodyText.includes('true peak')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -218,12 +221,19 @@ try {
   const peakMatch = volumeProbe.stderr.match(/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i)
   const samplePeakDbfs = peakMatch ? Number(peakMatch[1]) : null
   if (!Number.isFinite(samplePeakDbfs) || samplePeakDbfs > -0.1) throw new Error(`安装态配乐样本峰值没有安全余量：${samplePeakDbfs}`)
+  const ebuProbe = await runExecutable(ffmpeg, ['-hide_banner', '-nostdin', '-i', outputPath, '-map', '0:a:0', '-vn', '-af', 'ebur128=peak=true', '-f', 'null', '-'])
+  const integratedMatches = [...ebuProbe.stderr.matchAll(/\bI:\s*(-?\d+(?:\.\d+)?)\s*LUFS/gi)]
+  const truePeakMatches = [...ebuProbe.stderr.matchAll(/\bPeak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/gi)]
+  const integratedLufs = integratedMatches.length ? Number(integratedMatches.at(-1)[1]) : null
+  const truePeakDbtp = truePeakMatches.length ? Number(truePeakMatches.at(-1)[1]) : null
+  if (!Number.isFinite(integratedLufs) || Math.abs(integratedLufs - (-16)) > 0.7) throw new Error(`安装态配乐编码后响度不合格：${integratedLufs} LUFS`)
+  if (!Number.isFinite(truePeakDbtp) || truePeakDbtp > -1) throw new Error(`安装态配乐编码后 true peak 不合格：${truePeakDbtp} dBTP`)
   const persistedOutputPath = path.join(evidenceDir, 'packaged-music-proof-4s.mp4')
   fs.copyFileSync(outputPath, persistedOutputPath)
-  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, musicBefore, musicAfter, outputDuration, samplePeakDbfs, persistedOutputPath, screenshotPath, pageResult }
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceBefore, sourceAfter, musicBefore, musicAfter, outputDuration, samplePeakDbfs, integratedLufs, truePeakDbtp, persistedOutputPath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, outputDuration, samplePeakDbfs, qualityScore: pageResult.task.quality?.score, audioProof: pageResult.task.result.audioProof, taskElapsedMs: pageResult.taskElapsedMs, persistedOutputPath }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, outputDuration, samplePeakDbfs, integratedLufs, truePeakDbtp, qualityScore: pageResult.task.quality?.score, audioProof: pageResult.task.result.audioProof, loudnessProof: pageResult.task.result.loudnessProof, taskElapsedMs: pageResult.taskElapsedMs, persistedOutputPath }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

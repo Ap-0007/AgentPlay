@@ -252,6 +252,27 @@ class VideoFrameService {
     }
   }
 
+  // 编码后 EBU R128 复测：integrated loudness 记 LUFS，ebur128 peak=true 的 True peak 记 dBTP。
+  async probeLoudness(sourcePath, { signal } = {}) {
+    try {
+      const result = await this.run([
+        '-hide_banner', '-nostdin', '-i', sourcePath, '-map', '0:a:0', '-vn',
+        '-af', 'ebur128=peak=true', '-f', 'null', '-'
+      ], { timeoutMs: 10 * 60 * 1000, signal })
+      const stderr = String(result.stderr || '')
+      const integrated = [...stderr.matchAll(/\bI:\s*(-?\d+(?:\.\d+)?)\s*LUFS/gi)]
+      const peaks = [...stderr.matchAll(/\bPeak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/gi)]
+      const integratedLufs = integrated.length ? Number(integrated.at(-1)[1]) : null
+      const truePeakDbtp = peaks.length ? Number(peaks.at(-1)[1]) : null
+      return Number.isFinite(integratedLufs) && Number.isFinite(truePeakDbtp)
+        ? { integratedLufs, truePeakDbtp }
+        : null
+    } catch (error) {
+      if (signal?.aborted) throw error
+      return null
+    }
+  }
+
   frameProofScaleFilter({ fitWidth = 0, fitHeight = 0 } = {}) {
     const width = Math.round(Number(fitWidth) || 0)
     const height = Math.round(Number(fitHeight) || 0)
