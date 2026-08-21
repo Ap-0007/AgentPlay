@@ -216,6 +216,42 @@ class VideoFrameService {
     }
   }
 
+  // 读取一个有界的单声道 PCM 窗口，用于声音结果核验；s16le 是样本值，不代表 LUFS 或 true peak。
+  async readPcmWindow(sourcePath, seconds, { durationSeconds = 0.3, sampleRateHz = 16000, signal } = {}) {
+    const start = Math.max(0, Number(seconds) || 0)
+    const duration = Math.max(0.05, Math.min(2, Number(durationSeconds) || 0.3))
+    const sampleRate = Math.max(8000, Math.min(48000, Math.round(Number(sampleRateHz) || 16000)))
+    const buffer = await this.readRawFrameBuffer([
+      '-v', 'error', '-ss', start.toFixed(3), '-i', sourcePath,
+      '-t', duration.toFixed(3), '-map', '0:a:0', '-vn',
+      '-ac', '1', '-ar', String(sampleRate), '-c:a', 'pcm_s16le', '-f', 's16le', '-'
+    ], { signal })
+    return buffer && buffer.length >= 2 ? buffer.subarray(0, buffer.length - (buffer.length % 2)) : null
+  }
+
+  // 扫描整段首音轨的解码样本峰值与均值。volumedetect 的 max_volume 是 sample peak，不冒充 true peak。
+  async probeAudioLevels(sourcePath, { signal } = {}) {
+    try {
+      const result = await this.run([
+        '-hide_banner', '-nostdin', '-i', sourcePath, '-map', '0:a:0', '-vn',
+        '-af', 'volumedetect', '-f', 'null', '-'
+      ], { timeoutMs: 10 * 60 * 1000, signal })
+      const readDb = (name) => {
+        const match = String(result.stderr || '').match(new RegExp(`${name}:\\s*(-?\\d+(?:\\.\\d+)?|-inf)\\s*dB`, 'i'))
+        if (!match) return null
+        return match[1].toLowerCase() === '-inf' ? -Infinity : Number(match[1])
+      }
+      const meanVolumeDbfs = readDb('mean_volume')
+      const samplePeakDbfs = readDb('max_volume')
+      return Number.isFinite(samplePeakDbfs) || samplePeakDbfs === -Infinity
+        ? { meanVolumeDbfs, samplePeakDbfs }
+        : null
+    } catch (error) {
+      if (signal?.aborted) throw error
+      return null
+    }
+  }
+
   frameProofScaleFilter({ fitWidth = 0, fitHeight = 0 } = {}) {
     const width = Math.round(Number(fitWidth) || 0)
     const height = Math.round(Number(fitHeight) || 0)

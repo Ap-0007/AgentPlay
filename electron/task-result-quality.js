@@ -6,7 +6,8 @@ const OFFICE_ZIP_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx', '.odt', '.ods'
 const HARD_FAILURES = new Set([
   'RESULT_FAILED', 'ARTIFACT_MISSING', 'ARTIFACT_EMPTY', 'INVALID_FORMAT', 'SUBTITLE_EMPTY',
   'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE', 'PROJECT_CAPSULE_MISSING',
-  'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH'
+  'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH',
+  'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -113,6 +114,48 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('format', '文件结构', formatRatio, 15, formatFailure)
     add('history', '历史记录', result.historyId ? 1 : 0, 20, reason('HISTORY_MISSING', '成果尚未写入历史记录', true))
     add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 10, reason('SUMMARY_MISSING', '缺少结果说明', true))
+  } else if (taskType === 'media.edit-music') {
+    const expectedDuration = Number(result.expectedDurationSeconds || 0)
+    const actualDuration = Number(result.durationSeconds || 0)
+    const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
+    const durationOk = expectedDuration > 0 && actualDuration > 0 && Math.abs(actualDuration - expectedDuration) <= tolerance
+    const timelineReceipt = Array.isArray(result.timelineReceipt) ? result.timelineReceipt : []
+    const hasTimelineReceipt = timelineReceipt.some((item) => String(item?.sourceRange || '').includes('→') && String(item?.outputRange || '').includes('→'))
+    const audioProof = result.audioProof
+    const proofSchemaOk = audioProof?.schemaVersion === 1 && audioProof?.method === 'decoded-pcm-s16le-v1'
+    const nonSilent = proofSchemaOk && audioProof.output?.hasAudio === true && audioProof.output?.nonSilent === true
+    const changed = proofSchemaOk && audioProof.change?.verdict === 'changed' && Number(audioProof.change?.changedWindows) > 0
+    const overloadFree = proofSchemaOk && audioProof.output?.overloadFree === true && Number.isFinite(Number(audioProof.output?.samplePeakDbfs))
+    const fadeInRequired = Number(spec.decision?.audio?.fadeInSeconds ?? 1) > 0
+    const fadeOutRequired = Number(spec.decision?.audio?.fadeOutSeconds ?? 1.5) > 0
+    const fadesOk = proofSchemaOk
+      && (!fadeInRequired || audioProof.fades?.fadeIn?.verdict === 'matched')
+      && (!fadeOutRequired || audioProof.fades?.fadeOut?.verdict === 'matched')
+    const proofOk = proofSchemaOk && audioProof.verdict === 'matched' && nonSilent && changed && overloadFree && fadesOk
+    let audioFailure = null
+    if (!proofSchemaOk) audioFailure = reason('AUDIO_PROOF_MISSING', '缺少解码后的声音质量证明，不能只凭音轨存在判定配乐成功', true)
+    else if (!nonSilent) audioFailure = reason('AUDIO_SILENT', '成片音轨存在但采样结果为静音或近似静音', true)
+    else if (!changed) audioFailure = reason('AUDIO_CHANGE_MISSING', '成片声音与原声采样没有可确认的变化，无法证明背景音乐已混入', true)
+    else if (!overloadFree) audioFailure = reason('AUDIO_OVERLOAD', '成片声音样本峰值达到或超过安全上限', true)
+    else if (!fadesOk) audioFailure = reason('AUDIO_FADE_PROOF_MISSING', '背景音乐淡入淡出窗口没有通过声音采样核对', true)
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1
+      && String(projectCapsule.projectId || '').startsWith('edit-')
+      && String(projectCapsule.versionId || '').startsWith('version-')
+      && Number(projectCapsule.versionCount) >= 2
+      && Number(projectCapsule.cursor) >= 1
+      && projectCapsule.canUndo === true
+      && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    const proofDetail = proofSchemaOk
+      ? `样本峰值 ${Number(audioProof.output?.samplePeakDbfs).toFixed(2)} dBFS；${Number(audioProof.change?.changedWindows) || 0}/${Number(audioProof.change?.comparedWindows) || 0} 个窗口确认变化`
+      : ''
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
+    add('artifacts', '配乐视频', artifactRatio, 20, artifactFailure)
+    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '配乐成果不是受支持的视频格式', true))
+    add('duration-receipt', '成品时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', `成品时长与源片不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
+    add('timeline-receipt', '配乐范围回执', hasTimelineReceipt ? 1 : 0, 10, reason('TIMELINE_RECEIPT_MISSING', '缺少背景音乐覆盖范围回执', true))
+    add('audio-proof', '声音质量证明', proofOk ? 1 : 0, 20, audioFailure, proofDetail)
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 15, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
   } else if (taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat' || taskType === 'media.edit-concat-sources' || taskType === 'media.edit-burn-subtitles' || taskType === 'media.edit-mux-subtitles') {
     const expectedDuration = Number(result.expectedDurationSeconds || spec.decision?.timeline?.durationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)

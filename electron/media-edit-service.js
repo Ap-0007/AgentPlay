@@ -68,6 +68,79 @@ function meanAbsDiff(a, b) {
   return sum / a.length
 }
 
+function pcmSample(buffer, index) {
+  return buffer.readInt16LE(index * 2) / 32768
+}
+
+function pcmStats(buffer) {
+  const samples = buffer && Buffer.isBuffer(buffer) ? Math.floor(buffer.length / 2) : 0
+  if (!samples) return { samples: 0, rms: 0, samplePeak: 0, samplePeakDbfs: -Infinity }
+  let sumSquares = 0
+  let samplePeak = 0
+  for (let index = 0; index < samples; index += 1) {
+    const value = pcmSample(buffer, index)
+    sumSquares += value * value
+    samplePeak = Math.max(samplePeak, Math.abs(value))
+  }
+  const rms = Math.sqrt(sumSquares / samples)
+  return {
+    samples,
+    rms: Number(rms.toFixed(6)),
+    samplePeak: Number(samplePeak.toFixed(6)),
+    samplePeakDbfs: samplePeak > 0 ? Number((20 * Math.log10(samplePeak)).toFixed(2)) : -Infinity
+  }
+}
+
+// 对齐两个解码 PCM 窗口后，用最小二乘缩放原声并计算残差。残差只用于证明“有变化”，不等同于独立音乐轨。
+function comparePcmWindows(sourceBuffer, outputBuffer, { maxLagSamples = 640 } = {}) {
+  const sourceSamples = sourceBuffer && Buffer.isBuffer(sourceBuffer) ? Math.floor(sourceBuffer.length / 2) : 0
+  const outputSamples = outputBuffer && Buffer.isBuffer(outputBuffer) ? Math.floor(outputBuffer.length / 2) : 0
+  if (sourceSamples < 160 || outputSamples < 160) return null
+  const maxLag = Math.min(Math.max(0, Math.round(maxLagSamples)), Math.floor(Math.min(sourceSamples, outputSamples) / 3))
+  let best = null
+  for (let lag = -maxLag; lag <= maxLag; lag += 4) {
+    const sourceStart = lag < 0 ? -lag : 0
+    const outputStart = lag > 0 ? lag : 0
+    const count = Math.min(sourceSamples - sourceStart, outputSamples - outputStart)
+    if (count < 160) continue
+    let dot = 0
+    let sourcePower = 0
+    let outputPower = 0
+    for (let offset = 0; offset < count; offset += 4) {
+      const sourceValue = pcmSample(sourceBuffer, sourceStart + offset)
+      const outputValue = pcmSample(outputBuffer, outputStart + offset)
+      dot += sourceValue * outputValue
+      sourcePower += sourceValue * sourceValue
+      outputPower += outputValue * outputValue
+    }
+    const correlation = sourcePower > 0 && outputPower > 0 ? dot / Math.sqrt(sourcePower * outputPower) : 0
+    if (!best || correlation > best.correlation) best = { lagSamples: lag, correlation, sourceStart, outputStart, count }
+  }
+  if (!best) return null
+  let dot = 0
+  let sourcePower = 0
+  for (let offset = 0; offset < best.count; offset += 1) {
+    const sourceValue = pcmSample(sourceBuffer, best.sourceStart + offset)
+    const outputValue = pcmSample(outputBuffer, best.outputStart + offset)
+    dot += sourceValue * outputValue
+    sourcePower += sourceValue * sourceValue
+  }
+  const scale = sourcePower > 1e-12 ? dot / sourcePower : 0
+  let residualPower = 0
+  for (let offset = 0; offset < best.count; offset += 1) {
+    const sourceValue = pcmSample(sourceBuffer, best.sourceStart + offset)
+    const outputValue = pcmSample(outputBuffer, best.outputStart + offset)
+    const residual = outputValue - scale * sourceValue
+    residualPower += residual * residual
+  }
+  return {
+    lagSamples: best.lagSamples,
+    correlation: Number(best.correlation.toFixed(6)),
+    sourceScale: Number(scale.toFixed(6)),
+    residualRms: Number(Math.sqrt(residualPower / best.count).toFixed(6))
+  }
+}
+
 // srt 解码：BOM 直读；否则先严格 UTF-8，失败退 GBK（中文圈常见）；写出统一 UTF-8
 function decodeSubtitleText(buffer) {
   if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) return buffer.subarray(3).toString('utf8')
@@ -423,6 +496,168 @@ class MediaEditService {
     return { verdict: 'mismatch', matchDiff: Number(dMatch.toFixed(3)), margin }
   }
 
+  async audioProofForMusic({ source, audio, output, sourceDuration, hasSourceAudio, decision, signal }) {
+    const proofBase = {
+      schemaVersion: 1,
+      method: 'decoded-pcm-s16le-v1',
+      sampleRateHz: 16000,
+      ducking: {
+        requested: decision.audio?.duck !== false,
+        configured: Boolean(hasSourceAudio && decision.audio?.duck !== false),
+        claim: 'configuration-only'
+      }
+    }
+    if (typeof this.frames.readPcmWindow !== 'function' || typeof this.frames.probeAudioLevels !== 'function') {
+      return { ...proofBase, verdict: 'unavailable', reason: 'audio-reader-missing' }
+    }
+    const duration = Number(sourceDuration)
+    if (!(duration > 0.2)) return { ...proofBase, verdict: 'unavailable', reason: 'audio-duration-too-short' }
+    const levels = await this.frames.probeAudioLevels(output, { signal })
+    if (!levels || !Number.isFinite(Number(levels.samplePeakDbfs))) {
+      return { ...proofBase, verdict: 'unavailable', reason: 'audio-levels-missing' }
+    }
+    const fadeInValue = Number(decision.audio?.fadeInSeconds)
+    const fadeOutValue = Number(decision.audio?.fadeOutSeconds)
+    const fadeInSeconds = Math.max(0, Math.min(10, Number.isFinite(fadeInValue) ? fadeInValue : 1))
+    const fadeOutSeconds = Math.max(0, Math.min(10, Number.isFinite(fadeOutValue) ? fadeOutValue : 1.5))
+    const volume = Math.max(0.01, Math.min(1, Number(decision.audio?.volume) || 0.15))
+    const loopMusic = decision.audio?.loop !== false
+    const musicDuration = await this.frames.probeDuration(audio, { signal })
+    if (!(musicDuration > 0)) return { ...proofBase, verdict: 'unavailable', reason: 'music-duration-missing' }
+    const edgeDuration = Math.min(0.2, Math.max(0.08, duration / 20))
+    const innerDuration = Math.min(0.35, Math.max(0.14, duration / 16))
+    const startAt = Math.min(0.02, Math.max(0, duration - edgeDuration))
+    const endAt = Math.max(0, duration - edgeDuration - 0.02)
+    const innerMin = Math.min(duration - innerDuration, Math.max(edgeDuration + 0.05, fadeInSeconds + 0.08))
+    const innerMax = Math.max(innerMin, Math.min(duration - edgeDuration - innerDuration - 0.05, duration - fadeOutSeconds - innerDuration - 0.08))
+    const innerStarts = []
+    if (innerMax > innerMin + 0.03) {
+      for (let index = 0; index < 5; index += 1) innerStarts.push(innerMin + ((innerMax - innerMin) * index) / 4)
+    } else {
+      for (const fraction of [0.2, 0.35, 0.5, 0.65, 0.8]) innerStarts.push(Math.max(edgeDuration, Math.min(duration - edgeDuration - innerDuration, duration * fraction - innerDuration / 2)))
+    }
+    const readMeasurement = async (atSeconds, windowSeconds, label) => {
+      const outputPcm = await this.frames.readPcmWindow(output, atSeconds, { durationSeconds: windowSeconds, sampleRateHz: proofBase.sampleRateHz, signal })
+      if (!outputPcm) return null
+      const outputStats = pcmStats(outputPcm)
+      if (!hasSourceAudio) {
+        return { label, atSeconds: Number(atSeconds.toFixed(3)), durationSeconds: Number(windowSeconds.toFixed(3)), outputRms: outputStats.rms, contributionRms: outputStats.rms, correlation: null, residualRms: outputStats.rms }
+      }
+      const sourcePcm = await this.frames.readPcmWindow(source, atSeconds, { durationSeconds: windowSeconds, sampleRateHz: proofBase.sampleRateHz, signal })
+      const sourceStats = pcmStats(sourcePcm)
+      const comparison = comparePcmWindows(sourcePcm, outputPcm, { maxLagSamples: Math.round(proofBase.sampleRateHz * 0.04) })
+      if (!comparison) return null
+      return {
+        label,
+        atSeconds: Number(atSeconds.toFixed(3)),
+        durationSeconds: Number(windowSeconds.toFixed(3)),
+        sourceRms: sourceStats.rms,
+        outputRms: outputStats.rms,
+        contributionRms: comparison.residualRms,
+        correlation: comparison.correlation,
+        lagSamples: comparison.lagSamples,
+        sourceScale: comparison.sourceScale
+      }
+    }
+    const readMusicEnvelope = async (atSeconds, windowSeconds, label) => {
+      const musicAt = loopMusic ? ((atSeconds % musicDuration) + musicDuration) % musicDuration : atSeconds
+      const musicPcm = musicAt < musicDuration
+        ? await this.frames.readPcmWindow(audio, musicAt, { durationSeconds: windowSeconds, sampleRateHz: proofBase.sampleRateHz, signal })
+        : Buffer.alloc(2)
+      if (!musicPcm) return null
+      const raw = pcmStats(musicPcm)
+      const gainAt = (seconds) => {
+        const fadeInGain = fadeInSeconds > 0 ? Math.max(0, Math.min(1, seconds / fadeInSeconds)) : 1
+        const remaining = duration - seconds
+        const fadeOutGain = fadeOutSeconds > 0 ? Math.max(0, Math.min(1, remaining / fadeOutSeconds)) : 1
+        return fadeInGain * fadeOutGain
+      }
+      let gainSum = 0
+      const gainSamples = 32
+      for (let index = 0; index < gainSamples; index += 1) gainSum += gainAt(atSeconds + (windowSeconds * (index + 0.5)) / gainSamples)
+      const envelopeGain = gainSum / gainSamples
+      return {
+        label,
+        atSeconds: Number(atSeconds.toFixed(3)),
+        durationSeconds: Number(windowSeconds.toFixed(3)),
+        musicSourceRms: raw.rms,
+        envelopeGain: Number(envelopeGain.toFixed(4)),
+        effectiveMusicRms: Number((raw.rms * volume * envelopeGain).toFixed(6))
+      }
+    }
+    const startWindow = await readMeasurement(startAt, edgeDuration, 'fade-in-edge')
+    const endWindow = await readMeasurement(endAt, edgeDuration, 'fade-out-edge')
+    const innerWindows = []
+    const innerMusicWindows = []
+    for (const at of [...new Set(innerStarts.map((value) => Number(Math.max(0, value).toFixed(3))))]) {
+      const measured = await readMeasurement(at, innerDuration, 'content')
+      if (measured) innerWindows.push(measured)
+      const musicMeasured = await readMusicEnvelope(at, innerDuration, 'content')
+      if (musicMeasured) innerMusicWindows.push(musicMeasured)
+    }
+    const startMusicWindow = await readMusicEnvelope(startAt, edgeDuration, 'fade-in-edge')
+    const endMusicWindow = await readMusicEnvelope(endAt, edgeDuration, 'fade-out-edge')
+    if (!startWindow || !endWindow || !innerWindows.length || !startMusicWindow || !endMusicWindow || !innerMusicWindows.length) return { ...proofBase, verdict: 'unavailable', reason: 'pcm-window-missing' }
+    const referenceWindow = innerWindows.reduce((best, item) => !best || item.contributionRms > best.contributionRms ? item : best, null)
+    const referenceMusicWindow = innerMusicWindows.reduce((best, item) => !best || item.effectiveMusicRms > best.effectiveMusicRms ? item : best, null)
+    const changedWindows = innerWindows.filter((item) => {
+      const floor = Math.max(0.0008, Number(item.sourceRms || 0) * 0.012)
+      return item.contributionRms > floor && (!hasSourceAudio || Number(item.correlation) < 0.9999)
+    })
+    const fadeVerdict = (edge, musicEdge, seconds) => {
+      if (!(seconds > 0)) return { verdict: 'not-requested' }
+      const referenceGain = Number(referenceMusicWindow?.envelopeGain || 0)
+      const ratio = referenceGain > 0 ? musicEdge.envelopeGain / referenceGain : null
+      return {
+        verdict: referenceGain > 0 && referenceMusicWindow.musicSourceRms > 0.00001 && musicEdge.envelopeGain <= referenceGain * 0.82 ? 'matched' : 'mismatch',
+        basis: 'decoded-music-pcm-plus-executed-filter',
+        outputResidualRms: edge.contributionRms,
+        musicSourceRms: musicEdge.musicSourceRms,
+        effectiveMusicRms: musicEdge.effectiveMusicRms,
+        envelopeGain: musicEdge.envelopeGain,
+        referenceEnvelopeGain: referenceGain,
+        ratio: ratio == null ? null : Number(ratio.toFixed(3))
+      }
+    }
+    const fadeIn = fadeVerdict(startWindow, startMusicWindow, fadeInSeconds)
+    const fadeOut = fadeVerdict(endWindow, endMusicWindow, fadeOutSeconds)
+    const nonSilent = Number(levels.meanVolumeDbfs) > -75 && Number(levels.samplePeakDbfs) > -60
+    const overloadFree = Number(levels.samplePeakDbfs) <= -0.1
+    const changed = changedWindows.length > 0
+    const fadesMatched = (fadeIn.verdict === 'matched' || fadeIn.verdict === 'not-requested') && (fadeOut.verdict === 'matched' || fadeOut.verdict === 'not-requested')
+    return {
+      ...proofBase,
+      verdict: nonSilent && overloadFree && changed && fadesMatched ? 'matched' : 'mismatch',
+      output: {
+        hasAudio: true,
+        nonSilent,
+        meanVolumeDbfs: Number(levels.meanVolumeDbfs),
+        samplePeakDbfs: Number(levels.samplePeakDbfs),
+        overloadFree,
+        peakClaim: 'decoded-sample-peak'
+      },
+      change: {
+        verdict: changed ? 'changed' : 'unchanged',
+        comparedWindows: innerWindows.length,
+        changedWindows: changedWindows.length,
+        windows: innerWindows
+      },
+      fades: { verdict: fadesMatched ? 'matched' : 'mismatch', fadeIn, fadeOut, startWindow, endWindow, referenceWindow, referenceMusicWindow }
+    }
+  }
+
+  assertAudioProofDeliverable(audioProof) {
+    if (!audioProof || audioProof.verdict === 'unavailable') throw new Error(`声音质量证明不可用（${audioProof?.reason || 'unknown'}），已拒绝交付`)
+    if (audioProof.output?.nonSilent !== true) throw new Error('配乐成果音轨为静音或近似静音，已拒绝交付')
+    if (audioProof.change?.verdict !== 'changed') throw new Error('无法证明背景音乐已混入成片，已拒绝交付')
+    if (audioProof.output?.overloadFree !== true) throw new Error(`配乐成果样本峰值 ${audioProof.output?.samplePeakDbfs ?? '未知'} dBFS 达到安全上限，已拒绝交付`)
+    if (audioProof.fades?.verdict !== 'matched') {
+      const fadeIn = audioProof.fades?.fadeIn
+      const fadeOut = audioProof.fades?.fadeOut
+      throw new Error(`背景音乐淡入淡出窗口与冻结决策不符（淡入比 ${fadeIn?.ratio ?? '未知'}，淡出比 ${fadeOut?.ratio ?? '未知'}），已拒绝交付`)
+    }
+  }
+
   // 配乐：用户本地/合法音乐 + 音量 + 淡入淡出 + 对白闪避（sidechain）；音乐短于视频自动循环。
   // 红线：不下载任何音乐；原视频不动；成果时长必须等于源视频时长。
   async addMusic({ sourcePath, outputPath, decision, signal } = {}) {
@@ -441,8 +676,10 @@ class MediaEditService {
     if (typeof this.frames.probeHasAudio !== 'function') throw new Error('无法确认源视频音轨')
 
     const volume = Math.max(0.01, Math.min(1, Number(decision.audio?.volume) || 0.15))
-    const fadeIn = Math.max(0, Math.min(10, Number(decision.audio?.fadeInSeconds) ?? 1))
-    const fadeOut = Math.max(0, Math.min(10, Number(decision.audio?.fadeOutSeconds) ?? 1.5))
+    const fadeInValue = Number(decision.audio?.fadeInSeconds)
+    const fadeOutValue = Number(decision.audio?.fadeOutSeconds)
+    const fadeIn = Math.max(0, Math.min(10, Number.isFinite(fadeInValue) ? fadeInValue : 1))
+    const fadeOut = Math.max(0, Math.min(10, Number.isFinite(fadeOutValue) ? fadeOutValue : 1.5))
     const duck = decision.audio?.duck !== false
     const sourceDuration = await this.frames.probeDuration(source, { signal })
     if (!(sourceDuration > 0)) throw new Error('无法读取源视频时长')
@@ -454,9 +691,9 @@ class MediaEditService {
     const musicChain = `[1:a]volume=${volume.toFixed(3)},afade=t=in:st=0:d=${fadeIn.toFixed(3)},afade=t=out:st=${fadeOutStart}:d=${fadeOut.toFixed(3)}`
     const filter = hasAudio
       ? (duck
-        ? `[0:a]volume=1.0,asplit=2[voice][key];${musicChain}[mu];[mu][key]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=500[ducked];[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]`
-        : `[0:a]volume=1.0[voice];${musicChain}[mu];[voice][mu]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]`)
-      : `${musicChain}[aout]`
+        ? `[0:a]volume=1.0,asplit=2[voice][key];${musicChain}[mu];[mu][key]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=500[ducked];[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.850:level=0[aout]`
+        : `[0:a]volume=1.0[voice];${musicChain}[mu];[voice][mu]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.850:level=0[aout]`)
+      : `${musicChain},alimiter=limit=0.850:level=0[aout]`
 
     const sourceBefore = this.fs.statSync(source)
     const parsed = path.parse(output)
@@ -485,18 +722,11 @@ class MediaEditService {
       if (typeof this.frames.probeHasAudio === 'function' && !(await this.frames.probeHasAudio(tempPath, { signal }))) {
         throw new Error('配乐成果没有音轨，已拒绝交付')
       }
+      const audioProof = await this.audioProofForMusic({ source, audio, output: tempPath, sourceDuration, hasSourceAudio: hasAudio, decision, signal })
+      this.assertAudioProofDeliverable(audioProof)
+      this.assertSourceUnchanged(sourceBefore, source)
       this.fs.renameSync(tempPath, output)
-      return {
-        success: true,
-        outputPath: output,
-        outputs: [output],
-        outputBytes: this.fs.statSync(output).size,
-        sourceDurationSeconds: sourceDuration,
-        expectedDurationSeconds: sourceDuration,
-        durationSeconds: Number(actualDuration.toFixed(3)),
-        music: { path: audio, volume, duck, fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut },
-        summary: `已生成 ${Number(actualDuration.toFixed(3)).toFixed(3)} 秒配乐版新视频（音乐音量 ${Math.round(volume * 100)}%${duck ? '，对白闪避' : ''}）；原文件未改动`
-      }
+      return this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, music: { path: audio, volume, duck, fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut } })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
@@ -1124,6 +1354,7 @@ class MediaEditService {
     const isRemove = decision?.kind === 'media.remove-segment'
     const isConcat = decision?.kind === 'media.concat-segments'
     const isConcatSources = decision?.kind === 'media.concat-sources'
+    const isMusic = decision?.kind === 'media.add-music'
     const isBurnSubtitles = decision?.kind === 'media.burn-subtitles'
     const isMuxSubtitles = decision?.kind === 'media.mux-subtitles'
     const concatTimeline = isConcat ? validateConcatTimeline(decision) : null
@@ -1147,10 +1378,11 @@ class MediaEditService {
       ? Number((sourceDuration - Number(decision?.timeline?.removedDurationSeconds || 0)).toFixed(3))
       : isConcat ? concatTimeline.expectedDuration
         : isConcatSources ? Number(concatSourcesProbes.reduce((sum, item) => sum + item.duration, 0).toFixed(3))
-          : isBurnSubtitles || isMuxSubtitles ? sourceDuration
+          : isMusic || isBurnSubtitles || isMuxSubtitles ? sourceDuration
             : Number(decision?.timeline?.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(decision?.verification?.toleranceSeconds) || 0.2)
     if (!(actualDuration > 0) || Math.abs(actualDuration - expectedDuration) > tolerance) throw new Error('剪辑成果时长校验失败')
+    if (isMusic && !(await this.frames.probeHasAudio(output, { signal }))) throw new Error('配乐成果没有音轨，已拒绝交付')
     if (isMuxSubtitles && !(await this.frames.probeHasSubtitle(output, { signal }))) throw new Error('封装成果没有字幕轨，已拒绝交付')
     const isPlainTrim = !isRemove && !isConcat && !isConcatSources && !isBurnSubtitles && !isMuxSubtitles && decision?.kind === 'media.trim'
     let editFrameProof = null
@@ -1168,12 +1400,22 @@ class MediaEditService {
       editFrameProof = await this.frameProofForSources({ sources: concatSourcePaths, output, probes: concatSourcesProbes, signal })
       this.assertFrameProofDeliverable(editFrameProof)
     }
+    let musicAudioProof = null
+    if (isMusic) {
+      const hasSourceAudio = await this.frames.probeHasAudio(source, { signal })
+      const audio = path.resolve(String(decision.audio?.path || ''))
+      if (!this.fs.existsSync(audio) || !this.fs.statSync(audio).isFile()) throw new Error('冻结的背景音乐文件不存在，无法恢复核验')
+      musicAudioProof = await this.audioProofForMusic({ source, audio, output, sourceDuration, hasSourceAudio, decision, signal })
+      this.assertAudioProofDeliverable(musicAudioProof)
+    }
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
       : isConcat
         ? this.concatReceipt({ output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
         : isConcatSources
           ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration, frameProof: editFrameProof })
+          : isMusic
+            ? this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof: musicAudioProof })
           : isBurnSubtitles
             ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
             : isMuxSubtitles
@@ -1198,6 +1440,32 @@ class MediaEditService {
         outputRange: `${formatTimestamp(0)} → ${formatTimestamp(durationSeconds)}`
       }],
       summary: `已保留 ${formatTimestamp(startSeconds)} 到 ${formatTimestamp(endSeconds)}，生成 ${durationSeconds.toFixed(3)} 秒新视频；原文件未改动${frameProof?.verdict === 'matched' ? '；首尾帧边界已核对' : frameProof?.verdict === 'inconclusive' ? '；画面内容相似，帧边界证据无法唯一判定，已保留提示' : ''}`
+    }
+  }
+
+  musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, music = null }) {
+    const volume = Math.max(0.01, Math.min(1, Number(music?.volume ?? decision.audio?.volume) || 0.15))
+    const duck = (music?.duck ?? decision.audio?.duck) !== false
+    const fadeInSeconds = Math.max(0, Number(music?.fadeInSeconds ?? decision.audio?.fadeInSeconds) || 0)
+    const fadeOutSeconds = Math.max(0, Number(music?.fadeOutSeconds ?? decision.audio?.fadeOutSeconds) || 0)
+    const audioPath = path.resolve(String(music?.path || decision.audio?.path || ''))
+    const fullRange = `${formatTimestamp(0)} → ${formatTimestamp(sourceDuration)}`
+    return {
+      success: true,
+      outputPath: output,
+      outputs: [output],
+      outputBytes: this.fs.statSync(output).size,
+      sourceDurationSeconds: sourceDuration,
+      expectedDurationSeconds: sourceDuration,
+      durationSeconds: Number(actualDuration.toFixed(3)),
+      music: { path: audioPath, volume, duck, fadeInSeconds, fadeOutSeconds },
+      audioProof,
+      timelineReceipt: [{
+        operation: `添加背景音乐（${Math.round(volume * 100)}%${duck ? '、对白闪避' : ''}）`,
+        sourceRange: fullRange,
+        outputRange: fullRange
+      }],
+      summary: `已生成 ${Number(actualDuration.toFixed(3)).toFixed(3)} 秒配乐版新视频（音乐音量 ${Math.round(volume * 100)}%${duck ? '，对白闪避' : ''}）；原文件未改动；音轨非静音、声音变化、样本峰值与淡入淡出窗口已核对`
     }
   }
 
