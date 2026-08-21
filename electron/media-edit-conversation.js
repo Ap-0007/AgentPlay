@@ -2,6 +2,7 @@ const path = require('path')
 const crypto = require('crypto')
 
 const { planEditInstruction, resolveEditClarification } = require('./media-edit-decision')
+const { attachEditDecisionList } = require('./edit-decision-list')
 
 class MediaEditConversation {
   constructor({ idFactory = () => crypto.randomUUID(), now = () => Date.now(), ttlMs = 5 * 60 * 1000 } = {}) {
@@ -23,6 +24,7 @@ class MediaEditConversation {
   }
 
   remember(result, existingId = '') {
+    if (result?.decision) return { ...result, decision: attachEditDecisionList(result.decision) }
     if (!result?.clarification) return result || { matched: false }
     const id = existingId || this.idFactory()
     const expiresAt = this.now() + this.ttlMs

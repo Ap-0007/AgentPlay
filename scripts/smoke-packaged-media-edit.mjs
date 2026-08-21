@@ -172,6 +172,9 @@ try {
     const consultationPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: '能不能截取第4秒到第20秒？', sourcePath: ${JSON.stringify(sourcePath)} })
     const ambiguousPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(ambiguousInstruction)}, sourcePath: ${JSON.stringify(sourcePath)} })
     if (!explicitPlan.matched || consultationPlan.matched || ambiguousPlan.clarification?.reason !== 'missing-end') throw new Error('安装态意图或追问边界不合格')
+    if (explicitPlan.decision.edl?.kind !== 'agentplay.edit-decision-list' || explicitPlan.decision.edl?.decisionKind !== 'media.trim') throw new Error('安装态明确计划缺少统一 EDL')
+    const resolvedPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(clarificationAnswer)}, sourcePath: ${JSON.stringify(sourcePath)}, clarificationId: ambiguousPlan.clarification.id })
+    if (resolvedPlan.decision.edl?.kind !== 'agentplay.edit-decision-list' || resolvedPlan.decision.edl?.operations?.[0]?.sourceRangeSeconds?.start !== 4) throw new Error('安装态追问收口计划缺少统一 EDL')
     const sendText = async (text) => {
       const input = document.querySelector('.agent-composer input[type="text"]')
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -195,6 +198,7 @@ try {
     }, '剪辑任务完成')
     if (task.state !== 'completed') throw new Error(task.error || task.status || '剪辑任务未完成')
     if (task.spec?.instruction !== '保留第4秒到第20秒') throw new Error('追问补齐后没有冻结成完整剪辑指令')
+    if (task.spec?.decision?.edl?.kind !== 'agentplay.edit-decision-list' || task.spec.decision.edl.operations?.[0]?.targetRangeSeconds?.end !== 16) throw new Error('持久任务没有冻结统一 EDL')
     if (task.result?.frameProof?.verdict !== 'matched') throw new Error('安装态剪辑没有得到明确的首尾帧边界匹配证明')
     const frameProofCheck = task.quality?.checks?.find((item) => item.id === 'frame-proof')
     if (!frameProofCheck?.passed || task.quality?.score !== 100) throw new Error('安装态帧边界证明没有进入质量门或未获得满分')
@@ -304,6 +308,7 @@ try {
       version: window.aiPlayer.version,
       originalDuration: initial.duration,
       explicitPlan,
+      resolvedPlan,
       ambiguousPlan,
       clarificationNoTask: tasksWhileClarifying.length === tasksBeforeClarification.length,
       cancelledClarificationNoTask: tasksAfterCancel.length === tasksBeforeCancel.length,

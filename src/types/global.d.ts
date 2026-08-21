@@ -148,6 +148,26 @@ interface PluginMutationResult {
   plugins: PluginSkillInfo[]
 }
 
+interface EditDecisionListV1 {
+  schemaVersion: 1
+  kind: 'agentplay.edit-decision-list'
+  decisionKind: string
+  materials: Array<{ id: string; role: 'video' | 'music' | 'subtitle'; path: string; name: string }>
+  tracks: Array<{ id: string; type: 'video' | 'audio' | 'subtitle'; materialId: string; optional?: boolean }>
+  operations: Array<{
+    id: string
+    type: string
+    materialId: string
+    trackIds: string[]
+    order?: number
+    sourceRangeSeconds?: { start: number; end: number }
+    targetRangeSeconds?: { start: number; end: number }
+    parameters?: Record<string, unknown>
+  }>
+  output: { container: string; overwrite: false; suffix: string }
+  quality: Record<string, unknown>
+}
+
 interface MediaEditClarification {
   id: string
   reason: 'missing-start' | 'missing-end' | 'missing-operation' | 'missing-range' | 'confirm-join-order'
@@ -585,7 +605,7 @@ interface AiPlayerAPI {
     onProgress: (cb: (event: { requestId?: string; done: number; total: number; name: string }) => void) => () => void
   }
   mediaTools?: {
-    planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; decision?: { schemaVersion: 1; kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'; instruction: string; sources?: Array<{ path: string; name: string }>; subtitle?: { path: string; name: string }; shift?: { direction: 'earlier' | 'later'; offsetSeconds: number }; translate?: { targetLang: '英文' | '中文' | 'auto'; mode: 'translated' | 'bilingual' }; cueEdit?: { operation: 'delete'; startIndex: number; endIndex: number } | { operation: 'replace'; index: number; text: string }; audio?: { path: string; volume: number; fadeInSeconds: number; fadeOutSeconds: number; duck: boolean; loop: boolean; selection?: { startSeconds: number; endSeconds: number; durationSeconds: number }; loudness?: { enabled: boolean; targetLufs: number; targetTruePeakDbtp: number; maxTruePeakDbtp: number; lra: number; toleranceLufs: number } }; timeline?: ({ startSeconds: number; endSeconds: number; durationSeconds?: number; removedDurationSeconds?: number; segments?: never } | { segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; targetStartSeconds: number; targetEndSeconds: number }>; durationSeconds: number; startSeconds?: never; endSeconds?: never; removedDurationSeconds?: never }); output: { overwrite: false; suffix: string } }; error?: string }>
+    planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; decision?: { schemaVersion: 1; kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'; instruction: string; edl: EditDecisionListV1; sources?: Array<{ path: string; name: string }>; subtitle?: { path: string; name: string }; shift?: { direction: 'earlier' | 'later'; offsetSeconds: number }; translate?: { targetLang: '英文' | '中文' | 'auto'; mode: 'translated' | 'bilingual' }; cueEdit?: { operation: 'delete'; startIndex: number; endIndex: number } | { operation: 'replace'; index: number; text: string }; audio?: { path: string; volume: number; fadeInSeconds: number; fadeOutSeconds: number; duck: boolean; loop: boolean; selection?: { startSeconds: number; endSeconds: number; durationSeconds: number }; loudness?: { enabled: boolean; targetLufs: number; targetTruePeakDbtp: number; maxTruePeakDbtp: number; lra: number; toleranceLufs: number } }; timeline?: ({ startSeconds: number; endSeconds: number; durationSeconds?: number; removedDurationSeconds?: number; segments?: never } | { segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; targetStartSeconds: number; targetEndSeconds: number }>; durationSeconds: number; startSeconds?: never; endSeconds?: never; removedDurationSeconds?: never }); output: { overwrite: false; suffix: string } }; error?: string }>
     planHistory: (input: { instruction: string; currentPath: string }) => Promise<{ matched: boolean; action?: { action: 'undo' | 'redo'; instruction: string }; error?: string }>
     navigateHistory: (input: { instruction: string; currentPath: string }) => Promise<{ success: boolean; matched?: boolean; action?: 'undo' | 'redo'; currentPath?: string; projectId?: string; versionId?: string; cursor?: number; versionCount?: number; canUndo?: boolean; canRedo?: boolean; summary?: string; error?: string }>
     trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>

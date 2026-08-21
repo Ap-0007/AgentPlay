@@ -26,6 +26,11 @@ test('clarification state stays in the main process and only an opaque token rea
   })
   assert.equal(resolved.decision.kind, 'media.trim')
   assert.deepEqual(resolved.decision.timeline, { startSeconds: 4, endSeconds: 20, durationSeconds: 16 })
+  assert.equal(resolved.decision.edl.kind, 'agentplay.edit-decision-list')
+  assert.equal(resolved.decision.edl.operations[0].sourceRangeSeconds.start, 4)
+
+  const direct = conversation.plan({ instruction: '删除第4秒到第8秒', sourcePath: 'D:\Videos\source.mp4' })
+  assert.equal(direct.decision.edl.decisionKind, 'media.remove-segment')
 })
 
 test('unknown, expired or cross-source clarification tokens fail closed', () => {

@@ -69,6 +69,7 @@ const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = 
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
 const { compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
+const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decision-list')
 const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-edit-service')
 const { MediaEditProjectStore } = require('./media-edit-project-store')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
@@ -1881,6 +1882,7 @@ app.whenReady().then(async () => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.trim') throw new Error('冻结的剪辑决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(`正在剪辑 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒`)
@@ -1899,6 +1901,7 @@ app.whenReady().then(async () => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.remove-segment') throw new Error('冻结的删除片段决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的删除片段决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(`正在删除 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒并重建连续时间线`)
@@ -1917,6 +1920,7 @@ app.whenReady().then(async () => {
     const [sourcePath, frozenAudioPath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.add-music') throw new Error('冻结的配乐决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的配乐决策与源视频不一致')
     const audioPath = assertAllowedPath(decision.audio?.path || '')
     if (!frozenAudioPath || (path.resolve(audioPath) !== path.resolve(frozenAudioPath) && path.resolve(audioPath).toLowerCase() !== path.resolve(frozenAudioPath).toLowerCase())) throw new Error('冻结的配乐任务缺少音乐文件快照或路径不一致')
@@ -1940,6 +1944,7 @@ app.whenReady().then(async () => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.concat-segments') throw new Error('冻结的多片段拼接决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的多片段拼接决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(`正在按指定顺序拼接 ${decision.timeline.segments.length} 个片段`)
@@ -1959,6 +1964,7 @@ app.whenReady().then(async () => {
     const [sourcePath] = sourcePaths
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.concat-sources') throw new Error('冻结的跨素材拼接决策无效')
+    assertEditDecisionList(decision)
     const decisionSources = (Array.isArray(decision.sources) ? decision.sources : []).map((item) => path.resolve(String(item?.path || '')))
     if (decisionSources.length < 2 || decisionSources.length > 20) throw new Error('冻结的跨素材拼接决策素材数量无效')
     if (decisionSources[0] !== path.resolve(sourcePath)) throw new Error('冻结的跨素材拼接决策与源视频不一致')
@@ -1985,6 +1991,7 @@ app.whenReady().then(async () => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.burn-subtitles') throw new Error('冻结的烧录字幕决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的烧录字幕决策与源视频不一致')
     assertAllowedPath(decision.subtitle?.path || '')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
@@ -2004,6 +2011,7 @@ app.whenReady().then(async () => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.mux-subtitles') throw new Error('冻结的软字幕封装决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的软字幕封装决策与源视频不一致')
     assertAllowedPath(decision.subtitle?.path || '')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
@@ -2023,6 +2031,7 @@ app.whenReady().then(async () => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.shift-subtitles') throw new Error('冻结的字幕调时决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.subtitle?.path || '')) !== path.resolve(subtitlePath)) throw new Error('冻结的字幕调时决策与字幕文件不一致')
     assertAllowedPath(decision.subtitle?.path || '')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, decision.output?.container === 'vtt' ? '.vtt' : '.srt', task.id)
@@ -2042,6 +2051,7 @@ app.whenReady().then(async () => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.translate-subtitles') throw new Error('冻结的字幕翻译决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.subtitle?.path || '')) !== path.resolve(subtitlePath)) throw new Error('冻结的字幕翻译决策与字幕文件不一致')
     assertAllowedPath(decision.subtitle?.path || '')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, '.srt', task.id)
@@ -2083,6 +2093,7 @@ app.whenReady().then(async () => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.edit-subtitle-cues') throw new Error('冻结的字幕校对决策无效')
+    assertEditDecisionList(decision)
     if (path.resolve(String(decision.subtitle?.path || '')) !== path.resolve(subtitlePath)) throw new Error('冻结的字幕校对决策与字幕文件不一致')
     assertAllowedPath(decision.subtitle?.path || '')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, decision.output?.container === 'vtt' ? '.vtt' : '.srt', task.id)
@@ -2234,7 +2245,8 @@ app.whenReady().then(async () => {
     const requestId = normalizeRequestId(input.requestId, 'media-edit-trim')
     try {
       const sourcePath = assertAllowedPath(input.sourcePath)
-      const decision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+      const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+      const decision = rawDecision ? attachEditDecisionList(rawDecision) : null
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-sources'
         ? 'media.edit-concat-sources'

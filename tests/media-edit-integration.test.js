@@ -24,6 +24,15 @@ test('main process owns planning, frozen execution, recovery and cancellation fo
   assert.match(main, /plannedMediaOutput\(outputAnchor, decision\.output\.suffix, outputExtension, requestId\)/)
 })
 
+test('main process attaches and revalidates the canonical EDL before every persistent edit execution', () => {
+  const main = read('electron/main.js')
+  const edl = read('electron/edit-decision-list.js')
+  assert.match(main, /const \{ assertEditDecisionList, attachEditDecisionList \} = require\('\.\/edit-decision-list'\)/)
+  assert.match(main, /const decision = rawDecision \? attachEditDecisionList\(rawDecision\) : null/)
+  assert.ok((main.match(/assertEditDecisionList\(decision\)/g) || []).length >= 10, '每种持久编辑执行器都必须复核 EDL')
+  assert.match(edl, /EDL 与冻结决策不一致/)
+})
+
 test('main process persists an edit capsule before checkpointing and owns undo or redo navigation', () => {
   const main = read('electron/main.js')
   assert.match(main, /new MediaEditProjectStore\(\{ rootDir: path\.join\(app\.getPath\('userData'\), 'media-edit-projects'\) \}\)/)
@@ -47,6 +56,8 @@ test('preload exposes planning, trim execution, project navigation and the share
   assert.match(types, /planHistory: \(input: \{ instruction: string; currentPath: string \}/)
   assert.match(types, /navigateHistory: \(input: \{ instruction: string; currentPath: string \}/)
   assert.match(types, /trim: \(input: \{ instruction: string; sourcePath: string; requestId: string;/)
+  assert.match(types, /interface EditDecisionListV1/)
+  assert.match(types, /edl: EditDecisionListV1/)
 })
 
 test('renderer routes only a main-process-confirmed edit plan into a visible recoverable task', () => {
