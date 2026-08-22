@@ -255,6 +255,7 @@ interface AiPlayerAPI {
       quality?: import('../taskLifecycle').WorkspaceTaskQuality | null
       repairHistory?: import('../taskLifecycle').WorkspaceTaskRepairReceipt[]
       failure?: import('../taskLifecycle').WorkspaceTaskFailure | null
+      projectCapsule?: { schemaVersion: 1; projectId: string; name: string; revision: number; materialCount: number; artifactCount: number; currentPath: string; currentArtifactId: string; updatedAt: number }
       error?: string
     }>
     cancel: (requestId: string) => Promise<boolean>
@@ -308,10 +309,15 @@ interface AiPlayerAPI {
       deliveryReceipt?: { schemaVersion: 1; kind: 'agentplay.delivery-receipt'; sources: Array<{ path: string; name: string; bytes: number; sha256: string }>; artifacts: Array<{ path: string; name: string; format: string; bytes: number; sha256: string }> }
       quality?: import('../taskLifecycle').WorkspaceTaskQuality | null
       failure?: import('../taskLifecycle').WorkspaceTaskFailure | null
+      projectCapsule?: { schemaVersion: 1; projectId: string; name: string; revision: number; materialCount: number; artifactCount: number; currentPath: string; currentArtifactId: string; updatedAt: number }
       error?: string
     }>
     cancel: (requestId: string) => Promise<boolean>
     onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
+  }
+  projects?: {
+    list: () => Promise<Array<{ schemaVersion: 1; projectId: string; name: string; revision: number; materialCount: number; artifactCount: number; currentPath: string; currentArtifactId: string; updatedAt: number }>>
+    get: (projectId: string) => Promise<Record<string, unknown> | null>
   }
   localAI?: {
     status: () => Promise<LocalAiComponentStatus>

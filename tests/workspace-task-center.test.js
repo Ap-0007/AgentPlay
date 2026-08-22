@@ -62,7 +62,7 @@ test('task center exposes progress, results, safe retry and cancellation without
   assert.match(center, /任务执行步骤/)
   assert.match(center, /份证据已验证/)
   assert.match(center, /成果证据/)
-  assert.match(center, /task\.evidence\.slice\(0, 3\)/)
+  assert.match(center, /task\.evidence\.slice\(0, 4\)/)
   assert.match(center, /task\.budget\.toolCalls/)
   assert.match(panel, /system\.verifyPaths\(outputs\)/)
   assert.match(panel, /来源指纹已冻结/)

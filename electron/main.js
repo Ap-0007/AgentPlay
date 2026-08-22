@@ -69,6 +69,7 @@ const { snapshotDocumentSources, validateDocumentSources, outputsStillExist } = 
 const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quality')
 const { compileOutcomeWorkflow, assertOutcomeWorkflow } = require('./outcome-workflow')
 const { OutcomeWorkflowRunner } = require('./outcome-workflow-runner')
+const { ProjectCapsuleStore } = require('./project-capsule-store')
 const { compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
 const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decision-list')
@@ -643,6 +644,7 @@ const videoFrames = new VideoFrameService({
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
+const projectCapsules = new ProjectCapsuleStore({ rootDir: path.join(app.getPath('userData'), 'project-capsules') })
 const mediaEditConversation = new MediaEditConversation()
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
@@ -1265,11 +1267,16 @@ app.whenReady().then(async () => {
         maxOutputTokens: maxOutputTokensForConfig(config)
       }
     }
+    const sources = snapshotDocumentSources(paths)
+    const projectId = projectCapsules.resolveProjectId(paths) || projectCapsules.newProjectId()
+    const operationKey = crypto.createHash('sha256').update(JSON.stringify({ type: 'document.run', instruction: String(input.instruction || ''), outputFormat: String(input.outputFormat || 'auto'), sources: sources.map((item) => item.sha256) })).digest('hex')
     return {
       spec: {
-        sources: snapshotDocumentSources(paths),
+        sources,
         instruction: String(input.instruction || ''),
         outputFormat: String(input.outputFormat || 'auto'),
+        projectId,
+        operationKey,
         modelRoute,
         ocrRemote,
         ocrRoute
@@ -1282,7 +1289,13 @@ app.whenReady().then(async () => {
     }
   }
   persistentTaskRuntime.register('document.run', async ({ task, signal, checkpoint, status }) => {
-    if (task.checkpoint?.stage === 'history-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    if (task.checkpoint?.stage === 'history-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) {
+      const checkpointResult = task.checkpoint.result
+      const projectCapsule = checkpointResult.projectCapsule || projectCapsules.recordTask({ projectId: task.spec.projectId, taskId: task.id, type: task.type, instruction: task.spec.instruction, sources: task.spec.sources, outputs: checkpointResult.outputs || [], historyId: checkpointResult.historyId, operationKey: task.spec.operationKey, result: checkpointResult })
+      return { ...checkpointResult, projectCapsule }
+    }
+    const reusable = projectCapsules.findReusable(task.spec.projectId, task.spec.operationKey)
+    if (reusable) return reusable
     const paths = validateDocumentSources(task.spec.sources)
     for (const sourcePath of paths) userAuthorizedPaths.add(sourcePath)
     let documentOptions = {
@@ -1315,8 +1328,9 @@ app.whenReady().then(async () => {
     status(plan.requiresAi ? '正在理解要求和生成内容' : '正在执行本地文档操作')
     const result = await documentWorkspace.run(paths, task.spec.instruction, task.spec.outputFormat, documentOptions)
     for (const outputPath of result.outputs || []) userAuthorizedPaths.add(path.resolve(outputPath))
+    const projectCapsule = projectCapsules.recordTask({ projectId: task.spec.projectId, taskId: task.id, type: task.type, instruction: task.spec.instruction, sources: task.spec.sources, outputs: result.outputs || [], historyId: result.historyId, operationKey: task.spec.operationKey, result })
     status('正在验证并保存结果')
-    return result
+    return { ...result, projectCapsule }
   }, { autoResume: true })
   const preparePersistentAnalysisTask = (input) => {
     const resolvedSource = assertAllowedPath(input.sourcePath)
@@ -1385,13 +1399,18 @@ app.whenReady().then(async () => {
       throw new Error('这个成果工作流需要模型理解视频并生成多格式内容，请先在模型接入中心配置模型')
     }
     const modelRoute = freezeTaskModelRoute(config, { taskKind: visionDecision.selected ? 'analysis-vision' : 'analysis' })
+    const sources = snapshotDocumentSources([sourcePath])
+    const projectId = projectCapsules.resolveProjectId([sourcePath]) || projectCapsules.newProjectId()
+    const operationKey = crypto.createHash('sha256').update(JSON.stringify({ type: 'outcome.workflow', workflow, sources: sources.map((item) => item.sha256) })).digest('hex')
     return {
       spec: {
-        sources: snapshotDocumentSources([sourcePath]),
+        sources,
         workflow,
         mediaName: String(input.mediaName || path.basename(sourcePath)),
         duration: Number(input.duration) || 0,
-        modelRoute
+        modelRoute,
+        projectId,
+        operationKey
       },
       approval: modelRoute.local ? null : {
         action: 'cloud',
@@ -1401,6 +1420,8 @@ app.whenReady().then(async () => {
   }
   const outcomeWorkflowRunner = new OutcomeWorkflowRunner({ outputsStillExist })
   persistentTaskRuntime.register('outcome.workflow', async ({ task, signal, checkpoint, status }) => {
+    const reusable = projectCapsules.findReusable(task.spec.projectId, task.spec.operationKey)
+    if (reusable) return reusable
     const [sourcePath] = validateDocumentSources(task.spec.sources)
     userAuthorizedPaths.add(sourcePath)
     const workflow = assertOutcomeWorkflow(task.spec.workflow)
@@ -1439,7 +1460,10 @@ app.whenReady().then(async () => {
       }
     })
     for (const outputPath of result.outputs || []) userAuthorizedPaths.add(path.resolve(outputPath))
-    return result
+    const subtitlePath = findAdjacentSubtitle(sourcePath)
+    const intermediateOutputs = result.workflowReceipt?.steps?.find((item) => item.id === 'evidence-analysis')?.outputs || []
+    const projectCapsule = projectCapsules.recordTask({ projectId: task.spec.projectId, taskId: task.id, type: task.type, instruction: workflow.instruction, sources: [...task.spec.sources, ...(subtitlePath ? [subtitlePath] : [])], outputs: result.outputs || [], intermediateOutputs, historyId: result.historyId, operationKey: task.spec.operationKey, result })
+    return { ...result, projectCapsule }
   }, { autoResume: true })
   persistentTaskRuntime.register('download.direct', async ({ task, signal, checkpoint, status }) => {
     let lastCheckpointAt = 0
@@ -3985,6 +4009,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('outcome:cancel', (event, requestId) => {
     assertTrustedSender(event)
     return persistentTaskRuntime.cancel(String(requestId || ''))
+  })
+  ipcMain.handle('projects:list', (event) => {
+    assertTrustedSender(event)
+    return projectCapsules.list()
+  })
+  ipcMain.handle('projects:get', (event, projectId) => {
+    assertTrustedSender(event)
+    return projectCapsules.get(String(projectId || ''))
   })
   // 对话流视频解剖：AI 助手面板直接对当前视频发起，报告经文档工作台另存，原文件不动
   ipcMain.handle('analysis:detect', (event, text) => {

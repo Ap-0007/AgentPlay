@@ -137,6 +137,19 @@ try {
   if (result.run.deliveryReceipt?.bundle?.consistency?.verdict !== 'matched') throw new Error('最终成果没有共享事实底稿')
   if (calls[0] !== 'analysis' || calls.length !== 4 || [...calls.slice(1)].sort().join(',') !== 'docx,pptx,xlsx') throw new Error(`模型调用顺序不符合成果驱动编排：${calls.join(',')}`)
   workflowRoot = path.dirname(result.run.outputs[0])
+  const docxOutput = result.run.outputs.find((item) => item.endsWith('.docx'))
+
+  const continuity = await evaluate(`(async () => {
+    const duplicate = await window.aiPlayer.outcomeWorkflow.run({ sourcePath: ${JSON.stringify(videoPath)}, mediaName: '经营复盘.mp4', duration: 12, instruction: '把这个视频做成一套中文拉片报告、PPT 和 Excel 分析表', cloudApproved: false, requestId: '${taskId}-duplicate', workspaceTaskId: 'workspace-${taskId}-duplicate' })
+    const attached = await window.aiPlayer.documents.attachPaths([${JSON.stringify(docxOutput)}])
+    const continued = await window.aiPlayer.documents.run({ tokens: [attached[0].token], instruction: '继续把这个结果转换为 TXT', outputFormat: 'auto', cloudApproved: false, requestId: '${taskId}-continue', workspaceTaskId: 'workspace-${taskId}-continue' })
+    const projects = await window.aiPlayer.projects.list()
+    const project = await window.aiPlayer.projects.get(continued.projectCapsule.projectId)
+    return { duplicate, continued, projects, project }
+  })()`)
+  if (!continuity.duplicate?.reused || calls.length !== 4) throw new Error(`相同内容被重复处理：${JSON.stringify({ duplicate: continuity.duplicate, calls })}`)
+  if (!continuity.continued?.success || continuity.continued.projectCapsule?.revision !== 2 || continuity.continued.projectCapsule?.projectId !== result.run.projectCapsule?.projectId) throw new Error(`继续修改没有进入同一项目新版本：${JSON.stringify(continuity.continued)}`)
+  if (continuity.project?.materials?.length !== 2 || continuity.project?.artifacts?.length < 5 || continuity.project?.instructions?.length !== 2) throw new Error(`混合项目清单或版本关系不完整：${JSON.stringify(continuity.project)}`)
 
   const ui = await evaluate(`(async () => {
     window.dispatchEvent(new CustomEvent('agentplay-open-task-center'))
@@ -150,7 +163,7 @@ try {
   for (const marker of ['视频内容成果包', '工作流来源已验证', '逐步成果回执已完成', '质量评分 100', '继续修改']) {
     if (!ui.includes(marker)) throw new Error(`任务中心缺少 ${marker}`)
   }
-  process.stdout.write(`${JSON.stringify({ formats: result.detected.formats, calls, outputs: result.run.outputs.map((item) => ({ ext: path.extname(item), bytes: fs.statSync(item).size, sha256: crypto.createHash('sha256').update(fs.readFileSync(item)).digest('hex') })), quality: result.run.quality.score, consistency: result.run.deliveryReceipt.bundle.consistency.verdict, ui: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ formats: result.detected.formats, calls, outputs: result.run.outputs.map((item) => ({ ext: path.extname(item), bytes: fs.statSync(item).size, sha256: crypto.createHash('sha256').update(fs.readFileSync(item)).digest('hex') })), quality: result.run.quality.score, consistency: result.run.deliveryReceipt.bundle.consistency.verdict, reusedWithoutCalls: continuity.duplicate.reused, project: { id: continuity.continued.projectCapsule.projectId, revision: continuity.continued.projectCapsule.revision, materials: continuity.project.materials.length, artifacts: continuity.project.artifacts.length, instructions: continuity.project.instructions.length }, ui: true })}\n`)
   socket.send(JSON.stringify({ id: ++nextId, method: 'Browser.close', params: {} }))
   await delay(500)
 } finally {

@@ -53,6 +53,9 @@ test('outcome quality requires both real step receipts and a matching final deli
     deliveryReceipt: { schemaVersion: 1, kind: 'agentplay.delivery-receipt', artifacts }
   }
   assert.equal(evaluateTaskResult('outcome.workflow', result, {}).passed, true)
+  assert.equal(evaluateTaskResult('outcome.workflow', result, { projectId: 'project-required' }).passed, false)
+  const withProject = { ...result, projectCapsule: { schemaVersion: 1, projectId: 'project-1', revision: 1, currentPath: report } }
+  assert.equal(evaluateTaskResult('outcome.workflow', withProject, { projectId: 'project-1' }).passed, true)
   const incomplete = { ...result, workflowReceipt: { ...result.workflowReceipt, steps: result.workflowReceipt.steps.slice(1) } }
   assert.equal(evaluateTaskResult('outcome.workflow', incomplete, {}).passed, false)
   assert.ok(evaluateTaskResult('outcome.workflow', incomplete, {}).reasons.some((item) => item.code === 'WORKFLOW_RECEIPT_INCOMPLETE'))

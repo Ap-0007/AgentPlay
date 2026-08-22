@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useAgentStore } from '../../stores/agentStore'
-import type { WorkspaceTaskKind, WorkspaceTaskRetry } from '../../taskLifecycle'
+import type { WorkspaceTaskEvidence, WorkspaceTaskKind, WorkspaceTaskRetry } from '../../taskLifecycle'
 
 type CurrentRef<T> = { current: T }
 
@@ -43,7 +43,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const evidenceSources = isOutcome && workflowSource
         ? [{ name: String(workflowSource.path || '').split(/[\\/]/).pop() || '视频来源', sha256: workflowSource.sha256, bytes: workflowSource.size }]
         : (deliveryReceipt?.sources || [])
-      const deliveryEvidence = evidenceSources.map((item, index) => ({
+      const deliveryEvidence: WorkspaceTaskEvidence[] = evidenceSources.map((item, index) => ({
         id: `source-${runtimeTask.id}-${index + 1}`,
         kind: 'receipt' as const,
         label: isOutcome ? '工作流来源已验证' : '来源指纹已冻结',
@@ -71,6 +71,15 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
           createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now())
         })
       }
+      const projectCapsule = runtimeTask.result?.projectCapsule as { projectId?: string; name?: string; revision?: number; materialCount?: number; artifactCount?: number; currentPath?: string } | undefined
+      if (projectCapsule?.projectId) deliveryEvidence.push({
+        id: `project-${runtimeTask.id}`,
+        kind: 'state' as const,
+        label: `项目第 ${Number(projectCapsule.revision) || 0} 版`,
+        value: `${projectCapsule.name || 'AgentPlay 项目'} · 当前修改对象 ${String(projectCapsule.currentPath || '').split(/[\\/]/).pop() || ''}`,
+        verified: true,
+        createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now())
+      })
       const batchKind = runtimeTask.spec?.kind === 'transcribe' ? 'transcribe' : 'compress'
       const compressMode = runtimeTask.spec?.mode === 'remux' ? 'remux' : 'compress'
       const trimDecision = runtimeTask.spec?.decision as { timeline?: { startSeconds?: number; endSeconds?: number; segments?: Array<{ sourceStartSeconds?: number; sourceEndSeconds?: number }> } } | undefined

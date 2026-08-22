@@ -63,7 +63,7 @@ export default function TaskCenter({ onClose, onRetry, onContinue, onCancel, can
           </div>
         )}
         {task.evidence.length > 0 && <ul className="task-center-evidence" aria-label="成果证据">
-          {task.evidence.slice(0, 3).map((item) => <li key={item.id} title={item.value}><i className={item.verified ? 'is-verified' : ''} /><strong>{item.label}</strong><span>{item.value}</span></li>)}
+          {task.evidence.slice(0, 4).map((item) => <li key={item.id} title={item.value}><i className={item.verified ? 'is-verified' : ''} /><strong>{item.label}</strong><span>{item.value}</span></li>)}
         </ul>}
         {task.quality && (
           <div className={`task-center-quality is-${task.quality.level}`}>

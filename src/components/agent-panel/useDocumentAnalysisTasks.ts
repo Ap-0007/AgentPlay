@@ -129,7 +129,7 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
         requestCloudApproval()
         return
       }
-      const sourceEvidence = (result.deliveryReceipt?.sources || []).map((source, index) => ({
+      const sourceEvidence: AgentTask['evidence'] = (result.deliveryReceipt?.sources || []).map((source, index) => ({
         id: `source-${Date.now()}-${index + 1}`,
         kind: 'receipt' as const,
         label: '来源指纹已冻结',
@@ -146,6 +146,7 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
         verified: result.deliveryReceipt.bundle.consistency.verdict === 'matched',
         createdAt: Date.now()
       })
+      if (result.projectCapsule) sourceEvidence.push({ id: `project-${Date.now()}`, kind: 'state' as const, label: `项目第 ${result.projectCapsule.revision} 版`, value: `${result.projectCapsule.name} · 素材 ${result.projectCapsule.materialCount} · 成果 ${result.projectCapsule.artifactCount}`, verified: true, createdAt: Date.now() })
       if (!result.success) {
         const message = result.error || '文档处理失败'
         const failedFormats = Object.entries(result.failures || {}).map(([format, reason]) => `${format.toUpperCase()}：${reason}`).join('；')
@@ -303,7 +304,7 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
       if (!result.success) throw new Error(result.error || '视频内容成果包未完成')
       outcomeApprovalRequestIdRef.current = ''
       const workflowSource = result.workflowReceipt?.source
-      const sourceEvidence = workflowSource ? [{
+      const sourceEvidence: AgentTask['evidence'] = workflowSource ? [{
         id: `outcome-source-${Date.now()}`,
         kind: 'receipt' as const,
         label: '工作流来源已验证',
@@ -312,6 +313,7 @@ export default function useDocumentAnalysisTasks(options: DocumentAnalysisTaskOp
         createdAt: Date.now(), bytes: workflowSource.size
       }] : []
       sourceEvidence.push({ id: `outcome-steps-${Date.now()}`, kind: 'receipt' as const, label: '逐步成果回执已完成', value: (result.workflowReceipt?.steps || []).map((step) => step.id).join(' → '), verified: result.workflowReceipt?.steps?.every((step) => step.state === 'completed') === true, createdAt: Date.now(), bytes: 0 })
+      if (result.projectCapsule) sourceEvidence.push({ id: `outcome-project-${Date.now()}`, kind: 'state' as const, label: `项目第 ${result.projectCapsule.revision} 版`, value: `${result.projectCapsule.name} · 当前修改对象 ${result.projectCapsule.currentPath.split(/[\\/]/).pop() || ''}`, verified: true, createdAt: Date.now(), bytes: 0 })
       addMessage('agent', result.summary || '视频内容成果包已完成')
       completeExecutionTask({ outputs: result.outputs || [], summary: result.summary || '视频内容成果包已完成', evidence: sourceEvidence, quality: result.quality || null, failure: result.failure || null })
       clearCloudApproval()

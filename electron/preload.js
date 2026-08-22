@@ -89,6 +89,10 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('outcome:status', handler)
     }
   },
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list'),
+    get: (projectId) => ipcRenderer.invoke('projects:get', projectId)
+  },
   localAI: {
     status: () => ipcRenderer.invoke('localai:status'),
     download: () => ipcRenderer.invoke('localai:download'),

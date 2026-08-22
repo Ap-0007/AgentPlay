@@ -112,11 +112,14 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       && receiptArtifacts.every((item) => {
         try { return fingerprintArtifact(item.path).sha256 === item.sha256 } catch { return false }
       })
+    const projectRequired = Boolean(spec.projectId)
+    const projectOk = !projectRequired || (result.projectCapsule?.schemaVersion === 1 && String(result.projectCapsule?.projectId || '').startsWith('project-') && Number(result.projectCapsule?.revision) >= 1 && String(result.projectCapsule?.currentPath || ''))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '最终成果文件', artifactRatio, 30, artifactFailure)
-    add('format', '最终成果格式', formatRatio, 15, formatFailure)
+    add('artifacts', '最终成果文件', artifactRatio, 25, artifactFailure)
+    add('format', '最终成果格式', formatRatio, 10, formatFailure)
     add('workflow-receipt', '逐步成果回执', workflowComplete ? 1 : 0, 25, reason('WORKFLOW_RECEIPT_INCOMPLETE', '成果工作流缺少完整的上游分析或最终打包回执', true))
     add('delivery-receipt', '最终交付回执', deliveryOk ? 1 : 0, 20, !receipt ? reason('DELIVERY_RECEIPT_MISSING', '缺少最终成果交付回执', true) : reason('DELIVERY_RECEIPT_MISMATCH', '最终成果与交付回执不一致', true))
+    add('project-capsule', '项目胶囊与当前版本', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '成果没有进入统一项目胶囊或缺少当前版本', true))
   } else if (taskType === 'document.run' && result.chatOnly) {
     add('declared-success', '执行状态', success ? 1 : 0, 20, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('chat-result', '回答内容', String(result.summary || '').trim().length >= 8 ? 1 : 0, 50, reason('EMPTY_CHAT_RESULT', '回答内容为空或过短', true))
@@ -172,8 +175,10 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       && /^[a-f0-9]{64}$/i.test(String(receipt?.bundle?.sourceLedgerSha256 || ''))
       && receiptArtifacts.every((item) => item.sourceLedgerSha256 === receipt.bundle.sourceLedgerSha256 && Array.isArray(item.factIds) && item.factIds.length > 0)
     )
+    const projectRequired = Boolean(spec.projectId)
+    const projectOk = !projectRequired || (result.projectCapsule?.schemaVersion === 1 && String(result.projectCapsule?.projectId || '').startsWith('project-') && Number(result.projectCapsule?.revision) >= 1 && String(result.projectCapsule?.currentPath || ''))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '成果文件', artifactRatio, 25, artifactFailure)
+    add('artifacts', '成果文件', artifactRatio, 20, artifactFailure)
     add('format', '文件结构', formatRatio, 10, formatFailure)
     add('history', '历史记录', result.historyId ? 1 : 0, 10, reason('HISTORY_MISSING', '成果尚未写入历史记录', true))
     add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 5, reason('SUMMARY_MISSING', '缺少结果说明', true))
@@ -183,6 +188,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
           : reason('SOURCE_RECEIPT_MISSING', '交付回执没有覆盖全部来源', true))
     add('bundle-completeness', '成果包完整性', bundleComplete ? 1 : 0, 10, reason('BUNDLE_INCOMPLETE', '成果包存在未完成格式，不能按完整交付处理', true))
     add('bundle-consistency', '成果包共用冻结事实底稿', bundleConsistent ? 1 : 0, 10, reason('BUNDLE_INCONSISTENT', '成果包没有通过共享事实底稿一致性校验', true))
+    add('project-capsule', '项目胶囊与当前版本', projectOk ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '成果没有进入统一项目胶囊或缺少当前版本', true))
   } else if (taskType === 'media.edit-music') {
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)
