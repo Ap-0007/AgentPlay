@@ -1470,6 +1470,13 @@ app.whenReady().then(async () => {
     const projectCapsule = projectCapsules.recordTask({ projectId: task.spec.projectId, taskId: task.id, type: task.type, instruction: workflow.instruction, sources: [...task.spec.sources, ...(subtitlePath ? [subtitlePath] : [])], outputs: result.outputs || [], intermediateOutputs, historyId: result.historyId, operationKey: task.spec.operationKey, result })
     return { ...result, projectCapsule }
   }, { autoResume: true })
+  persistentTaskRuntime.register('project.trash', async ({ task, checkpoint }) => {
+    if (task.checkpoint?.stage === 'trashed' && task.checkpoint?.result) return task.checkpoint.result
+    const projectCapsule = projectCapsules.trash(task.spec.projectId)
+    const result = { success: true, chatOnly: true, summary: `项目《${projectCapsule.name}》已移入可恢复区；素材与成果文件均未删除`, projectCapsule }
+    checkpoint({ stage: 'trashed', result })
+    return result
+  }, { autoResume: true })
   persistentTaskRuntime.register('download.direct', async ({ task, signal, checkpoint, status }) => {
     let lastCheckpointAt = 0
     let lastCheckpointBytes = Number(task.checkpoint?.received || 0)
@@ -4022,6 +4029,24 @@ app.whenReady().then(async () => {
   ipcMain.handle('projects:get', (event, projectId) => {
     assertTrustedSender(event)
     return projectCapsules.get(String(projectId || ''))
+  })
+  ipcMain.handle('projects:list-trash', (event) => { assertTrustedSender(event); return projectCapsules.listTrash() })
+  ipcMain.handle('projects:archive', (event, input = {}) => { assertTrustedSender(event); return projectCapsules.archive(String(input.projectId || ''), input.archived !== false) })
+  ipcMain.handle('projects:copy', (event, projectId) => { assertTrustedSender(event); return projectCapsules.copy(String(projectId || '')) })
+  ipcMain.handle('projects:restore', (event, projectId) => { assertTrustedSender(event); return projectCapsules.restore(String(projectId || '')) })
+  ipcMain.handle('projects:trash', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const projectId = String(input.projectId || '')
+    const project = projectCapsules.get(projectId)
+    if (!project) return { success: false, error: '项目不存在' }
+    const taskId = normalizeRequestId(input.requestId, 'project-trash')
+    let task = persistentTaskRuntime.enqueue({ id: taskId, type: 'project.trash', spec: { projectId }, approval: { action: 'delete', summary: `把项目《${project.name || projectId}》移入可恢复区；不会删除任何素材或成果文件` } })
+    if (task.state === 'waiting_approval') {
+      if (input.approvalId && input.approvalToken) task = persistentTaskRuntime.approve(input.approvalId, input.approvalToken)
+      else return { success: false, requiresApproval: true, requestId: taskId, approval: task.approval }
+    }
+    task = await persistentTaskRuntime.run(taskId)
+    return task.state === 'completed' ? { ...task.result, requestId: taskId } : { success: false, error: task.error || '项目未移入回收区' }
   })
   ipcMain.handle('links:detect', (event, text) => {
     assertTrustedSender(event)

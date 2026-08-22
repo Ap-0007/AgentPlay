@@ -91,7 +91,12 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
-    get: (projectId) => ipcRenderer.invoke('projects:get', projectId)
+    get: (projectId) => ipcRenderer.invoke('projects:get', projectId),
+    listTrash: () => ipcRenderer.invoke('projects:list-trash'),
+    archive: (input) => ipcRenderer.invoke('projects:archive', input),
+    copy: (projectId) => ipcRenderer.invoke('projects:copy', projectId),
+    trash: (input) => ipcRenderer.invoke('projects:trash', input),
+    restore: (projectId) => ipcRenderer.invoke('projects:restore', projectId)
   },
   linkContent: {
     detect: (text) => ipcRenderer.invoke('links:detect', text),

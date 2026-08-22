@@ -318,6 +318,11 @@ interface AiPlayerAPI {
   projects?: {
     list: () => Promise<Array<{ schemaVersion: 1; projectId: string; name: string; revision: number; materialCount: number; artifactCount: number; currentPath: string; currentArtifactId: string; updatedAt: number }>>
     get: (projectId: string) => Promise<Record<string, unknown> | null>
+    listTrash: () => Promise<Array<{ projectId: string; name: string; status: string; revision: number }>>
+    archive: (input: { projectId: string; archived?: boolean }) => Promise<{ projectId: string; status: string }>
+    copy: (projectId: string) => Promise<{ projectId: string; name: string; status: string }>
+    trash: (input: { projectId: string; requestId: string; approvalId?: string; approvalToken?: string }) => Promise<{ success: boolean; requiresApproval?: boolean; requestId?: string; approval?: { id: string; action: 'delete'; summary: string; token: string; expiresAt: number }; error?: string; projectCapsule?: { projectId: string; status: string } }>
+    restore: (projectId: string) => Promise<{ projectId: string; status: string; revision: number }>
   }
   linkContent?: {
     detect: (text: string) => Promise<{ matched: boolean; kind: string; url: string; host?: string }>

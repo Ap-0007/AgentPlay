@@ -150,6 +150,23 @@ try {
   if (!continuity.duplicate?.reused || calls.length !== 4) throw new Error(`相同内容被重复处理：${JSON.stringify({ duplicate: continuity.duplicate, calls })}`)
   if (!continuity.continued?.success || continuity.continued.projectCapsule?.revision !== 2 || continuity.continued.projectCapsule?.projectId !== result.run.projectCapsule?.projectId) throw new Error(`继续修改没有进入同一项目新版本：${JSON.stringify(continuity.continued)}`)
   if (continuity.project?.materials?.length !== 2 || continuity.project?.artifacts?.length < 5 || continuity.project?.instructions?.length !== 2) throw new Error(`混合项目清单或版本关系不完整：${JSON.stringify(continuity.project)}`)
+  const lifecycle = await evaluate(`(async () => {
+    const projectId = ${JSON.stringify(continuity.continued.projectCapsule.projectId)}
+    const archived = await window.aiPlayer.projects.archive({ projectId })
+    const active = await window.aiPlayer.projects.archive({ projectId, archived: false })
+    const copied = await window.aiPlayer.projects.copy(projectId)
+    const copiedProject = await window.aiPlayer.projects.get(copied.projectId)
+    const requestId = 'trash-${taskId}'
+    const planned = await window.aiPlayer.projects.trash({ projectId: copied.projectId, requestId })
+    const trashed = await window.aiPlayer.projects.trash({ projectId: copied.projectId, requestId, approvalId: planned.approval.id, approvalToken: planned.approval.token })
+    const trash = await window.aiPlayer.projects.listTrash()
+    const restored = await window.aiPlayer.projects.restore(copied.projectId)
+    return { archived, active, copied, copiedProject, planned, trashed, trash, restored }
+  })()`)
+  if (lifecycle.archived.status !== 'archived' || lifecycle.active.status !== 'active') throw new Error('项目归档/取消归档失败')
+  if (lifecycle.copied.projectId === continuity.continued.projectCapsule.projectId || lifecycle.copiedProject.materials[0].locations[0] !== videoPath) throw new Error('项目复制没有生成独立胶囊或错误复制素材')
+  if (!lifecycle.planned.requiresApproval || lifecycle.planned.approval.action !== 'delete' || lifecycle.trashed.projectCapsule.status !== 'trashed' || !lifecycle.trash.some((item) => item.projectId === lifecycle.copied.projectId) || lifecycle.restored.status !== 'active') throw new Error(`统一删除审批/回收/恢复失败：${JSON.stringify(lifecycle)}`)
+  if (!result.run.outputs.every((item) => fs.existsSync(item))) throw new Error('项目移入回收区时删除了用户成果文件')
 
   const ui = await evaluate(`(async () => {
     window.dispatchEvent(new CustomEvent('agentplay-open-task-center'))
@@ -163,7 +180,7 @@ try {
   for (const marker of ['视频内容成果包', '工作流来源已验证', '逐步成果回执已完成', '质量评分 100', '继续修改']) {
     if (!ui.includes(marker)) throw new Error(`任务中心缺少 ${marker}`)
   }
-  process.stdout.write(`${JSON.stringify({ formats: result.detected.formats, calls, outputs: result.run.outputs.map((item) => ({ ext: path.extname(item), bytes: fs.statSync(item).size, sha256: crypto.createHash('sha256').update(fs.readFileSync(item)).digest('hex') })), quality: result.run.quality.score, consistency: result.run.deliveryReceipt.bundle.consistency.verdict, reusedWithoutCalls: continuity.duplicate.reused, project: { id: continuity.continued.projectCapsule.projectId, revision: continuity.continued.projectCapsule.revision, materials: continuity.project.materials.length, artifacts: continuity.project.artifacts.length, instructions: continuity.project.instructions.length }, ui: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ formats: result.detected.formats, calls, outputs: result.run.outputs.map((item) => ({ ext: path.extname(item), bytes: fs.statSync(item).size, sha256: crypto.createHash('sha256').update(fs.readFileSync(item)).digest('hex') })), quality: result.run.quality.score, consistency: result.run.deliveryReceipt.bundle.consistency.verdict, reusedWithoutCalls: continuity.duplicate.reused, project: { id: continuity.continued.projectCapsule.projectId, revision: continuity.continued.projectCapsule.revision, materials: continuity.project.materials.length, artifacts: continuity.project.artifacts.length, instructions: continuity.project.instructions.length }, lifecycle: { archived: lifecycle.archived.status, copied: lifecycle.copied.projectId, deleteApproval: lifecycle.planned.approval.action, trashed: lifecycle.trashed.projectCapsule.status, restored: lifecycle.restored.status, filesPreserved: true }, ui: true })}\n`)
   socket.send(JSON.stringify({ id: ++nextId, method: 'Browser.close', params: {} }))
   await delay(500)
 } finally {

@@ -28,13 +28,13 @@ class ProjectCapsuleStore {
   }
 
   load() {
-    if (!fs.existsSync(this.statePath)) return { schemaVersion: 1, projects: [] }
+    if (!fs.existsSync(this.statePath)) return { schemaVersion: 1, projects: [], trash: [] }
     try {
       const parsed = JSON.parse(fs.readFileSync(this.statePath, 'utf8'))
-      if (parsed?.schemaVersion === 1 && Array.isArray(parsed.projects)) return parsed
+      if (parsed?.schemaVersion === 1 && Array.isArray(parsed.projects)) return { ...parsed, trash: Array.isArray(parsed.trash) ? parsed.trash : [] }
     } catch { /* fail closed below */ }
     this.loadError = '项目胶囊历史损坏，已拒绝覆盖；请先备份后修复'
-    return { schemaVersion: 1, projects: [] }
+    return { schemaVersion: 1, projects: [], trash: [] }
   }
 
   assertReady() { if (this.loadError) throw new Error(this.loadError) }
@@ -152,10 +152,34 @@ class ProjectCapsuleStore {
 
   get(projectId) { this.assertReady(); const project = this.state.projects.find((item) => item.id === projectId); return project ? clone(project) : null }
   list() { this.assertReady(); return [...this.state.projects].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 100).map((item) => this.capsule(item)) }
+  listTrash() { this.assertReady(); return [...this.state.trash].sort((a, b) => Number(b.trashedAt || 0) - Number(a.trashedAt || 0)).map((item) => this.capsule(item)) }
+  archive(projectId, archived = true) {
+    this.assertReady(); const project = this.state.projects.find((item) => item.id === projectId); if (!project) throw new Error('项目不存在')
+    project.status = archived ? 'archived' : 'active'; project.archivedAt = archived ? this.now() : null; project.updatedAt = this.now(); this.persist(); return this.capsule(project)
+  }
+  copy(projectId) {
+    this.assertReady(); const source = this.state.projects.find((item) => item.id === projectId); if (!source) throw new Error('项目不存在')
+    const project = clone(source); project.id = this.newProjectId(); project.name = `${source.name} 副本`; project.status = 'active'; project.archivedAt = null; project.createdAt = this.now(); project.updatedAt = this.now()
+    const materialIds = new Map(project.materials.map((item) => { const old = item.id; item.id = `material-${this.idFactory()}`; return [old, item.id] }))
+    const artifactIds = new Map(project.artifacts.map((item) => { const old = item.id; item.id = `artifact-${this.idFactory()}`; return [old, item.id] }))
+    const instructionIds = new Map(project.instructions.map((item) => { const old = item.id; item.id = `instruction-${this.idFactory()}`; item.taskId = ''; return [old, item.id] }))
+    for (const artifact of project.artifacts) artifact.derivedFrom = artifact.derivedFrom.map((id) => materialIds.get(id) || artifactIds.get(id) || id)
+    const revisionIds = new Map(project.revisions.map((item) => { const old = item.id; item.id = `revision-${this.idFactory()}`; item.taskId = ''; item.operationKey = ''; item.sourceIds = item.sourceIds.map((id) => materialIds.get(id) || artifactIds.get(id) || id); item.artifactIds = item.artifactIds.map((id) => artifactIds.get(id) || id); item.instructionId = instructionIds.get(item.instructionId) || item.instructionId; return [old, item.id] }))
+    if (project.current) { project.current.revisionId = revisionIds.get(project.current.revisionId) || project.current.revisionId; project.current.artifactIds = project.current.artifactIds.map((id) => artifactIds.get(id) || id); project.current.primaryArtifactId = artifactIds.get(project.current.primaryArtifactId) || project.current.primaryArtifactId }
+    this.state.projects.push(project); this.persist(); return this.capsule(project)
+  }
+  trash(projectId) {
+    this.assertReady(); const index = this.state.projects.findIndex((item) => item.id === projectId); if (index < 0) throw new Error('项目不存在')
+    const [project] = this.state.projects.splice(index, 1); project.status = 'trashed'; project.trashedAt = this.now(); project.updatedAt = this.now(); this.state.trash.push(project); this.persist(); return this.capsule(project)
+  }
+  restore(projectId) {
+    this.assertReady(); const index = this.state.trash.findIndex((item) => item.id === projectId); if (index < 0) throw new Error('回收区项目不存在')
+    const [project] = this.state.trash.splice(index, 1); project.status = 'active'; project.trashedAt = null; project.updatedAt = this.now(); this.state.projects.push(project); this.persist(); return this.capsule(project)
+  }
   capsule(project) {
     const current = project.current || { revision: 0, artifactIds: [], primaryArtifactId: '' }
     const artifact = project.artifacts.find((item) => item.id === current.primaryArtifactId)
-    return { schemaVersion: 1, projectId: project.id, name: project.name, revision: current.revision || 0, materialCount: project.materials.length, artifactCount: project.artifacts.length, currentPath: artifact?.path || '', currentArtifactId: artifact?.id || '', updatedAt: project.updatedAt }
+    return { schemaVersion: 1, projectId: project.id, name: project.name, status: project.status || 'active', revision: current.revision || 0, materialCount: project.materials.length, artifactCount: project.artifacts.length, currentPath: artifact?.path || '', currentArtifactId: artifact?.id || '', updatedAt: project.updatedAt }
   }
 }
 
