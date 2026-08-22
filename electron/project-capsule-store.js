@@ -20,28 +20,117 @@ class ProjectCapsuleStore {
     if (!rootDir) throw new Error('项目胶囊目录不能为空')
     this.rootDir = path.resolve(rootDir)
     this.statePath = path.join(this.rootDir, 'project-capsules-v1.json')
+    this.backupPath = `${this.statePath}.bak`
     this.now = now
     this.idFactory = idFactory
     this.loadError = ''
+    this.loadMode = 'normal'
+    this.recoveryInfo = null
     fs.mkdirSync(this.rootDir, { recursive: true })
     this.state = this.load()
+    this.finishLoadRecovery()
+  }
+
+  emptyState() { return { schemaVersion: 1, projects: [], trash: [] } }
+
+  normalizeProject(project, status = 'active') {
+    return {
+      ...project,
+      schemaVersion: 1,
+      status: ['active', 'archived', 'trashed'].includes(project?.status) ? project.status : status,
+      materials: Array.isArray(project?.materials) ? project.materials : [],
+      artifacts: Array.isArray(project?.artifacts) ? project.artifacts : [],
+      references: Array.isArray(project?.references) ? project.references : [],
+      instructions: Array.isArray(project?.instructions) ? project.instructions : [],
+      revisions: Array.isArray(project?.revisions) ? project.revisions : [],
+      current: project?.current && typeof project.current === 'object' ? project.current : null
+    }
+  }
+
+  normalizeState(parsed) {
+    const projects = parsed.projects.map((project) => this.normalizeProject(project))
+    const trash = (Array.isArray(parsed.trash) ? parsed.trash : []).map((project) => this.normalizeProject(project, 'trashed'))
+    return { ...parsed, schemaVersion: 1, projects, trash }
+  }
+
+  parseState(text, { allowLegacy = false } = {}) {
+    const parsed = JSON.parse(text)
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.projects)) return null
+    const projects = [...parsed.projects, ...(Array.isArray(parsed.trash) ? parsed.trash : [])]
+    const hasProjectIds = projects.every((project) => project && typeof project === 'object' && !Array.isArray(project) && typeof project.id === 'string' && project.id.trim())
+    if (!hasProjectIds) return null
+    if (parsed.schemaVersion === 1) {
+      const complete = projects.every((project) => ['materials', 'artifacts', 'references', 'instructions', 'revisions'].every((key) => Array.isArray(project[key])))
+      if (!complete) return null
+      return { state: this.normalizeState(parsed), mode: 'normal' }
+    }
+    if (allowLegacy && parsed.schemaVersion === 0) return { state: this.normalizeState(parsed), mode: 'migrated-v0' }
+    return null
+  }
+
+  readState(filePath, options) {
+    if (!fs.existsSync(filePath)) return null
+    try { return this.parseState(fs.readFileSync(filePath, 'utf8'), options) } catch { return null }
   }
 
   load() {
-    if (!fs.existsSync(this.statePath)) return { schemaVersion: 1, projects: [], trash: [] }
+    if (!fs.existsSync(this.statePath)) return this.emptyState()
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.statePath, 'utf8'))
-      if (parsed?.schemaVersion === 1 && Array.isArray(parsed.projects)) return { ...parsed, trash: Array.isArray(parsed.trash) ? parsed.trash : [] }
-    } catch { /* fail closed below */ }
+      const raw = JSON.parse(fs.readFileSync(this.statePath, 'utf8'))
+      if (Number(raw?.schemaVersion) > 1) {
+        this.loadError = `项目胶囊版本 ${raw.schemaVersion} 高于当前程序可支持版本，已拒绝降级覆盖`
+        return this.emptyState()
+      }
+    } catch { /* malformed primary may still recover from a verified backup */ }
+    const primary = this.readState(this.statePath, { allowLegacy: true })
+    if (primary) {
+      this.loadMode = primary.mode
+      return primary.state
+    }
+    const backup = this.readState(this.backupPath)
+    if (backup) {
+      this.loadMode = 'recovered-backup'
+      return backup.state
+    }
     this.loadError = '项目胶囊历史损坏，已拒绝覆盖；请先备份后修复'
-    return { schemaVersion: 1, projects: [], trash: [] }
+    return this.emptyState()
+  }
+
+  snapshotPath(kind) {
+    const timestamp = Math.trunc(Number(this.now()) || Date.now())
+    let candidate = `${this.statePath}.${kind}-${timestamp}`
+    let suffix = 1
+    while (fs.existsSync(candidate)) candidate = `${this.statePath}.${kind}-${timestamp}-${suffix++}`
+    return candidate
+  }
+
+  writeAtomic(filePath, text) {
+    const temp = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`
+    fs.writeFileSync(temp, text, 'utf8')
+    fs.renameSync(temp, filePath)
+  }
+
+  serializedState() { return `${JSON.stringify(this.state, null, 2)}\n` }
+
+  finishLoadRecovery() {
+    if (this.loadError || this.loadMode === 'normal') return
+    const kind = this.loadMode === 'migrated-v0' ? 'legacy-v0' : 'corrupt'
+    const snapshotPath = this.snapshotPath(kind)
+    fs.copyFileSync(this.statePath, snapshotPath)
+    this.persist({ backupExisting: false })
+    this.writeAtomic(this.backupPath, this.serializedState())
+    this.recoveryInfo = { mode: this.loadMode, snapshotPath, backupPath: this.backupPath }
   }
 
   assertReady() { if (this.loadError) throw new Error(this.loadError) }
-  persist() {
-    const temp = `${this.statePath}.${process.pid}.tmp`
-    fs.writeFileSync(temp, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8')
-    fs.renameSync(temp, this.statePath)
+  persist({ backupExisting = true } = {}) {
+    this.assertReady()
+    if (backupExisting) {
+      const current = this.readState(this.statePath)
+      if (current) this.writeAtomic(this.backupPath, fs.readFileSync(this.statePath, 'utf8'))
+    }
+    this.writeAtomic(this.statePath, this.serializedState())
+    if (!fs.existsSync(this.backupPath)) this.writeAtomic(this.backupPath, this.serializedState())
   }
 
   fileReceipt(input) {
