@@ -6,6 +6,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const crypto = require('crypto')
+const ExcelJS = require('exceljs')
 const { execFileSync, spawn } = require('child_process')
 const { MpvService } = require('./mpv-service')
 const { requestScreenGuide, askAboutImage } = require('./screen-guide-service')
@@ -70,6 +71,9 @@ const { evaluateTaskResult, classifyTaskFailure } = require('./task-result-quali
 const { compileOutcomeWorkflow, assertOutcomeWorkflow } = require('./outcome-workflow')
 const { OutcomeWorkflowRunner } = require('./outcome-workflow-runner')
 const { ProjectCapsuleStore } = require('./project-capsule-store')
+const { PublicLinkService } = require('./public-link-service')
+const { videoTime, documentPage, sheetCell, imageRegion } = require('./evidence-reference')
+const { imageSize } = require('./docx-image')
 const { compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
 const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decision-list')
@@ -645,6 +649,7 @@ const videoFrames = new VideoFrameService({
 const mediaEditService = new MediaEditService({ frames: videoFrames })
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
 const projectCapsules = new ProjectCapsuleStore({ rootDir: path.join(app.getPath('userData'), 'project-capsules') })
+const publicLinkService = new PublicLinkService()
 const mediaEditConversation = new MediaEditConversation()
 const translateDownload = new LocalAiDownloadService({
   installRoot: path.join(app.getPath('userData'), 'translate-pack'),
@@ -4017,6 +4022,65 @@ app.whenReady().then(async () => {
   ipcMain.handle('projects:get', (event, projectId) => {
     assertTrustedSender(event)
     return projectCapsules.get(String(projectId || ''))
+  })
+  ipcMain.handle('links:detect', (event, text) => {
+    assertTrustedSender(event)
+    return publicLinkService.detect(text)
+  })
+  ipcMain.handle('links:handle', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const inspected = await publicLinkService.inspect(input.url)
+      if (inspected.access !== 'public') return { success: false, controlled: true, ...inspected }
+      const instruction = String(input.instruction || '')
+      if (/下载|保存/.test(instruction)) {
+        const downloaded = await publicLinkService.download(inspected.url, path.join(app.getPath('documents'), 'AgentPlay 输出', '公开内容'))
+        userAuthorizedPaths.add(path.resolve(downloaded.outputPath))
+        return { success: true, action: 'download', ...downloaded }
+      }
+      if (/加入项目|保存到项目|放进项目/.test(instruction)) {
+        const projectId = projectCapsules.newProjectId()
+        const projectCapsule = projectCapsules.recordTask({ projectId, taskId: `link-${crypto.randomUUID()}`, type: 'link.reference', instruction, references: [{ kind: inspected.kind, uri: inspected.url }], outputs: [], result: { success: true, preview: inspected } })
+        return { success: true, action: 'project', ...inspected, projectCapsule }
+      }
+      if (/翻译/.test(instruction) && inspected.excerpt) {
+        const config = modelConfigStore.resolved('chat')
+        const requiresKey = config?.requiresKey !== false
+        if (config?.configured === false || !config?.baseUrl || !config?.model || (requiresKey && !config.apiKey)) throw new Error('翻译公开内容需要先配置可用模型')
+        if (!isLocalModelConfig(config)) {
+          const approved = await ensureCloudConsent(`把公开网页摘录发送给 ${config.providerName || config.providerId} · ${config.model} 翻译；不发送浏览器Cookie或登录信息`)
+          if (!approved) return { success: false, cancelled: true, error: '已取消：未授权云端翻译' }
+        }
+        const translated = await llmComplete({ systemPrompt: '你是忠实翻译器，只翻译提供的公开内容，不补充事实。', prompt: `翻译成中文：\n${inspected.excerpt}`, modelConfig: config, taskKind: 'document' })
+        return { success: true, action: 'translate', ...inspected, translated: translated.text }
+      }
+      return { success: true, action: 'preview', ...inspected }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('evidence:inspect-file', async (event, filePath) => {
+    assertTrustedSender(event)
+    const resolved = assertAllowedPath(filePath)
+    const ext = path.extname(resolved).toLowerCase()
+    if (ext === '.pdf') {
+      const pages = await pdfPageCount(resolved)
+      return { source: resolved, evidence: Array.from({ length: Math.min(pages, 500) }, (_, index) => documentPage(resolved, index + 1, `第 ${index + 1} 页`)) }
+    }
+    if (ext === '.xlsx') {
+      const workbook = new ExcelJS.Workbook(); await workbook.xlsx.readFile(resolved); const evidence = []
+      workbook.eachSheet((sheet) => sheet.eachRow({ includeEmpty: false }, (row) => row.eachCell({ includeEmpty: false }, (cell) => { if (evidence.length < 500) evidence.push(sheetCell(resolved, sheet.name, cell.address, cell.text)) })))
+      return { source: resolved, evidence }
+    }
+    if (['.jpg', '.jpeg', '.png', '.bmp'].includes(ext)) {
+      const size = imageSize(fs.readFileSync(resolved), ext)
+      return { source: resolved, evidence: [imageRegion(resolved, { x: 0, y: 0, width: size.width, height: size.height }, `${size.width}×${size.height}`)] }
+    }
+    if (getType(ext) === 'video') {
+      const subtitlePath = findAdjacentSubtitle(resolved); const cues = subtitlePath ? parseSubtitleCues(fs.readFileSync(subtitlePath, 'utf8'), path.extname(subtitlePath)) : []
+      return { source: resolved, evidence: cues.slice(0, 500).map((cue) => videoTime(resolved, cue.start, cue.end, cue.text)) }
+    }
+    return { source: resolved, evidence: [documentPage(resolved, 1, path.basename(resolved))] }
   })
   // 对话流视频解剖：AI 助手面板直接对当前视频发起，报告经文档工作台另存，原文件不动
   ipcMain.handle('analysis:detect', (event, text) => {

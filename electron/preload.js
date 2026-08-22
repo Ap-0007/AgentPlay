@@ -93,6 +93,13 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     list: () => ipcRenderer.invoke('projects:list'),
     get: (projectId) => ipcRenderer.invoke('projects:get', projectId)
   },
+  linkContent: {
+    detect: (text) => ipcRenderer.invoke('links:detect', text),
+    handle: (input) => ipcRenderer.invoke('links:handle', input)
+  },
+  evidence: {
+    inspectFile: (filePath) => ipcRenderer.invoke('evidence:inspect-file', filePath)
+  },
   localAI: {
     status: () => ipcRenderer.invoke('localai:status'),
     download: () => ipcRenderer.invoke('localai:download'),

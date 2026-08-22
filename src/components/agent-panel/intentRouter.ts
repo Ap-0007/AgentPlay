@@ -97,6 +97,28 @@ export function createIntentRouter(options: IntentRouterOptions) {
       window.dispatchEvent(new CustomEvent('ai-player-action', { detail: libraryHit[1] }))
       return
     }
+    if (text && window.aiPlayer?.linkContent) {
+      try {
+        const detected = await window.aiPlayer.linkContent.detect(text)
+        if (detected?.matched && detected.url && !['video-site', 'media'].includes(detected.kind)) {
+          addMessage('user', text)
+          setInputText('')
+          const result = await window.aiPlayer.linkContent.handle({ url: detected.url, instruction: text })
+          if (!result.success) {
+            addMessage('agent', result.controlled ? `这个链接需要登录、订阅或额外权限，不能绕过访问控制。\n${result.reason || ''}` : `[错误] ${result.error || '公开链接暂时无法处理'}`)
+            return
+          }
+          if (result.outputPath) {
+            const attached = await window.aiPlayer.chat?.attachPaths([result.outputPath])
+            if (attached?.documents?.length) window.dispatchEvent(new CustomEvent('ai-player-attach-docs', { detail: attached.documents }))
+          }
+          const evidence = (result.evidence || []).slice(0, 3).map((item) => `- 网页第 ${String(item.locator?.paragraph || '?')} 段：${item.excerpt}`).join('\n')
+          const body = result.action === 'translate' ? result.translated : result.excerpt
+          addMessage('agent', [`已识别 ${result.kind || detected.kind}：${result.title || detected.host || detected.url}`, body || '', evidence, result.action === 'project' ? `已加入项目 ${result.projectCapsule?.projectId || ''}` : '', result.action === 'download' ? `已下载并作为附件打开：${result.outputPath}` : ''].filter(Boolean).join('\n'))
+          return
+        }
+      } catch { /* 公开链接识别失败时继续原有视频下载或普通对话 */ }
+    }
     if (text && window.aiPlayer?.mediaDownload) {
       try {
         const detection = await window.aiPlayer.mediaDownload.detect(text)

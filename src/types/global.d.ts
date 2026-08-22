@@ -319,6 +319,13 @@ interface AiPlayerAPI {
     list: () => Promise<Array<{ schemaVersion: 1; projectId: string; name: string; revision: number; materialCount: number; artifactCount: number; currentPath: string; currentArtifactId: string; updatedAt: number }>>
     get: (projectId: string) => Promise<Record<string, unknown> | null>
   }
+  linkContent?: {
+    detect: (text: string) => Promise<{ matched: boolean; kind: string; url: string; host?: string }>
+    handle: (input: { url: string; instruction: string }) => Promise<{ success: boolean; action?: 'preview' | 'download' | 'translate' | 'project'; controlled?: boolean; kind?: string; url?: string; title?: string; excerpt?: string; translated?: string; outputPath?: string; reason?: string; error?: string; evidence?: Array<{ schemaVersion: 1; kind: 'agentplay.evidence-reference'; evidenceKind: string; source: string; locator: Record<string, unknown>; excerpt: string }>; projectCapsule?: { projectId: string; revision: number } }>
+  }
+  evidence?: {
+    inspectFile: (filePath: string) => Promise<{ source: string; evidence: Array<{ schemaVersion: 1; kind: 'agentplay.evidence-reference'; evidenceKind: 'video-time' | 'document-page' | 'web-paragraph' | 'sheet-cell' | 'image-region'; source: string; locator: Record<string, unknown>; excerpt: string }> }>
+  }
   localAI?: {
     status: () => Promise<LocalAiComponentStatus>
     download: () => Promise<{ success: boolean; error?: string; status?: BundledModelStatus }>
