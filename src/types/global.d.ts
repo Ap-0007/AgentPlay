@@ -331,6 +331,19 @@ interface AiPlayerAPI {
   evidence?: {
     inspectFile: (filePath: string) => Promise<{ source: string; evidence: Array<{ schemaVersion: 1; kind: 'agentplay.evidence-reference'; evidenceKind: 'video-time' | 'document-page' | 'web-paragraph' | 'sheet-cell' | 'image-region'; source: string; locator: Record<string, unknown>; excerpt: string }> }>
   }
+  crossMaterial?: {
+    detect: (input: { tokens: string[]; currentPath?: string; question: string }) => Promise<{ matched: boolean; sourceCount: number; projectId?: string; error?: string }>
+    ask: (input: { tokens: string[]; currentPath?: string; question: string; cloudApproved: boolean; requestId: string; workspaceTaskId?: string }) => Promise<{
+      success: boolean; matched: boolean; requestId: string; summary?: string; error?: string; requiresApproval?: boolean
+      approval?: { id: string; action: 'cloud'; summary: string; status: string; expiresAt: number; token?: string }
+      claims?: Array<{ id: string; text: string; status: 'confirmed' | 'inference' | 'unknown'; evidenceIds: string[] }>
+      evidence?: Array<{ id: string; schemaVersion: 1; kind: 'agentplay.evidence-reference'; evidenceKind: 'video-time' | 'document-page' | 'web-paragraph' | 'sheet-cell' | 'image-region'; source: string; locator: Record<string, unknown>; excerpt: string; locatorLabel: string }>
+      quality?: import('../taskLifecycle').WorkspaceTaskQuality | null
+      projectCapsule?: { projectId: string; name: string; revision: number }
+    }>
+    cancel: (requestId: string) => Promise<boolean>
+    onStatus: (cb: (event: { requestId: string; status: string }) => void) => () => void
+  }
   localAI?: {
     status: () => Promise<LocalAiComponentStatus>
     download: () => Promise<{ success: boolean; error?: string; status?: BundledModelStatus }>

@@ -124,6 +124,20 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('declared-success', '执行状态', success ? 1 : 0, 20, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('chat-result', '回答内容', String(result.summary || '').trim().length >= 8 ? 1 : 0, 50, reason('EMPTY_CHAT_RESULT', '回答内容为空或过短', true))
     add('history', '历史记录', result.historyId ? 1 : 0, 30, reason('HISTORY_MISSING', '结果尚未写入任务历史', true))
+  } else if (taskType === 'project.evidence-qa') {
+    const receipt = result.evidenceReceipt
+    const claims = Array.isArray(result.claims) ? result.claims : []
+    const evidence = Array.isArray(result.evidence) ? result.evidence : []
+    const schemaOk = receipt?.schemaVersion === 1 && receipt?.kind === 'agentplay.cross-material-answer-receipt'
+    const sourceOk = schemaOk && Number(receipt.sourceCount) >= 2
+    const labelsOk = schemaOk && receipt.allClaimsLabeled === true && claims.length > 0 && claims.every((item) => ['confirmed', 'inference', 'unknown'].includes(item?.status))
+    const citationsOk = schemaOk && receipt.confirmedCitationsValid === true && claims.filter((item) => item.status === 'confirmed').every((item) => Array.isArray(item.evidenceIds) && item.evidenceIds.length > 0)
+    const evidenceOk = evidence.every((item) => item?.kind === 'agentplay.evidence-reference' && item.source && item.locatorLabel)
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
+    add('source-count', '跨素材来源', sourceOk ? 1 : 0, 25, reason('EVIDENCE_MISSING', '跨素材问答未覆盖至少两个来源', false))
+    add('claim-labels', '已确认/推断/未知标记', labelsOk ? 1 : 0, 25, reason('CLAIM_STATUS_MISSING', '回答存在未标记可确认程度的主张', false))
+    add('citation-validity', '已确认结论引用', citationsOk ? 1 : 0, 25, reason('EVIDENCE_MISSING', '已确认结论缺少有效证据引用', false))
+    add('evidence-locators', '来源定位结构', evidenceOk ? 1 : 0, 15, reason('EVIDENCE_LOCATOR_INVALID', '证据缺少可回开的来源定位', false))
   } else if (taskType === 'subtitle.generate') {
     const text = artifacts.map((item) => item.text || '').join('\n')
     const cueCount = (text.match(/-->/g) || []).length
@@ -389,7 +403,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
   const passed = score >= threshold && !hardFailure
   return {
     version: 1,
-    profile: taskType === 'analysis.run' ? 'semantic-and-technical' : 'technical',
+    profile: taskType === 'analysis.run' ? 'semantic-and-technical' : taskType === 'project.evidence-qa' ? 'semantic-evidence' : 'technical',
     score,
     threshold,
     passed,

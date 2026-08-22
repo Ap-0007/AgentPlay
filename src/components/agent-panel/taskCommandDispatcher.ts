@@ -20,6 +20,7 @@ type TaskCommandOptions = {
   retryStoredMediaCreative: (retry: WorkspaceTaskRetry) => boolean
   retryActiveLinkTask: () => Promise<void>
   retryActiveDocumentAnalysis: () => Promise<void>
+  retryActiveCrossMaterialQuestion: () => Promise<boolean>
   retryActiveMediaCreative: () => boolean
 }
 
@@ -29,7 +30,7 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
     updateTask, mutateTask, addMessage, releaseCancelableRequest,
     runDownloadTask, runLinkAnalysisTask, retryStoredAnalysisTask, retryStoredOutcomeTask,
     retryStoredMediaCreative, retryActiveLinkTask,
-    retryActiveDocumentAnalysis, retryActiveMediaCreative
+    retryActiveDocumentAnalysis, retryActiveCrossMaterialQuestion, retryActiveMediaCreative
   } = options
 
   const retryStoredTask = (record: AgentTask) => {
@@ -53,7 +54,7 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
       return
     }
     if (retryStoredMediaCreative(retry)) return
-    addMessage('agent', retry.kind === 'doc' || retry.kind === 'batch'
+    addMessage('agent', retry.kind === 'doc' || retry.kind === 'batch' || retry.kind === 'cross-qa'
       ? '这个任务需要重新授权原文件。请再次添加文件，原任务和结果记录不会丢失。'
       : '这个任务缺少可安全恢复的源数据，请从原素材重新发起。')
   }
@@ -69,6 +70,9 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
       case 'outcome':
       case 'doc':
         void retryActiveDocumentAnalysis()
+        return
+      case 'cross-qa':
+        void retryActiveCrossMaterialQuestion()
         return
       case 'dedup':
       case 'batch':
@@ -114,6 +118,9 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
           break
         case 'doc':
           cancelled = await window.aiPlayer?.documents?.cancel(requestId) || false
+          break
+        case 'cross-qa':
+          cancelled = await window.aiPlayer?.crossMaterial?.cancel(requestId) || false
           break
       }
       if (!cancelled) throw new Error('后台没有确认取消，任务状态保持不变')

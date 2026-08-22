@@ -14,6 +14,7 @@ type IntentRouterOptions = {
   setLinkChoice: (choice: LinkChoice | null) => void
   isVideoGenerationIntent: (text: string) => boolean
   runBatchTask: (text: string) => Promise<void>
+  runCrossMaterialQuestion: (text: string) => Promise<boolean>
   runVideoGenTask: (text: string) => Promise<void>
   runEditHistoryTask: (text: string) => Promise<boolean>
   runTrimTask: (text: string) => Promise<boolean>
@@ -41,7 +42,7 @@ const LIBRARY_INTENTS: Array<[RegExp, string, string]> = [
 export function createIntentRouter(options: IntentRouterOptions) {
   const {
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
-    isVideoGenerationIntent, runBatchTask, runVideoGenTask, runEditHistoryTask, runTrimTask,
+    isVideoGenerationIntent, runBatchTask, runCrossMaterialQuestion, runVideoGenTask, runEditHistoryTask, runTrimTask,
     runCompressTask, runDedupTask, runDocumentTask, runOutcomeWorkflow, setAnalysisFormat,
     runAnalysisTask, send
   } = options
@@ -61,6 +62,7 @@ export function createIntentRouter(options: IntentRouterOptions) {
       await runBatchTask(text)
       return
     }
+    if (await runCrossMaterialQuestion(text)) return
     if (attachments.length > 0) {
       await runDocumentTask()
       return

@@ -5,7 +5,7 @@ const { AgentRunLedger } = require('../electron/agent-run-ledger')
 
 test('agent tool registry is the single metadata source for model tools', () => {
   const tools = listAgentTools()
-  assert.equal(tools.length, 25)
+  assert.equal(tools.length, 26)
   assert.equal(tools[0].function.name, 'pause')
   assert.equal(getAgentTool('summarize_video').risk, 'read-only')
   assert.deepEqual(tools.find((tool) => tool.function.name === 'seek').function.parameters.required, ['seconds'])
@@ -18,6 +18,15 @@ test('agent tool registry is the single metadata source for model tools', () => 
   assert.equal(getAgentTool('redo_media_edit').risk, 'control')
   assert.equal(getAgentTool('find_duplicates').risk, 'read-only')
   assert.equal(getAgentTool('advanced_document_ocr').category, 'document')
+  assert.equal(getAgentTool('ask_across_materials').category, 'project')
+})
+
+test('cross-material QA enters the unified registry as a recoverable evidence action', async () => {
+  const result = await executeAgentTool('ask_across_materials', { question: '这些素材是否一致？' })
+  assert.equal(result.action, 'start_cross_material_qa')
+  assert.deepEqual(result.value, { question: '这些素材是否一致？' })
+  assert.equal(result.execution, 'renderer')
+  assert.equal(result.verified, false)
 })
 
 test('advanced document OCR enters the unified registry as a recoverable document action', async () => {

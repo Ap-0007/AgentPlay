@@ -73,6 +73,7 @@ const { OutcomeWorkflowRunner } = require('./outcome-workflow-runner')
 const { ProjectCapsuleStore } = require('./project-capsule-store')
 const { PublicLinkService } = require('./public-link-service')
 const { videoTime, documentPage, sheetCell, imageRegion } = require('./evidence-reference')
+const { CrossMaterialQaService, detectCrossMaterialQuestion } = require('./cross-material-qa-service')
 const { imageSize } = require('./docx-image')
 const { compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
@@ -1124,6 +1125,9 @@ app.whenReady().then(async () => {
     if (task.type === 'outcome.workflow') {
       mainWindow.webContents.send('outcome:status', { requestId: task.id, status: task.status || '' })
     }
+    if (task.type === 'project.evidence-qa') {
+      mainWindow.webContents.send('cross-material:status', { requestId: task.id, status: task.status || '' })
+    }
     if (task.type === 'subtitle.generate') {
       mainWindow.webContents.send('subtitle:bilingual-status', { requestId: task.id, status: task.status || '' })
     }
@@ -1223,6 +1227,119 @@ app.whenReady().then(async () => {
     if (requiresKey && !config.apiKey) throw new Error('任务原先使用的模型凭证已不可用，请重新配置')
     return config
   }
+  const textEvidence = (source, text) => {
+    const value = String(text || '').trim()
+    if (!value) return []
+    const sections = value.split(/(?=^## 第 \d+ 页\s*$)/m).filter((item) => item.trim())
+    const evidence = []
+    for (const section of sections) {
+      const page = Math.max(1, Number(section.match(/^## 第 (\d+) 页/m)?.[1]) || 1)
+      const body = section.replace(/^## 第 \d+ 页\s*/m, '').trim()
+      const paragraphs = body.split(/\n\s*\n|(?<=[。！？.!?])\s+(?=[^。！？.!?])/).map((item) => item.replace(/\s+/g, ' ').trim()).filter(Boolean)
+      for (const paragraph of paragraphs) {
+        for (let offset = 0; offset < paragraph.length; offset += 480) {
+          evidence.push(documentPage(source, page, paragraph.slice(offset, offset + 480)))
+          if (evidence.length >= 80) return evidence
+        }
+      }
+    }
+    return evidence
+  }
+  const inspectEvidencePath = async (filePath) => {
+    const resolved = path.resolve(String(filePath || ''))
+    const ext = path.extname(resolved).toLowerCase()
+    if (ext === '.xlsx') {
+      const workbook = new ExcelJS.Workbook(); await workbook.xlsx.readFile(resolved); const evidence = []
+      workbook.eachSheet((sheet) => sheet.eachRow({ includeEmpty: false }, (row) => row.eachCell({ includeEmpty: false }, (cell) => {
+        if (evidence.length < 120 && String(cell.text || '').trim()) evidence.push(sheetCell(resolved, sheet.name, cell.address, cell.text))
+      })))
+      return evidence
+    }
+    if (['.jpg', '.jpeg', '.png', '.bmp'].includes(ext)) {
+      const size = imageSize(fs.readFileSync(resolved), ext)
+      let excerpt = ''
+      try {
+        const useRapid = rapidOcr.availability().available
+        const status = useRapid ? { available: true } : await ocrService.detect()
+        if (status.available) {
+          const results = useRapid ? await rapidOcr.recognize([resolved]) : await ocrService.recognize([resolved])
+          const entry = results.get(resolved)
+          if (entry?.ok) excerpt = String(entry.text || '').replace(/\s+/g, ' ').trim()
+        }
+      } catch { /* 图片无OCR时仍可引用完整区域和尺寸 */ }
+      return [imageRegion(resolved, { x: 0, y: 0, width: size.width, height: size.height }, excerpt || `${size.width}×${size.height}`)]
+    }
+    if (getType(ext) === 'video') {
+      const subtitlePath = findAdjacentSubtitle(resolved)
+      const cues = subtitlePath ? parseSubtitleCues(decodeSubtitleText(fs.readFileSync(subtitlePath)), path.extname(subtitlePath)) : []
+      return cues.slice(0, 120).map((cue) => videoTime(resolved, cue.start, cue.end, cue.text))
+    }
+    try {
+      const content = await extractText(resolved, { recognizePdf: recognizePdfWithOcr })
+      return textEvidence(resolved, content)
+    } catch {
+      return []
+    }
+  }
+  const resolveCrossMaterialContext = (paths) => {
+    const seedPaths = [...new Set((Array.isArray(paths) ? paths : []).map((item) => path.resolve(String(item || ''))).filter((item) => fs.existsSync(item) && !SENSITIVE_FILE.test(item)))]
+    const projectId = projectCapsules.resolveProjectId(seedPaths)
+    const project = projectId ? projectCapsules.get(projectId) : null
+    const projectPaths = project ? [
+      ...project.materials.flatMap((item) => item.locations || []),
+      ...project.artifacts.map((item) => item.path)
+    ] : []
+    const sourcePaths = [...new Set([...seedPaths, ...projectPaths].map((item) => path.resolve(String(item || ''))).filter((item) => fs.existsSync(item) && fs.statSync(item).isFile() && !SENSITIVE_FILE.test(item)))].slice(0, 20)
+    const referenceEvidence = (project?.revisions || []).flatMap((revision) => [
+      ...(Array.isArray(revision?.result?.preview?.evidence) ? revision.result.preview.evidence : []),
+      ...(Array.isArray(revision?.result?.evidence) ? revision.result.evidence : [])
+    ]).slice(-100)
+    return { projectId: projectId || projectCapsules.newProjectId(), project, sourcePaths, referenceEvidence }
+  }
+  const preparePersistentCrossMaterialTask = (paths, input) => {
+    const context = resolveCrossMaterialContext(paths)
+    const sourceCount = new Set([...context.sourcePaths, ...context.referenceEvidence.map((item) => String(item?.source || '')).filter(Boolean)]).size
+    if (sourceCount < 2) throw new Error('跨素材问答至少需要两个来源；请再添加一份文件或进入已有混合项目')
+    const planned = selectModelForTaskPlan({ taskKind: 'cross-material-qa', requirements: { text: true } })
+    const config = planned.selected || modelConfigStore.resolved('chat')
+    const requiresKey = config?.requiresKey !== false
+    if (!config?.baseUrl || !config?.model || (requiresKey && !config.apiKey)) throw new Error('跨素材问答需要可用模型，请先在模型接入中心完成连接')
+    const modelRoute = freezeTaskModelRoute(config, { taskKind: 'cross-material-qa' })
+    const sources = snapshotDocumentSources(context.sourcePaths)
+    const question = String(input.question || '').trim().slice(0, 2000)
+    const operationKey = crypto.createHash('sha256').update(JSON.stringify({ type: 'project.evidence-qa', question, sources: sources.map((item) => item.sha256), references: context.referenceEvidence })).digest('hex')
+    return {
+      matched: detectCrossMaterialQuestion(question),
+      spec: { question, sources, referenceEvidence: context.referenceEvidence, projectId: context.projectId, operationKey, modelRoute },
+      approval: modelRoute.local ? null : { action: 'cloud', summary: `把 ${sourceCount} 份素材的本地提取片段和定位发送给 ${modelRoute.providerName} · ${modelRoute.model}；不上传原文件` }
+    }
+  }
+  persistentTaskRuntime.register('project.evidence-qa', async ({ task, signal, checkpoint, status }) => {
+    const paths = validateDocumentSources(task.spec.sources)
+    for (const sourcePath of paths) userAuthorizedPaths.add(sourcePath)
+    if (task.checkpoint?.stage === 'answer-ready' && task.checkpoint?.result) {
+      const projectCapsule = projectCapsules.recordTask({ projectId: task.spec.projectId, taskId: task.id, type: task.type, instruction: task.spec.question, sources: task.spec.sources, references: (task.spec.referenceEvidence || []).map((item) => ({ kind: item.evidenceKind, uri: item.source })), outputs: [], operationKey: task.spec.operationKey, result: task.checkpoint.result })
+      return { ...task.checkpoint.result, projectCapsule }
+    }
+    status('正在读取并定位多份素材')
+    let references = Array.isArray(task.checkpoint?.references) ? task.checkpoint.references : null
+    if (!references) {
+      const groups = []
+      for (const sourcePath of paths) {
+        if (signal.aborted) throw new DOMException('跨素材问答已停止', 'AbortError')
+        groups.push(...await inspectEvidencePath(sourcePath))
+      }
+      references = [...groups, ...(task.spec.referenceEvidence || [])].slice(0, 200)
+      checkpoint({ stage: 'evidence-collected', references })
+    }
+    status('正在逐条核对结论与来源')
+    const config = resolveTaskModelRoute(task.spec.modelRoute)
+    const service = new CrossMaterialQaService({ complete: (call) => llmComplete({ ...call, modelConfig: config, taskKind: 'cross-material-qa' }) })
+    const result = await service.answer({ question: task.spec.question, references, signal, modelConfig: config, allowRepair: isLocalModelConfig(config) })
+    checkpoint({ stage: 'answer-ready', result })
+    const projectCapsule = projectCapsules.recordTask({ projectId: task.spec.projectId, taskId: task.id, type: task.type, instruction: task.spec.question, sources: task.spec.sources, references: (task.spec.referenceEvidence || []).map((item) => ({ kind: item.evidenceKind, uri: item.source })), outputs: [], operationKey: task.spec.operationKey, result })
+    return { ...result, projectCapsule }
+  }, { autoResume: true })
   const preparePersistentDocumentTask = async (paths, input) => {
     const plan = documentWorkspace.plan(paths, input.instruction, input.outputFormat)
     let modelRoute = null
@@ -4087,25 +4204,45 @@ app.whenReady().then(async () => {
   ipcMain.handle('evidence:inspect-file', async (event, filePath) => {
     assertTrustedSender(event)
     const resolved = assertAllowedPath(filePath)
-    const ext = path.extname(resolved).toLowerCase()
-    if (ext === '.pdf') {
-      const pages = await pdfPageCount(resolved)
-      return { source: resolved, evidence: Array.from({ length: Math.min(pages, 500) }, (_, index) => documentPage(resolved, index + 1, `第 ${index + 1} 页`)) }
+    return { source: resolved, evidence: await inspectEvidencePath(resolved) }
+  })
+  ipcMain.handle('cross-material:detect', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 20) : []
+      const paths = tokens.map(documentSelectionFromToken)
+      if (input.currentPath) paths.push(assertAllowedPath(input.currentPath))
+      const context = resolveCrossMaterialContext(paths)
+      const sourceCount = new Set([...context.sourcePaths, ...context.referenceEvidence.map((item) => String(item?.source || '')).filter(Boolean)]).size
+      return { matched: detectCrossMaterialQuestion(input.question) && sourceCount >= 2, sourceCount, projectId: context.projectId }
+    } catch (error) {
+      return { matched: false, sourceCount: 0, error: error instanceof Error ? error.message : String(error) }
     }
-    if (ext === '.xlsx') {
-      const workbook = new ExcelJS.Workbook(); await workbook.xlsx.readFile(resolved); const evidence = []
-      workbook.eachSheet((sheet) => sheet.eachRow({ includeEmpty: false }, (row) => row.eachCell({ includeEmpty: false }, (cell) => { if (evidence.length < 500) evidence.push(sheetCell(resolved, sheet.name, cell.address, cell.text)) })))
-      return { source: resolved, evidence }
+  })
+  ipcMain.handle('cross-material:ask', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'cross-material')
+    try {
+      const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 20) : []
+      const paths = tokens.map(documentSelectionFromToken)
+      if (input.currentPath) paths.push(assertAllowedPath(input.currentPath))
+      const prepared = preparePersistentCrossMaterialTask(paths, input)
+      if (!prepared.matched) return { success: false, matched: false, requestId, error: '当前指令不是跨素材问答' }
+      let task = persistentTaskRuntime.enqueue({ id: requestId, type: 'project.evidence-qa', workspaceTaskId: input.workspaceTaskId, spec: prepared.spec, approval: prepared.approval })
+      if (task.state === 'waiting_approval') {
+        if (input.cloudApproved === true) task = persistentTaskRuntime.approve(task.approval.id, task.approval.token)
+        else return { success: false, matched: true, requiresApproval: true, requestId, approval: task.approval }
+      }
+      task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, matched: true, requestId, error: task.failure?.message || task.error || '跨素材问答未完成', quality: task.quality || null, failure: task.failure || null }
+      return { ...task.result, matched: true, requestId, quality: task.quality || null }
+    } catch (error) {
+      return { success: false, matched: true, requestId, error: error instanceof Error ? error.message : String(error) }
     }
-    if (['.jpg', '.jpeg', '.png', '.bmp'].includes(ext)) {
-      const size = imageSize(fs.readFileSync(resolved), ext)
-      return { source: resolved, evidence: [imageRegion(resolved, { x: 0, y: 0, width: size.width, height: size.height }, `${size.width}×${size.height}`)] }
-    }
-    if (getType(ext) === 'video') {
-      const subtitlePath = findAdjacentSubtitle(resolved); const cues = subtitlePath ? parseSubtitleCues(fs.readFileSync(subtitlePath, 'utf8'), path.extname(subtitlePath)) : []
-      return { source: resolved, evidence: cues.slice(0, 500).map((cue) => videoTime(resolved, cue.start, cue.end, cue.text)) }
-    }
-    return { source: resolved, evidence: [documentPage(resolved, 1, path.basename(resolved))] }
+  })
+  ipcMain.handle('cross-material:cancel', (event, requestId) => {
+    assertTrustedSender(event)
+    return persistentTaskRuntime.cancel(String(requestId || ''))
   })
   // 对话流视频解剖：AI 助手面板直接对当前视频发起，报告经文档工作台另存，原文件不动
   ipcMain.handle('analysis:detect', (event, text) => {

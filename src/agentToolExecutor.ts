@@ -96,6 +96,9 @@ export async function applyAgentToolResult(tool: string, result: AgentToolAction
           detail: { action: result.action, value: result.value || {} }
         }))
         return { tool, success: true, verified: false, label: result.desc || tool, evidence: '已进入高级文档解析任务入口；识别结果落盘后再验证' }
+      case 'start_cross_material_qa':
+        window.dispatchEvent(new CustomEvent('ai-player-agent-cross-material', { detail: result.value || {} }))
+        return { tool, success: true, verified: false, label: result.desc || tool, evidence: '已进入跨素材证据问答；回答通过引用校验后再确认' }
       default:
         return { tool, success: true, verified: result.verified === true, label: result.desc || tool, evidence: result.verified ? '工具结果已验证' : '工具返回结果，但没有可复查状态' }
     }

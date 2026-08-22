@@ -23,7 +23,8 @@ const TOOL_SPECS = [
   { name: 'undo_media_edit', description: '撤销当前视频项目的上一步编辑并打开上一版本，不删除任何版本文件', parameters: {}, category: 'media', risk: 'control', cost: 1 },
   { name: 'redo_media_edit', description: '重做当前视频项目刚才撤销的编辑并打开下一版本', parameters: {}, category: 'media', risk: 'control', cost: 1 },
   { name: 'find_duplicates', description: '扫描媒体库并按文件内容查找重复文件，不会删除文件', parameters: {}, category: 'media', risk: 'read-only', cost: 4 },
-  { name: 'advanced_document_ocr', description: '用已配置的高级文档解析服务处理当前扫描 PDF；服务不可用时自动回退本机 OCR', parameters: {}, category: 'document', risk: 'local-write', cost: 4 }
+  { name: 'advanced_document_ocr', description: '用已配置的高级文档解析服务处理当前扫描 PDF；服务不可用时自动回退本机 OCR', parameters: {}, category: 'document', risk: 'local-write', cost: 4 },
+  { name: 'ask_across_materials', description: '对当前附件和项目素材进行跨素材证据问答，每个结论返回来源定位', parameters: { question: { type: 'string', description: '要核对的问题' } }, required: ['question'], category: 'project', risk: 'read-only', cost: 3 }
 ]
 
 const BUILTIN_TOOL_MAP = new Map(TOOL_SPECS.map((tool) => [tool.name, Object.freeze(tool)]))
@@ -217,6 +218,7 @@ async function executeAgentTool(name, rawArgs = {}, context = null, handlers = {
       case 'redo_media_edit': result = { success: true, action: 'start_edit_history', value: { direction: 'redo' }, desc: '已交给编辑项目重做工作流' }; break
       case 'find_duplicates': result = { success: true, action: 'start_duplicate_scan', value: {}, desc: '已交给可恢复的重复文件扫描工作流' }; break
       case 'advanced_document_ocr': result = { success: true, action: 'start_advanced_document_ocr', value: {}, desc: '已交给可恢复的文档处理工作流' }; break
+      case 'ask_across_materials': result = { success: true, action: 'start_cross_material_qa', value: { question: String(args.question || '') }, desc: '已交给可恢复的跨素材证据问答' }; break
     }
     if (!result) return { success: false, error: `工具 ${tool.name} 没有执行器`, verified: false }
     const delegated = String(result.action || '').startsWith('start_')

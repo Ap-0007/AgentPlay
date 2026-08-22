@@ -105,6 +105,16 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   evidence: {
     inspectFile: (filePath) => ipcRenderer.invoke('evidence:inspect-file', filePath)
   },
+  crossMaterial: {
+    detect: (input) => ipcRenderer.invoke('cross-material:detect', input),
+    ask: (input) => ipcRenderer.invoke('cross-material:ask', input),
+    cancel: (requestId) => ipcRenderer.invoke('cross-material:cancel', requestId),
+    onStatus: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('cross-material:status', handler)
+      return () => ipcRenderer.removeListener('cross-material:status', handler)
+    }
+  },
   localAI: {
     status: () => ipcRenderer.invoke('localai:status'),
     download: () => ipcRenderer.invoke('localai:download'),

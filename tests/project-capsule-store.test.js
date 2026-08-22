@@ -39,6 +39,9 @@ test('continuing from a prior artifact stays in the same project and advances th
   const project = store.get(one.projectId)
   assert.equal(project.materials.length, 1, '上一轮成果作为输入时不得重复登记成原始素材')
   assert.equal(project.artifacts[1].derivedFrom[0], project.artifacts[0].id, '第二版成果必须指向上一版成果')
+  const asked = store.recordTask({ projectId: one.projectId, taskId: 'three', type: 'project.evidence-qa', instruction: '两份结果有什么差异？', sources: [source, second], outputs: [], result: { success: true, chatOnly: true } })
+  assert.equal(asked.currentPath, second, '只读证据问答不得清空当前成果')
+  assert.equal(store.get(one.projectId).revisions.length, 3)
 })
 
 test('changed derived files invalidate reuse and corrupt history fails closed', (t) => {

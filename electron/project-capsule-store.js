@@ -210,7 +210,7 @@ class ProjectCapsuleStore {
     }
     const revision = { id: `revision-${this.idFactory()}`, number: project.revisions.length + 1, taskId: taskKey, type: String(type || ''), instructionId: instructionRecord.id, sourceIds, artifactIds, historyId: String(historyId || ''), operationKey: String(operationKey || ''), result: result ? clone(result) : null, createdAt: this.now() }
     project.revisions.push(revision)
-    project.current = { revisionId: revision.id, revision: revision.number, artifactIds: [...artifactIds], primaryArtifactId: artifactIds.at(-1) || '' }
+    if (artifactIds.length > 0 || !project.current) project.current = { revisionId: revision.id, revision: revision.number, artifactIds: [...artifactIds], primaryArtifactId: artifactIds.at(-1) || '' }
     project.name ||= project.materials[0]?.name || project.artifacts[0]?.name || 'AgentPlay 项目'
     project.updatedAt = this.now()
     project.materials = project.materials.slice(-500); project.artifacts = project.artifacts.slice(-500); project.instructions = project.instructions.slice(-200); project.revisions = project.revisions.slice(-300)
