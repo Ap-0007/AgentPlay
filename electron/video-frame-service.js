@@ -289,6 +289,15 @@ class VideoFrameService {
     return buffer?.length === 32 * 32 ? buffer : null
   }
 
+  async readJpegFrame(sourcePath, seconds, { signal } = {}) {
+    const buffer = await this.readRawFrameBuffer([
+      '-v', 'error', '-ss', Number(seconds).toFixed(3), '-i', sourcePath, '-frames:v', '1',
+      '-vf', `scale=${FRAME_WIDTH}:-2:force_original_aspect_ratio=decrease,format=yuvj420p`,
+      '-q:v', '4', '-c:v', 'mjpeg', '-f', 'image2pipe', '-'
+    ], { signal })
+    return buffer?.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8 ? buffer : null
+  }
+
   // 边界末帧读取：B 帧重排时按 PTS seek 可能拿不到最后几帧，且 -t 截断会丢未 flush 的 B 帧尾。
   // 改为解码 [boundary-0.7, boundary+1.05] 窗口（留足 flush 余量），select 只收 boundary 之前的帧，取最后一块 32x32 灰度帧。
   async readLastGrayFrame(sourcePath, boundarySeconds, { signal, fitWidth = 0, fitHeight = 0 } = {}) {

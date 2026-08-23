@@ -215,13 +215,14 @@ function buildSemanticModelDecision({ instruction, sourcePath, durationSeconds, 
   let targetCursor = 0
   const segments = retained.map((item) => { const segmentDuration = item.sourceEndSeconds - item.sourceStartSeconds; const segment = { sourceStartSeconds: Number(item.sourceStartSeconds.toFixed(3)), sourceEndSeconds: Number(item.sourceEndSeconds.toFixed(3)), durationSeconds: Number(segmentDuration.toFixed(3)), targetStartSeconds: Number(targetCursor.toFixed(3)), targetEndSeconds: Number((targetCursor + segmentDuration).toFixed(3)) }; targetCursor += segmentDuration; return segment })
   const totalRemovedSeconds = Number(removed.reduce((sum, item) => sum + item.durationSeconds, 0).toFixed(3))
-  const modelEvidence = { topicSummary: review.topicSummary, model: review.model, candidates: review.candidates }
+  const modelEvidence = { topicSummary: review.topicSummary, model: review.model, candidates: review.allCandidates || review.candidates }
+  const visualEvidence = review.visualEvidence
   return {
     schemaVersion: 1, kind: 'media.concat-segments', instruction: String(instruction || '').trim(), source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
     timeline: { segments, durationSeconds: Number(targetCursor.toFixed(3)) },
-    semanticCut: { schemaVersion: 1, strategy: 'model-semantic-review-v1', target: 'near-duplicate-and-offtopic', subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)), detected: review.candidates, removed, reviewOnly: [], confirmationRequired: true, modelEvidence, totalRemovedSeconds },
+    semanticCut: { schemaVersion: 1, strategy: 'model-semantic-review-v1', target: 'near-duplicate-and-offtopic', subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)), detected: review.candidates, removed, reviewOnly: [], confirmationRequired: true, modelEvidence, visualEvidence, totalRemovedSeconds },
     output: { container: 'mp4', overwrite: false, suffix: '语义精简版' },
-    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: 'model-semantic-review-v1', removedCount: removed.length, totalRemovedSeconds, modelEvidence } }
+    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: 'model-semantic-review-v1', removedCount: removed.length, totalRemovedSeconds, modelEvidence, visualEvidence } }
   }
 }
 
@@ -288,9 +289,10 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
 }
 
 class SemanticEditService {
-  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues }
+  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null, analyzeVisualCandidates = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues; this.analyzeVisualCandidates = analyzeVisualCandidates }
 
   setSemanticAnalyzer(analyzeSemanticCues) { this.analyzeSemanticCues = analyzeSemanticCues }
+  setVisualAnalyzer(analyzeVisualCandidates) { this.analyzeVisualCandidates = analyzeVisualCandidates }
 
   matches(instruction) { return matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
 
@@ -306,7 +308,14 @@ class SemanticEditService {
         const review = await this.analyzeSemanticCues({ cues: analyzeTextCleanupCues(transcript.cues, durationSeconds).normalized, signal })
         if (!review?.available) return { matched: true, review: { kind: 'semantic-model-review', summary: `${review?.reason || '当前没有可用的语义审阅模型'}；没有创建剪辑任务。`, candidates: [] } }
         if (!review.candidates?.length) return { matched: true, review: { kind: 'semantic-model-review', summary: `工作模型围绕“${review.topicSummary}”完成审阅，没有找到置信度达到0.85且引用有效的语义重复或跑题候选；没有创建剪辑任务。`, candidates: [] } }
-        return { matched: true, decision: buildSemanticModelDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues, review }) }
+        if (!this.analyzeVisualCandidates) return { matched: true, review: { kind: 'semantic-model-review', summary: '语义候选已经生成，但没有可用的镜头证据交叉验证；没有创建剪辑任务。', candidates: review.candidates } }
+        const visual = await this.analyzeVisualCandidates({ sourcePath, cues: analyzeTextCleanupCues(transcript.cues, durationSeconds).normalized, review, durationSeconds, signal })
+        if (!visual?.available) return { matched: true, review: { kind: 'semantic-model-review', summary: `${visual?.reason || '镜头证据交叉验证不可用'}；没有创建剪辑任务。`, candidates: review.candidates } }
+        const safeIndexes = new Set(visual.safeCandidateIndexes || [])
+        const safeCandidates = review.candidates.filter((_, index) => safeIndexes.has(index + 1))
+        if (!safeCandidates.length) return { matched: true, review: { kind: 'semantic-model-review', summary: `字幕模型提出${review.candidates.length}个候选，但镜头交叉验证全部判为不安全或不确定；没有创建剪辑任务。`, candidates: review.candidates } }
+        const verifiedReview = { ...review, allCandidates: review.candidates, candidates: safeCandidates, visualEvidence: visual }
+        return { matched: true, decision: buildSemanticModelDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues, review: verifiedReview }) }
       } catch (error) {
         if (signal?.aborted || error?.message === '已取消') throw error
         return { matched: true, review: { kind: 'semantic-model-review', summary: `模型候选未通过证据校验：${error instanceof Error ? error.message : String(error)}；没有创建剪辑任务。`, candidates: [] } }

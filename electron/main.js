@@ -84,6 +84,7 @@ const { MediaEditProjectStore } = require('./media-edit-project-store')
 const { SemanticEditService } = require('./semantic-edit-service')
 const { createWordTimingLoader } = require('./word-timing-service')
 const { reviewSemanticTranscript } = require('./semantic-transcript-review')
+const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -1292,6 +1293,23 @@ app.whenReady().then(async () => {
       complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'semantic-edit-review' })
     })
   })
+  semanticEditService.setVisualAnalyzer(async ({ sourcePath, cues, review, durationSeconds, signal }) => {
+    const candidates = modelConfigStore.resolvedCandidates('chat')
+    const planned = candidates.length ? selectModelForTaskPlan({ taskKind: 'semantic-edit-vision', requirements: { vision: true }, candidates }) : null
+    const config = planned?.selected
+    if (!config) return { available: false, reason: '没有可用的视觉工作模型，语义候选只能显示不能执行' }
+    const local = isLocalModelConfig(config)
+    if (!local) {
+      const approved = await ensureCloudConsent('语义候选前、中、后三张画面将发送给视觉模型，用于检查删除是否破坏镜头和叙事连续性；不发送整段视频或音频。')
+      if (!approved) return { available: false, reason: '你没有允许发送候选关键帧到视觉模型' }
+    }
+    return reviewSemanticCandidateVisuals({
+      sourcePath, cues, review, durationSeconds, signal,
+      model: { providerId: config.providerId, providerName: config.providerName, model: config.model, local },
+      readFrame: (filePath, seconds, options) => videoFrames.readJpegFrame(filePath, seconds, options),
+      completeVisionMulti: (input) => llmCompleteVisionMulti({ ...input, modelConfig: config, taskKind: 'semantic-edit-vision' })
+    })
+  })
   const textEvidence = (source, text) => {
     const value = String(text || '').trim()
     if (!value) return []
@@ -2260,7 +2278,7 @@ app.whenReady().then(async () => {
         summary: decision.semanticCut.target === 'long-pauses'
           ? `已按真实音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；每处保留 ${Number(decision.semanticCut.keepPaddingSeconds).toFixed(2)} 秒呼吸边界，原文件未改动`
           : decision.semanticCut.target === 'near-duplicate-and-offtopic'
-            ? `已按你确认的模型引用方案删除 ${decision.semanticCut.removed.length} 条语义重复或跑题字幕，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；模型为 ${decision.semanticCut.modelEvidence?.model?.providerName || ''} · ${decision.semanticCut.modelEvidence?.model?.model || ''}，原字幕与视频均未改动`
+            ? `已按你确认的字幕语义与镜头交叉证据删除 ${decision.semanticCut.removed.length} 条语义重复或跑题字幕，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；文字模型为 ${decision.semanticCut.modelEvidence?.model?.providerName || ''} · ${decision.semanticCut.modelEvidence?.model?.model || ''}，视觉模型为 ${decision.semanticCut.visualEvidence?.model?.providerName || ''} · ${decision.semanticCut.visualEvidence?.model?.model || ''}，原字幕与视频均未改动`
             : `已按字幕${decision.semanticCut.wordTimingEvidence?.length ? '与本机逐词DTW' : ''}时间轴删除 ${decision.semanticCut.removed.length} 条口头禅或重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动${decision.semanticCut.reviewOnly?.length ? `；另有 ${decision.semanticCut.reviewOnly.length} 条句中疑似口头禅因没有可信逐词时间戳，仅标记未删除` : ''}`
       } : {}),
       projectCapsule

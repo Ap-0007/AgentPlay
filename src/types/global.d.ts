@@ -198,6 +198,7 @@ interface MediaEditDecisionV1 {
     reviewOnly?: Array<{ startSeconds: number; endSeconds: number; cueIndex: number; text: string; reason: string; matches: string[] }>
     wordTimingEvidence?: Array<{ cueIndex: number; text: string; match: string; startSeconds: number; endSeconds: number; confidence: number; method: string; model: string }>
     modelEvidence?: { topicSummary: string; model: { providerId: string; providerName: string; model: string; local: boolean }; candidates: Array<{ type: 'near_duplicate' | 'off_topic'; cueIndexes: number[]; removeCueIndexes: number[]; confidence: number; reason: string; evidence: Array<{ cueIndex: number; quote: string }> }> }
+    visualEvidence?: { model: { providerId: string; providerName: string; model: string; local: boolean }; validations: Array<{ candidateIndex: number; verdict: 'safe' | 'unsafe' | 'uncertain'; confidence: number; reason: string; evidenceLabels: string[] }>; safeCandidateIndexes: number[]; blockedCandidateIndexes: number[]; frameMoments: Array<{ candidateIndex: number; role: 'before' | 'middle' | 'after'; label: string; seconds: number }> }
     totalRemovedSeconds: number
   }
   output: { overwrite: false; suffix: string; container?: string }

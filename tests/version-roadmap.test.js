@@ -93,6 +93,12 @@ test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dep
   assert.match(content, /模型调用次数严格为1/)
   assert.match(content, /810 tests、809 pass、0 fail、1项外部网络条件跳过/)
   assert.match(content, /镜头证据交叉验证与访谈、课程、剧情、产品介绍、竖屏口播五类人工标定尚未完成/)
+  assert.match(content, /第六个纵向切片/)
+  assert.match(content, /before\/middle\/after三帧/)
+  assert.match(content, /safe\/unsafe\/uncertain/)
+  assert.match(content, /1次字幕请求和1次六帧视觉请求/)
+  assert.match(content, /814 tests、814 pass、0 fail、0 skip/)
+  assert.match(content, /访谈、课程、剧情、产品介绍、竖屏口播五类真实素材人工标定尚未完成/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

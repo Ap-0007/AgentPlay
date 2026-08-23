@@ -188,14 +188,29 @@ test('model-cited near-duplicate and off-topic cues become confirm-only semantic
     analyzeSemanticCues: async () => ({ available: true, topicSummary: '产品价格和功能', model: { providerId: 'vllm', providerName: '本机模型', model: 'reviewer', local: true }, candidates: [
       { type: 'near_duplicate', cueIndexes: [2, 3], removeCueIndexes: [3], confidence: 0.94, reason: '价格信息重复', evidence: [{ cueIndex: 2, quote: '价格是一百元' }, { cueIndex: 3, quote: '卖一百块钱' }] },
       { type: 'off_topic', cueIndexes: [4], removeCueIndexes: [4], confidence: 0.96, reason: '与产品主题无关', evidence: [{ cueIndex: 4, quote: '昨晚吃了火锅' }] }
-    ] })
+    ] }),
+    analyzeVisualCandidates: async ({ review }) => ({ available: true, safeCandidateIndexes: [1, 2], blockedCandidateIndexes: [], model: { providerId: 'agnes', providerName: 'Agnes AI', model: 'agnes-2.0-flash', local: false }, validations: review.candidates.map((_, index) => ({ candidateIndex: index + 1, verdict: 'safe', confidence: 0.93, reason: '三帧连续', evidenceLabels: [`candidate-${index + 1}-before`, `candidate-${index + 1}-middle`, `candidate-${index + 1}-after`] })) })
   })
   const result = await service.plan({ instruction: '删掉语义重复和跑题内容', sourcePath: 'D:\\video\\talk.mp4' })
   assert.equal(result.decision.semanticCut.strategy, 'model-semantic-review-v1')
   assert.equal(result.decision.semanticCut.confirmationRequired, true)
   assert.deepEqual(result.decision.semanticCut.removed.map((item) => item.cueIndex), [3, 4])
   assert.equal(result.decision.semanticCut.modelEvidence.model.model, 'reviewer')
+  assert.equal(result.decision.semanticCut.visualEvidence.model.model, 'agnes-2.0-flash')
   assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(result.decision)))
+})
+
+test('semantic candidates remain review-only when visual cross-check is unavailable', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 6 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 1, text: '开场' }, { start: 1.1, end: 2.2, text: '价格一百元' }, { start: 2.3, end: 3.4, text: '卖一百块' }, { start: 3.5, end: 4.6, text: '功能介绍' }, { start: 4.7, end: 6, text: '总结' }] }),
+    analyzeSemanticCues: async () => ({ available: true, topicSummary: '产品介绍', model: { model: 'reviewer' }, candidates: [{ type: 'near_duplicate', cueIndexes: [2, 3], removeCueIndexes: [3], confidence: 0.94, reason: '重复', evidence: [{ cueIndex: 2, quote: '价格一百元' }, { cueIndex: 3, quote: '卖一百块' }] }] }),
+    analyzeVisualCandidates: async () => ({ available: false, reason: '没有可用视觉模型' })
+  })
+  const result = await service.plan({ instruction: '删掉语义重复内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /没有可用视觉模型/)
+  assert.match(result.review.summary, /没有创建剪辑任务/)
 })
 
 test('semantic review degrades to a non-executing explanation when no capable model is available', async () => {

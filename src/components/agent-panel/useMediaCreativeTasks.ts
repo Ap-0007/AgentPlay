@@ -329,7 +329,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           const reviewOnly = semanticCut.reviewOnly?.length
             ? `\n另有 ${semanticCut.reviewOnly.length} 条句中疑似口头禅因没有逐词时间戳，只标记、不删除。`
             : ''
-          addMessage('agent', `先给你核对方案，尚未执行：\n${removable}${reviewOnly}\n请回复“确认执行”或“取消”。`)
+          const visualHint = semanticCut.visualEvidence
+            ? `\n镜头交叉验证：${semanticCut.visualEvidence.safeCandidateIndexes.length} 个候选通过，${semanticCut.visualEvidence.blockedCandidateIndexes.length} 个因不安全或不确定被挡下；视觉模型 ${semanticCut.visualEvidence.model.providerName} · ${semanticCut.visualEvidence.model.model}。`
+            : ''
+          addMessage('agent', `先给你核对方案，尚未执行：\n${removable}${reviewOnly}${visualHint}\n请回复“确认执行”或“取消”。`)
           return true
         }
         executionInstruction = decision.instruction || text
