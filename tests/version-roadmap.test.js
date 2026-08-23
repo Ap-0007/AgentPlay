@@ -86,6 +86,13 @@ test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dep
   assert.match(content, /2\.62–3\.48秒/)
   assert.match(content, /805 tests、805 pass、0 fail、0 skip/)
   assert.match(content, /语义近似重复、跑题证据与五类素材人工标定尚未完成/)
+  assert.match(content, /第五个纵向切片/)
+  assert.match(content, /model-semantic-review-v1/)
+  assert.match(content, /内置0\.5B轻量模型明确禁止作为删片依据/)
+  assert.match(content, /不得超过字幕条数35%/)
+  assert.match(content, /模型调用次数严格为1/)
+  assert.match(content, /810 tests、809 pass、0 fail、1项外部网络条件跳过/)
+  assert.match(content, /镜头证据交叉验证与访谈、课程、剧情、产品介绍、竖屏口播五类人工标定尚未完成/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

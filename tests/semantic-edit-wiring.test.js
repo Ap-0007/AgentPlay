@@ -15,6 +15,9 @@ test('main process plans semantic pauses once and executes the frozen EDL throug
   assert.match(main, /persistentTaskRuntime\.register\('media\.edit-concat'/)
   assert.match(main, /loadTranscript:[\s\S]{0,260}findAdjacentSubtitle/)
   assert.match(main, /createWordTimingLoader\(\{ frames: videoFrames, transcription: transcriptionService \}\)/)
+  assert.match(main, /semanticEditService\.setSemanticAnalyzer/)
+  assert.match(main, /ensureCloudConsent\('当前视频字幕的序号、时间和文字/)
+  assert.match(main, /taskKind: 'semantic-edit-review'/)
 })
 
 test('renderer preserves the planned decision and shows semantic evidence instead of a generic concat label', () => {

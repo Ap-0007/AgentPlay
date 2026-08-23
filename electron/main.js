@@ -83,6 +83,7 @@ const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-
 const { MediaEditProjectStore } = require('./media-edit-project-store')
 const { SemanticEditService } = require('./semantic-edit-service')
 const { createWordTimingLoader } = require('./word-timing-service')
+const { reviewSemanticTranscript } = require('./semantic-transcript-review')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -1275,6 +1276,22 @@ app.whenReady().then(async () => {
     if (requiresKey && !config.apiKey) throw new Error('任务原先使用的模型凭证已不可用，请重新配置')
     return config
   }
+  semanticEditService.setSemanticAnalyzer(async ({ cues, signal }) => {
+    const candidates = modelConfigStore.resolvedCandidates('chat').filter((config) => config.providerId !== 'bundled-lite')
+    const planned = candidates.length ? selectModelForTaskPlan({ taskKind: 'semantic-edit-review', requirements: { text: true }, candidates }) : null
+    const config = planned?.selected
+    if (!config) return { available: false, reason: '当前只有0.5B轻量模型，不能作为语义删改依据；请在模型接入中心连接本机8B级、订阅或云端工作模型' }
+    const local = isLocalModelConfig(config)
+    if (!local) {
+      const approved = await ensureCloudConsent('当前视频字幕的序号、时间和文字将发送给所选工作模型，用于识别语义重复和跑题；不会上传视频或音频。')
+      if (!approved) return { available: false, reason: '你没有允许发送字幕文本到工作模型' }
+    }
+    return reviewSemanticTranscript({
+      cues, signal,
+      model: { providerId: config.providerId, providerName: config.providerName, model: config.model, local },
+      complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'semantic-edit-review' })
+    })
+  })
   const textEvidence = (source, text) => {
     const value = String(text || '').trim()
     if (!value) return []
@@ -2227,7 +2244,9 @@ app.whenReady().then(async () => {
     status(decision.semanticCut
       ? decision.semanticCut.target === 'long-pauses'
         ? `正在按音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿并重建连续时间线`
-        : `正在按字幕证据删除 ${decision.semanticCut.removed.length} 条口头禅或相邻重复句并重建连续时间线`
+        : decision.semanticCut.target === 'near-duplicate-and-offtopic'
+          ? `正在按已确认的模型引用证据删除 ${decision.semanticCut.removed.length} 条语义重复或跑题字幕并重建时间线`
+          : `正在按字幕证据删除 ${decision.semanticCut.removed.length} 条口头禅或相邻重复句并重建连续时间线`
       : `正在按指定顺序拼接 ${decision.timeline.segments.length} 个片段`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
@@ -2240,7 +2259,9 @@ app.whenReady().then(async () => {
         semanticCut: decision.semanticCut,
         summary: decision.semanticCut.target === 'long-pauses'
           ? `已按真实音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；每处保留 ${Number(decision.semanticCut.keepPaddingSeconds).toFixed(2)} 秒呼吸边界，原文件未改动`
-          : `已按字幕${decision.semanticCut.wordTimingEvidence?.length ? '与本机逐词DTW' : ''}时间轴删除 ${decision.semanticCut.removed.length} 条口头禅或重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动${decision.semanticCut.reviewOnly?.length ? `；另有 ${decision.semanticCut.reviewOnly.length} 条句中疑似口头禅因没有可信逐词时间戳，仅标记未删除` : ''}`
+          : decision.semanticCut.target === 'near-duplicate-and-offtopic'
+            ? `已按你确认的模型引用方案删除 ${decision.semanticCut.removed.length} 条语义重复或跑题字幕，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；模型为 ${decision.semanticCut.modelEvidence?.model?.providerName || ''} · ${decision.semanticCut.modelEvidence?.model?.model || ''}，原字幕与视频均未改动`
+            : `已按字幕${decision.semanticCut.wordTimingEvidence?.length ? '与本机逐词DTW' : ''}时间轴删除 ${decision.semanticCut.removed.length} 条口头禅或重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动${decision.semanticCut.reviewOnly?.length ? `；另有 ${decision.semanticCut.reviewOnly.length} 条句中疑似口头禅因没有可信逐词时间戳，仅标记未删除` : ''}`
       } : {}),
       projectCapsule
     }

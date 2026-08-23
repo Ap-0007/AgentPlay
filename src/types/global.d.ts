@@ -186,8 +186,8 @@ interface MediaEditDecisionV1 {
   timeline?: ({ startSeconds: number; endSeconds: number; durationSeconds?: number; removedDurationSeconds?: number; segments?: never } | { segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; targetStartSeconds: number; targetEndSeconds: number }>; durationSeconds: number; startSeconds?: never; endSeconds?: never; removedDurationSeconds?: never })
   semanticCut?: {
     schemaVersion: 1
-    strategy: 'audio-silencedetect-v1' | 'subtitle-cue-cleanup-v1'
-    target: 'long-pauses' | 'filler-and-adjacent-repeat'
+    strategy: 'audio-silencedetect-v1' | 'subtitle-cue-cleanup-v1' | 'model-semantic-review-v1'
+    target: 'long-pauses' | 'filler-and-adjacent-repeat' | 'near-duplicate-and-offtopic'
     minimumSilenceSeconds?: number
     keepPaddingSeconds?: number
     subtitlePath?: string
@@ -197,6 +197,7 @@ interface MediaEditDecisionV1 {
     removed: Array<{ startSeconds: number; endSeconds: number; durationSeconds: number; cueIndex?: number; text?: string; reason: string; timingMethod?: string; timingConfidence?: number; model?: string; match?: string }>
     reviewOnly?: Array<{ startSeconds: number; endSeconds: number; cueIndex: number; text: string; reason: string; matches: string[] }>
     wordTimingEvidence?: Array<{ cueIndex: number; text: string; match: string; startSeconds: number; endSeconds: number; confidence: number; method: string; model: string }>
+    modelEvidence?: { topicSummary: string; model: { providerId: string; providerName: string; model: string; local: boolean }; candidates: Array<{ type: 'near_duplicate' | 'off_topic'; cueIndexes: number[]; removeCueIndexes: number[]; confidence: number; reason: string; evidence: Array<{ cueIndex: number; quote: string }> }> }
     totalRemovedSeconds: number
   }
   output: { overwrite: false; suffix: string; container?: string }

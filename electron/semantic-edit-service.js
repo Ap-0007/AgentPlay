@@ -2,6 +2,7 @@ const path = require('path')
 
 const PAUSE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除|自动剪掉)[^，。；]{0,12}(?:长)?(?:停顿|静音)|(?:长)?(?:停顿|静音)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const TEXT_CLEANUP_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)[^，。；]{0,12}(?:口头禅|废话|重复(?:的话|内容|句子)?)|(?:口头禅|废话|重复(?:的话|内容|句子)?)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
+const SEMANTIC_REVIEW_PATTERN = /(?:跑题|偏题|离题)|(?:(?:意思|语义)[^，。；]{0,6}(?:重复|相似|差不多))|(?:(?:重复|相似)[^，。；]{0,6}(?:意思|语义))|(?:内容[^，。；]{0,6}(?:相似|雷同))|(?:(?:相似|雷同)[^，。；]{0,6}内容)/
 const FILLER_ONLY_PATTERN = /^(?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧)$/i
 const EMBEDDED_FILLER_PATTERN = /(?:^|[\s，,、。！？!?；;：:])((?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧))(?=$|[\s，,、。！？!?；;：:])/gi
 const DEFAULT_MIN_SILENCE_SECONDS = 0.9
@@ -18,6 +19,11 @@ function matchesPauseEditInstruction(instruction) {
 
 function matchesTextCleanupInstruction(instruction) {
   return TEXT_CLEANUP_PATTERN.test(String(instruction || ''))
+}
+
+function matchesSemanticReviewInstruction(instruction) {
+  const text = String(instruction || '')
+  return SEMANTIC_REVIEW_PATTERN.test(text) && /删除|删掉|剪掉|去掉|移除|找出|检查|审阅|分析/.test(text)
 }
 
 function normalizedCueText(text) {
@@ -180,6 +186,45 @@ function textCleanupReviewSummary(reviewOnly) {
   return `已定位 ${reviewOnly.length} 条需要人工核对的字幕：\n${lines.join('\n')}\n这些字幕没有逐词时间戳，AgentPlay 不会删除整句；请先生成逐词字幕或给出明确时间段。`
 }
 
+function buildSemanticModelDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues, review } = {}) {
+  const duration = Number(durationSeconds)
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能生成语义审阅剪辑方案')
+  const normalized = analyzeTextCleanupCues(cues, duration).normalized
+  const byIndex = new Map(normalized.map((cue) => [cue.cueIndex, cue]))
+  const removeByIndex = new Map()
+  for (const candidate of review?.candidates || []) {
+    for (const cueIndex of candidate.removeCueIndexes || []) {
+      const cue = byIndex.get(cueIndex)
+      if (!cue) continue
+      const previous = removeByIndex.get(cueIndex)
+      if (!previous || candidate.confidence > previous.confidence) removeByIndex.set(cueIndex, { cue, candidate })
+    }
+  }
+  const removed = mergeRanges([...removeByIndex.values()].map(({ cue, candidate }) => ({
+    startSeconds: Number((cue.startSeconds + 0.04).toFixed(3)), endSeconds: Number((cue.endSeconds - 0.04).toFixed(3)),
+    durationSeconds: Number(Math.max(0, cue.endSeconds - cue.startSeconds - 0.08).toFixed(3)), cueIndex: cue.cueIndex, text: cue.text,
+    reason: `${candidate.type === 'near_duplicate' ? '语义近似重复' : '疑似跑题'}：${candidate.reason}`,
+    candidateType: candidate.type, confidence: candidate.confidence, evidence: candidate.evidence
+  })).filter((item) => item.durationSeconds >= 0.1 && item.startSeconds > 0.05 && item.endSeconds < duration - 0.05))
+  if (!removed.length) throw new Error('模型没有给出可安全整段删除的中间字幕候选')
+  const retained = []
+  let cursor = 0
+  for (const range of removed) { if (range.startSeconds - cursor >= 0.08) retained.push({ sourceStartSeconds: cursor, sourceEndSeconds: range.startSeconds }); cursor = range.endSeconds }
+  if (duration - cursor >= 0.08) retained.push({ sourceStartSeconds: cursor, sourceEndSeconds: duration })
+  if (retained.length < 2 || retained.length > MAX_RETAINED_SEGMENTS) throw new Error('语义审阅后的保留片段超出单次安全拼接范围')
+  let targetCursor = 0
+  const segments = retained.map((item) => { const segmentDuration = item.sourceEndSeconds - item.sourceStartSeconds; const segment = { sourceStartSeconds: Number(item.sourceStartSeconds.toFixed(3)), sourceEndSeconds: Number(item.sourceEndSeconds.toFixed(3)), durationSeconds: Number(segmentDuration.toFixed(3)), targetStartSeconds: Number(targetCursor.toFixed(3)), targetEndSeconds: Number((targetCursor + segmentDuration).toFixed(3)) }; targetCursor += segmentDuration; return segment })
+  const totalRemovedSeconds = Number(removed.reduce((sum, item) => sum + item.durationSeconds, 0).toFixed(3))
+  const modelEvidence = { topicSummary: review.topicSummary, model: review.model, candidates: review.candidates }
+  return {
+    schemaVersion: 1, kind: 'media.concat-segments', instruction: String(instruction || '').trim(), source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
+    timeline: { segments, durationSeconds: Number(targetCursor.toFixed(3)) },
+    semanticCut: { schemaVersion: 1, strategy: 'model-semantic-review-v1', target: 'near-duplicate-and-offtopic', subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)), detected: review.candidates, removed, reviewOnly: [], confirmationRequired: true, modelEvidence, totalRemovedSeconds },
+    output: { container: 'mp4', overwrite: false, suffix: '语义精简版' },
+    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: 'model-semantic-review-v1', removedCount: removed.length, totalRemovedSeconds, modelEvidence } }
+  }
+}
+
 function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues, analysis: suppliedAnalysis } = {}) {
   const duration = Number(durationSeconds)
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能生成字幕语义剪辑方案')
@@ -243,13 +288,30 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
 }
 
 class SemanticEditService {
-  constructor({ frames, loadTranscript = null, loadWordTimings = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings }
+  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues }
 
-  matches(instruction) { return matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) }
+  setSemanticAnalyzer(analyzeSemanticCues) { this.analyzeSemanticCues = analyzeSemanticCues }
+
+  matches(instruction) { return matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
 
   async plan({ instruction, sourcePath, signal } = {}) {
     if (!this.matches(instruction)) return { matched: false }
     if (!this.frames?.availability?.().available) throw new Error('缺少 ffmpeg 组件，无法分析音轨停顿')
+    if (matchesSemanticReviewInstruction(instruction)) {
+      const transcript = await this.loadTranscript?.(sourcePath)
+      if (!transcript?.path || !Array.isArray(transcript.cues) || transcript.cues.length < 2) throw new Error('没有找到足够的带时间轴字幕，请先生成字幕后再检查语义重复或跑题')
+      const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
+      if (!this.analyzeSemanticCues) return { matched: true, review: { kind: 'semantic-model-review', summary: '当前没有可用的语义审阅模型，没有创建剪辑任务。请先在模型接入中心连接工作模型。', candidates: [] } }
+      try {
+        const review = await this.analyzeSemanticCues({ cues: analyzeTextCleanupCues(transcript.cues, durationSeconds).normalized, signal })
+        if (!review?.available) return { matched: true, review: { kind: 'semantic-model-review', summary: `${review?.reason || '当前没有可用的语义审阅模型'}；没有创建剪辑任务。`, candidates: [] } }
+        if (!review.candidates?.length) return { matched: true, review: { kind: 'semantic-model-review', summary: `工作模型围绕“${review.topicSummary}”完成审阅，没有找到置信度达到0.85且引用有效的语义重复或跑题候选；没有创建剪辑任务。`, candidates: [] } }
+        return { matched: true, decision: buildSemanticModelDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues, review }) }
+      } catch (error) {
+        if (signal?.aborted || error?.message === '已取消') throw error
+        return { matched: true, review: { kind: 'semantic-model-review', summary: `模型候选未通过证据校验：${error instanceof Error ? error.message : String(error)}；没有创建剪辑任务。`, candidates: [] } }
+      }
+    }
     if (matchesTextCleanupInstruction(instruction)) {
       const transcript = await this.loadTranscript?.(sourcePath)
       if (!transcript?.path || !Array.isArray(transcript.cues) || !transcript.cues.length) throw new Error('没有找到带时间轴的现成字幕，请先生成字幕后再删除口头禅或重复句')
@@ -282,7 +344,7 @@ class SemanticEditService {
 }
 
 module.exports = {
-  SemanticEditService, analyzeTextCleanupCues, buildPauseRemovalDecision, buildTextCleanupDecision, embeddedFillers,
-  matchesPauseEditInstruction, matchesTextCleanupInstruction, normalizedCueText,
+  SemanticEditService, analyzeTextCleanupCues, buildPauseRemovalDecision, buildSemanticModelDecision, buildTextCleanupDecision, embeddedFillers,
+  matchesPauseEditInstruction, matchesSemanticReviewInstruction, matchesTextCleanupInstruction, normalizedCueText,
   parseSilenceEvents, requestedMinimumSilence, standaloneFiller
 }

@@ -172,3 +172,40 @@ test('real word timing evidence turns an embedded filler into a precise confirm-
   frozen.semanticCut.wordTimingEvidence[0].startSeconds += 0.2
   assert.throws(() => assertEditDecisionList(frozen), /EDL 与冻结决策不一致/)
 })
+
+test('model-cited near-duplicate and off-topic cues become confirm-only semantic cuts', async () => {
+  const transcript = [
+    { start: 0, end: 1, text: '开场介绍' },
+    { start: 1.1, end: 2.4, text: '价格是一百元' },
+    { start: 2.5, end: 3.8, text: '卖一百块钱' },
+    { start: 3.9, end: 5.2, text: '昨晚吃了火锅' },
+    { start: 5.3, end: 6.8, text: '继续介绍功能' },
+    { start: 6.9, end: 8, text: '结尾总结' }
+  ]
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 8 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: transcript }),
+    analyzeSemanticCues: async () => ({ available: true, topicSummary: '产品价格和功能', model: { providerId: 'vllm', providerName: '本机模型', model: 'reviewer', local: true }, candidates: [
+      { type: 'near_duplicate', cueIndexes: [2, 3], removeCueIndexes: [3], confidence: 0.94, reason: '价格信息重复', evidence: [{ cueIndex: 2, quote: '价格是一百元' }, { cueIndex: 3, quote: '卖一百块钱' }] },
+      { type: 'off_topic', cueIndexes: [4], removeCueIndexes: [4], confidence: 0.96, reason: '与产品主题无关', evidence: [{ cueIndex: 4, quote: '昨晚吃了火锅' }] }
+    ] })
+  })
+  const result = await service.plan({ instruction: '删掉语义重复和跑题内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.semanticCut.strategy, 'model-semantic-review-v1')
+  assert.equal(result.decision.semanticCut.confirmationRequired, true)
+  assert.deepEqual(result.decision.semanticCut.removed.map((item) => item.cueIndex), [3, 4])
+  assert.equal(result.decision.semanticCut.modelEvidence.model.model, 'reviewer')
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(result.decision)))
+})
+
+test('semantic review degrades to a non-executing explanation when no capable model is available', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 2, text: '正文' }, { start: 2, end: 5, text: '结尾' }] }),
+    analyzeSemanticCues: async () => ({ available: false, reason: '当前只有0.5B轻量模型' })
+  })
+  const result = await service.plan({ instruction: '删掉跑题内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /当前只有0\.5B轻量模型/)
+  assert.match(result.review.summary, /没有创建剪辑任务/)
+})
