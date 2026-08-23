@@ -581,6 +581,6 @@ test('DLNA ContentDirectory Browse exposes playable media with byte-range URLs',
     assert.equal(await media.text(), 'bcd')
   } finally {
     dlna.stop()
-    fs.rmSync(dir, { recursive: true, force: true })
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
