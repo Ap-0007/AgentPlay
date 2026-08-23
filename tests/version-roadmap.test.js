@@ -71,6 +71,10 @@ test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dep
   assert.match(content, /废话、重复、跑题的语义证据.*尚未完成/)
   assert.match(content, /This operation was aborted/)
   assert.match(content, /模型响应超时/)
+  assert.match(content, /subtitle-cue-cleanup-v1/)
+  assert.match(content, /8\.222秒成片/)
+  assert.match(content, /嵌在有效语句中的词、非紧邻重复和语义近似句均不自动删除/)
+  assert.match(content, /句中口头禅、非紧邻或语义重复、跑题识别和五类素材人工标定尚未完成/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

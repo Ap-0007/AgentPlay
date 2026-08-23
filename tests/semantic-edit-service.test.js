@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { SemanticEditService, buildPauseRemovalDecision, matchesPauseEditInstruction, parseSilenceEvents, requestedMinimumSilence } = require('../electron/semantic-edit-service')
+const { SemanticEditService, buildPauseRemovalDecision, buildTextCleanupDecision, matchesPauseEditInstruction, matchesTextCleanupInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
 const { attachEditDecisionList, assertEditDecisionList } = require('../electron/edit-decision-list')
 
 test('semantic pause intent is narrow and the requested threshold is bounded', () => {
@@ -63,4 +63,45 @@ test('semantic service performs one audio scan and returns a frozen plan', async
   assert.equal(result.decision.semanticCut.removed.length, 1)
   assert.equal(calls.length, 1)
   assert.ok(calls[0].some((item) => String(item).includes('silencedetect=noise=-35dB')))
+})
+
+test('subtitle cleanup only removes standalone fillers and adjacent exact repetitions', () => {
+  assert.equal(matchesTextCleanupInstruction('删掉口头禅和重复的话'), true)
+  assert.equal(matchesTextCleanupInstruction('这句话里有然后怎么办？'), false)
+  assert.equal(standaloneFiller('嗯。'), true)
+  assert.equal(standaloneFiller('然后我们开始介绍产品'), false)
+  const decision = buildTextCleanupDecision({
+    instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 8,
+    cues: [
+      { start: 0, end: 1, text: '欢迎大家' },
+      { start: 1, end: 1.6, text: '嗯' },
+      { start: 1.6, end: 3, text: '今天介绍产品' },
+      { start: 3.2, end: 4.6, text: '今天介绍产品。' },
+      { start: 4.8, end: 6.2, text: '然后我们介绍价格' },
+      { start: 6.3, end: 8, text: '价格是一百元' }
+    ]
+  })
+  assert.equal(decision.semanticCut.strategy, 'subtitle-cue-cleanup-v1')
+  assert.deepEqual(decision.semanticCut.removed.map((item) => [item.cueIndex, item.reason, item.startSeconds, item.endSeconds]), [
+    [2, '独立口头禅', 1.04, 1.56],
+    [4, '相邻重复第3条', 3.24, 4.56]
+  ])
+  assert.equal(decision.timeline.segments.length, 3)
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(decision)))
+})
+
+test('subtitle cleanup plan uses the existing timed transcript once and never scans audio', async () => {
+  let loads = 0
+  let scans = 0
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 6, run: async () => { scans += 1 } },
+    loadTranscript: async () => { loads += 1; return { path: 'D:\\video\\talk.srt', cues: [
+      { start: 0, end: 1, text: '开场' }, { start: 1, end: 1.5, text: '呃' }, { start: 1.5, end: 3, text: '内容内容' }, { start: 3.1, end: 4.6, text: '内容内容' }, { start: 4.7, end: 6, text: '结尾' }
+    ] } }
+  })
+  const result = await service.plan({ instruction: '去掉口头禅和重复内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.matched, true)
+  assert.equal(result.decision.semanticCut.removed.length, 2)
+  assert.equal(loads, 1)
+  assert.equal(scans, 0)
 })

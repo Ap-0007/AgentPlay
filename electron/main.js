@@ -675,7 +675,14 @@ const videoFrames = new VideoFrameService({
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
-const semanticEditService = new SemanticEditService({ frames: videoFrames })
+const semanticEditService = new SemanticEditService({
+  frames: videoFrames,
+  loadTranscript: (sourcePath) => {
+    const subtitlePath = findAdjacentSubtitle(sourcePath)
+    if (!subtitlePath || !fs.existsSync(subtitlePath)) return null
+    return { path: subtitlePath, cues: parseSubtitleCues(fs.readFileSync(subtitlePath, 'utf8'), path.extname(subtitlePath)) }
+  }
+})
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
 const projectCapsules = new ProjectCapsuleStore({ rootDir: path.join(app.getPath('userData'), 'project-capsules') })
 const publicLinkService = new PublicLinkService()
@@ -2216,7 +2223,9 @@ app.whenReady().then(async () => {
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的多片段拼接决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(decision.semanticCut
-      ? `正在按音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿并重建连续时间线`
+      ? decision.semanticCut.target === 'long-pauses'
+        ? `正在按音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿并重建连续时间线`
+        : `正在按字幕证据删除 ${decision.semanticCut.removed.length} 条口头禅或相邻重复句并重建连续时间线`
       : `正在按指定顺序拼接 ${decision.timeline.segments.length} 个片段`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
@@ -2227,7 +2236,9 @@ app.whenReady().then(async () => {
       ...result,
       ...(decision.semanticCut ? {
         semanticCut: decision.semanticCut,
-        summary: `已按真实音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；每处保留 ${Number(decision.semanticCut.keepPaddingSeconds).toFixed(2)} 秒呼吸边界，原文件未改动`
+        summary: decision.semanticCut.target === 'long-pauses'
+          ? `已按真实音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；每处保留 ${Number(decision.semanticCut.keepPaddingSeconds).toFixed(2)} 秒呼吸边界，原文件未改动`
+          : `已按字幕时间轴删除 ${decision.semanticCut.removed.length} 条独立口头禅或相邻重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动`
       } : {}),
       projectCapsule
     }

@@ -7,12 +7,13 @@ const read = (name) => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
 
 test('main process plans semantic pauses once and executes the frozen EDL through persistent concat', () => {
   const main = read('electron/main.js')
-  assert.match(main, /new SemanticEditService\(\{ frames: videoFrames \}\)/)
+  assert.match(main, /new SemanticEditService\(\{[\s\S]{0,100}frames: videoFrames/)
   assert.match(main, /ipcMain\.handle\('media:edit-plan', async/)
   assert.match(main, /semanticEditService\.plan\(\{ instruction: input\.instruction, sourcePath \}\)/)
   assert.match(main, /if \(input\.decision\) \{[\s\S]{0,220}assertEditDecisionList\(input\.decision\)/)
   assert.match(main, /decision\.semanticCut[\s\S]{0,240}真实音轨证据/)
   assert.match(main, /persistentTaskRuntime\.register\('media\.edit-concat'/)
+  assert.match(main, /loadTranscript:[\s\S]{0,260}findAdjacentSubtitle/)
 })
 
 test('renderer preserves the planned decision and shows semantic evidence instead of a generic concat label', () => {
@@ -21,8 +22,10 @@ test('renderer preserves the planned decision and shows semantic evidence instea
   assert.match(hook, /decision\?: MediaEditDecisionV1/)
   assert.match(hook, /frozenDecision = decision/)
   assert.match(hook, /删除长停顿 \$\{semanticCut\.removed\.length\} 处/)
+  assert.match(hook, /删除口头禅\/重复句/)
   assert.match(hook, /mediaTools\.trim\(\{[\s\S]{0,220}decision: input\.decision/)
   assert.match(types, /strategy: 'audio-silencedetect-v1'/)
+  assert.match(types, /'subtitle-cue-cleanup-v1'/)
   assert.match(types, /trim: \(input: \{[^\n]+decision\?: MediaEditDecisionV1/)
 })
 

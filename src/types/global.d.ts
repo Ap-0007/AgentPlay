@@ -186,13 +186,14 @@ interface MediaEditDecisionV1 {
   timeline?: ({ startSeconds: number; endSeconds: number; durationSeconds?: number; removedDurationSeconds?: number; segments?: never } | { segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; targetStartSeconds: number; targetEndSeconds: number }>; durationSeconds: number; startSeconds?: never; endSeconds?: never; removedDurationSeconds?: never })
   semanticCut?: {
     schemaVersion: 1
-    strategy: 'audio-silencedetect-v1'
-    target: 'long-pauses'
-    minimumSilenceSeconds: number
-    keepPaddingSeconds: number
+    strategy: 'audio-silencedetect-v1' | 'subtitle-cue-cleanup-v1'
+    target: 'long-pauses' | 'filler-and-adjacent-repeat'
+    minimumSilenceSeconds?: number
+    keepPaddingSeconds?: number
+    subtitlePath?: string
     sourceDurationSeconds: number
-    detected: Array<{ startSeconds: number; endSeconds: number; durationSeconds: number }>
-    removed: Array<{ startSeconds: number; endSeconds: number; durationSeconds: number; reason: string }>
+    detected: Array<{ startSeconds: number; endSeconds: number; durationSeconds?: number; cueIndex?: number; text?: string; reason?: string }>
+    removed: Array<{ startSeconds: number; endSeconds: number; durationSeconds: number; cueIndex?: number; text?: string; reason: string }>
     totalRemovedSeconds: number
   }
   output: { overwrite: false; suffix: string; container?: string }
