@@ -8,6 +8,7 @@ const {
   ModelPerformanceRouter,
   modelKey,
   normalizeUsage,
+  isLocalRoute,
   taskKindForPersistentType
 } = require('../electron/model-performance-router')
 
@@ -197,4 +198,19 @@ test('persistent task families map to stable model evaluation task kinds', () =>
   assert.equal(taskKindForPersistentType('creative.video-generate'), 'creative-video')
   assert.equal(taskKindForPersistentType('creative.recut-short'), 'creative-planning')
   assert.equal(taskKindForPersistentType('download.direct'), null)
+})
+
+test('loopback vision endpoints obey local preference without pretending to be cloud', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-router-loopback-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const loopbackVision = { ...cloud, baseUrl: 'http://127.0.0.1:18000/v1', apiKey: 'local-test' }
+  assert.equal(isLocalRoute(loopbackVision), true)
+  const router = new ModelPerformanceRouter({ rootDir: root })
+  router.updateSettings({ preference: 'local', objective: 'quality' })
+  const localDecision = router.select({ taskKind: 'analysis-vision', candidates: [loopbackVision, cloud], activeKey: modelKey(loopbackVision), requirements: { vision: true }, cloudAllowed: true })
+  assert.equal(localDecision.selected?.baseUrl, loopbackVision.baseUrl)
+  assert.equal(router.validate(loopbackVision, { requirements: { vision: true }, cloudAllowed: false }).eligible, true)
+  router.updateSettings({ preference: 'cloud' })
+  const cloudDecision = router.select({ taskKind: 'analysis-vision', candidates: [loopbackVision, cloud], activeKey: modelKey(loopbackVision), requirements: { vision: true }, cloudAllowed: true })
+  assert.equal(cloudDecision.selected?.baseUrl, cloud.baseUrl)
 })

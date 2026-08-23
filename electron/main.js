@@ -1502,6 +1502,7 @@ app.whenReady().then(async () => {
       model: {
         configured: Boolean(config),
         local: config ? isLocalModelConfig(config) : false,
+        vision: task.spec.modelRoute?.taskKind === 'analysis-vision',
         provider: config?.providerName || config?.providerId || '',
         model: config?.model || ''
       }
@@ -1569,7 +1570,7 @@ app.whenReady().then(async () => {
         complete: (call) => llmComplete({ ...call, modelConfig: config, taskKind: 'analysis' }),
         completeVisionMulti: (call) => llmCompleteVisionMulti({ ...call, modelConfig: config, taskKind: 'analysis-vision' }),
         frames: videoFrames, translateToChinese: translateAnalysisCuesToChinese,
-        model: { configured: true, local: isLocalModelConfig(config), provider: config.providerName || config.providerId || '', model: config.model }
+        model: { configured: true, local: isLocalModelConfig(config), vision: task.spec.modelRoute?.taskKind === 'analysis-vision', provider: config.providerName || config.providerId || '', model: config.model }
       }),
       runPackage: async ({ analysisResult, resumeCheckpoint, onCheckpoint }) => {
         const analysisPath = String(analysisResult.outputs?.[0] || '')
@@ -2885,9 +2886,10 @@ app.whenReady().then(async () => {
          frames: videoFrames,
          translateToChinese: translateAnalysisCuesToChinese,
          model: {
-           configured: modelConfigured,
-           local: modelLocal,
-           provider: config?.providerName || config?.providerId || '',
+            configured: modelConfigured,
+            local: modelLocal,
+            vision: analysisTaskKind === 'analysis-vision',
+            provider: config?.providerName || config?.providerId || '',
            model: config?.model || ''
         }
       })

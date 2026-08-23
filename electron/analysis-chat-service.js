@@ -207,7 +207,8 @@ async function runChatAnalysis({
     onStatus(`${analysisNote}；改用证据化中文拆解`)
   } else if (model.configured) {
     // 多模态拉片：抽关键帧随字幕一起给视觉模型；模型不收图片则如实降级为纯文本解剖
-    if (!model.local && frames && completeVisionMulti) {
+    const visionEnabled = model.vision === true || (model.vision !== false && !model.local)
+    if (visionEnabled && frames && completeVisionMulti) {
       onStatus('正在抽取关键画面帧')
       let shots = []
       try {
