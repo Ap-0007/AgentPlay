@@ -32,6 +32,11 @@ function firstOutput(task) {
   return String(outputs.find(Boolean) || '')
 }
 
+function displayBasename(value) {
+  const parts = String(value || '').split(/[\\/]+/).filter(Boolean)
+  return parts.at(-1) || ''
+}
+
 function notificationText(task) {
   const label = taskLabel(task)
   if (task.state === 'waiting_approval') {
@@ -41,7 +46,7 @@ function notificationText(task) {
     return { title: 'AgentPlay 任务失败', body: clean(`${label}：${task.failure?.message || task.error || '处理未完成'}`) }
   }
   const outputPath = firstOutput(task)
-  const detail = outputPath ? `已生成 ${path.basename(outputPath)}` : task.result?.summary || '处理已完成'
+  const detail = outputPath ? `已生成 ${displayBasename(outputPath)}` : task.result?.summary || '处理已完成'
   return { title: 'AgentPlay 已完成', body: clean(`${label}：${detail}`) }
 }
 
@@ -127,4 +132,4 @@ class TaskNotificationService {
   }
 }
 
-module.exports = { TaskNotificationService, NOTIFIABLE_STATES, notificationText, taskLabel, firstOutput }
+module.exports = { TaskNotificationService, NOTIFIABLE_STATES, notificationText, taskLabel, firstOutput, displayBasename }
