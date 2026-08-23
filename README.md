@@ -73,7 +73,7 @@ AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的
 
 ## Code signing policy
 
-未来若通过开源项目资格审核，计划采用：Free code signing provided by SignPath.io, certificate by SignPath Foundation。当前申请已于 2026-07-23 因公开采用与社区可见度证据不足被拒，所有现有版本仍未签名，继续以官方 Release 与 SHA-256 校验为准。
+未来若通过开源项目资格审核，计划采用：Free code signing provided by SignPath.io, certificate by SignPath Foundation。首次申请于 2026-07-23 因公开采用与社区可见度证据不足被拒；补齐公开 Release、可验证构建、1 个真实外部 Star 与 1 个真实外部 Fork 后，已于 2026-08-23 如实重新提交申请，目前等待 SignPath Foundation 正式答复。所有现有版本仍未签名，继续以官方 Release 与 SHA-256 校验为准。
 
 - Committers and reviewers: [wg5759](https://github.com/wg5759)
 - Approvers: [wg5759](https://github.com/wg5759)

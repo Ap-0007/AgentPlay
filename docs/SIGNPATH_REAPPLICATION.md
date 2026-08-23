@@ -4,6 +4,10 @@ Updated: 2026-08-23
 
 This page is the public, reproducible evidence package for AgentPlay's free open-source code-signing re-application. It contains no credentials or private application data. Approval remains solely at SignPath Foundation's discretion.
 
+## Submission status
+
+The free OSS re-application was submitted through the official SignPath Foundation form on 2026-08-23 using the public evidence below. The page returned `Form submitted — Thank you, we'll be in touch soon.` This is proof of form delivery only. It is not approval, does not create a signing certificate, and does not permit repository secrets or signed-release claims.
+
 ## Project identity
 
 - Project: AgentPlay

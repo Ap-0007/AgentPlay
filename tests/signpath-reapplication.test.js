@@ -12,6 +12,8 @@ test('SignPath re-application evidence is public, honest and excludes personal f
   }
   assert.match(evidence, /does not present maintainer-created Issues.*as independent community adoption/i)
   assert.match(evidence, /Approval remains solely at SignPath Foundation's discretion/i)
+  assert.match(evidence, /Form submitted — Thank you, we'll be in touch soon\./)
+  assert.match(evidence, /proof of form delivery only[\s\S]*not approval/i)
   assert.doesNotMatch(evidence, /@[a-z0-9.-]+\.(com|cn|net)\b/i)
 })
 
