@@ -71,6 +71,8 @@ GitHub Release 只上传 ASCII 文件名，至少包含：
 
 未获批或未签名时只能发布为明确提示风险的预览/测试资产，不得宣称已解决 SmartScreen、可信发布或 winget 分发。
 
+免费 SignPath 重申材料见 `docs/SIGNPATH_REAPPLICATION.md`。获批前不得配置 `SIGNPATH_API_TOKEN` 或把试用组织冒充开源签名组织；获批后只允许从 `master` 手工触发 `.github/workflows/signpath-release.yml`。工作流必须先在 GitHub-hosted Windows runner 构建并上传未签名 artifact，再由 `signpath/github-action-submit-signing-request@v2` 提交；返回产物必须验证 Authenticode，且仍需人工安装后复核主程序签名。该工作流不创建标签、不创建或公开 Release。
+
 ## 5. 合并、标签与发布
 
 1. 等待 Ubuntu 与 Windows CI 全绿，并确认 PR 中的提交就是完成本地验收的提交。

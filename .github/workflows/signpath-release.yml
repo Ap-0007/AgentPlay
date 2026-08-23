@@ -1,0 +1,105 @@
+name: Windows Release Candidate (SignPath)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package.json version to build
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: signpath-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-unsigned:
+    if: github.ref == 'refs/heads/master'
+    runs-on: windows-latest
+    outputs:
+      artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.32.1
+      - run: pnpm install --frozen-lockfile
+      - name: Verify requested version
+        shell: pwsh
+        run: |
+          $actual = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if ($actual -ne '${{ inputs.version }}') { throw "package.json version $actual does not match requested version ${{ inputs.version }}" }
+      - name: Restore pinned GPL mpv runtime
+        shell: pwsh
+        run: ./scripts/prepare-pinned-mpv-runtime.ps1
+      - run: pnpm check
+      - run: pnpm build:electron
+      - run: pnpm release:verify
+      - run: node scripts/security-release-scan.mjs --history --packaged
+      - name: Freeze ASCII unsigned artifact
+        shell: pwsh
+        run: |
+          $source = "release/AgentPlay-标准版安装包-${{ inputs.version }}.exe"
+          $target = "release/AgentPlay-${{ inputs.version }}-Windows-x64-Standard-unsigned.exe"
+          Copy-Item -LiteralPath $source -Destination $target
+          if ((Get-AuthenticodeSignature -LiteralPath $target).Status -ne 'NotSigned') { throw 'Unsigned build input unexpectedly carries a signature' }
+      - name: Upload unsigned artifact before SignPath submission
+        id: upload-unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: AgentPlay-${{ inputs.version }}-unsigned
+          path: release/AgentPlay-${{ inputs.version }}-Windows-x64-Standard-unsigned.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build-unsigned
+    if: vars.SIGNPATH_ENABLED == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Submit verifiable GitHub artifact to SignPath
+        id: signpath
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ needs.build-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+          parameters: |
+            version: "${{ inputs.version }}"
+      - name: Verify returned installer signature
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -LiteralPath signed -Recurse -File -Filter '*.exe')
+          if ($files.Count -lt 1) { throw 'SignPath returned no executable artifact' }
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($signature.Status -ne 'Valid') { throw "Invalid Authenticode signature: $($file.FullName) / $($signature.Status)" }
+          }
+      - name: Upload signed candidate for manual release approval
+        uses: actions/upload-artifact@v7
+        with:
+          name: AgentPlay-${{ inputs.version }}-signed-candidate
+          path: signed/**
+          if-no-files-found: error
+          retention-days: 7
+
+  signing-not-configured:
+    needs: build-unsigned
+    if: vars.SIGNPATH_ENABLED != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Unsigned candidate built; SignPath submission remains disabled until Foundation approval and repository variables are configured."

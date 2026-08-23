@@ -78,6 +78,7 @@ AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的
 - Committers and reviewers: [wg5759](https://github.com/wg5759)
 - Approvers: [wg5759](https://github.com/wg5759)
 - Privacy policy: [PRIVACY.md](PRIVACY.md)
+- Re-application evidence: [docs/SIGNPATH_REAPPLICATION.md](docs/SIGNPATH_REAPPLICATION.md)
 
 ## 安全与隐私默认值
 
