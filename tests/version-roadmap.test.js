@@ -57,11 +57,12 @@ test('0.9.0 reports strict closure separately from implementation coverage again
   assert.match(content, /轻量时间线回执、预览、撤销/)
 })
 
-test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dependency', () => {
+test('0.9.1 records the first completed semantic-editing item without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*0%（0\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 0)
-  assert.equal(checkboxCount(content, false), 25)
+  assert.match(content, /功能交付完成率：\*\*4%（1\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 1)
+  assert.equal(checkboxCount(content, false), 24)
+  assert.match(content, /#### A\. 语义剪辑（1\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
   assert.match(content, /个人编辑 Skill/)
@@ -99,6 +100,12 @@ test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dep
   assert.match(content, /1次字幕请求和1次六帧视觉请求/)
   assert.match(content, /814 tests、814 pass、0 fail、0 skip/)
   assert.match(content, /访谈、课程、剧情、产品介绍、竖屏口播五类真实素材人工标定尚未完成/)
+  assert.match(content, /第七个纵向切片（A1闭环并正式勾选）/)
+  assert.match(content, /TP5、FP0、FN0、unsafe0、processingFailure0/)
+  assert.match(content, /precision=1、recall=1/)
+  assert.match(content, /真实`agnes-2\.5-flash`/)
+  assert.match(content, /824 tests、824 pass、0 fail、0 skip/)
+  assert.match(content, /A5的全组五类标定仍需等A2–A4完成后再勾选/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

@@ -47,3 +47,52 @@ test('model reviewer receives numbered evidence and returns frozen model identit
   assert.equal(result.model.model, 'semantic-reviewer')
   assert.equal(result.candidates.length, 2)
 })
+
+test('semantic review repairs decorative quote JSON and normalizes exact duplicates mislabelled off-topic', () => {
+  const quoted = '```json\n{"topicSummary":"主题","candidates":[{"type":"off_topic","cueIndexes":[1,2],"removeCueIndexes":[2],"confidence":0.95,"reason":"重复","evidence":[{"cueIndex":1,"quote":""价格是一百元"},{"cueIndex":2,"quote":""价格是一百元"}]}]}\n```'
+  const parsed = parseSemanticReviewJson(quoted)
+  const result = validateSemanticReview(parsed, [
+    { cueIndex: 1, startSeconds: 0, endSeconds: 1, text: '“价格是一百元”' },
+    { cueIndex: 2, startSeconds: 1, endSeconds: 2, text: '“价格是一百元”' },
+    { cueIndex: 3, startSeconds: 2, endSeconds: 3, text: '其他内容' }
+  ])
+  assert.equal(result.candidates[0].type, 'near_duplicate')
+})
+
+test('adjacent non-identical cues are treated as continuation, not semantic duplication', () => {
+  const result = validateSemanticReview({ topicSummary: '产品介绍', candidates: [{ type: 'near_duplicate', cueIndexes: [1, 2], removeCueIndexes: [2], confidence: 0.95, reason: '相似', evidence: [{ cueIndex: 1, quote: 'API已经开放' }, { cueIndex: 2, quote: '权重下周开放' }] }] }, [
+    { cueIndex: 1, startSeconds: 0, endSeconds: 1, text: 'API已经开放' },
+    { cueIndex: 2, startSeconds: 1, endSeconds: 2, text: '权重下周开放' },
+    { cueIndex: 3, startSeconds: 2, endSeconds: 3, text: '结束' }
+  ])
+  assert.equal(result.candidates.length, 0)
+})
+
+test('distant cues sharing one fact but adding a new conclusion lack enough lexical anchoring to delete', () => {
+  const result = validateSemanticReview({ topicSummary: '数据争议', candidates: [{ type: 'near_duplicate', cueIndexes: [1, 3], removeCueIndexes: [3], confidence: 0.92, reason: '都提到200万', evidence: [{ cueIndex: 1, quote: '200万条音乐被抓取' }, { cueIndex: 3, quote: '200万只是开头' }] }] }, [
+    { cueIndex: 1, startSeconds: 0, endSeconds: 1, text: '200万条音乐被抓取' },
+    { cueIndex: 2, startSeconds: 1, endSeconds: 2, text: '中间解释过程' },
+    { cueIndex: 3, startSeconds: 2, endSeconds: 3, text: '200万只是开头，后面还有更多证据' },
+    { cueIndex: 4, startSeconds: 3, endSeconds: 4, text: '结束' }
+  ])
+  assert.equal(result.candidates.length, 0)
+})
+
+test('exact duplicates rebuild evidence from source cues instead of trusting a cross-cue quote', () => {
+  const result = validateSemanticReview({ topicSummary: '访谈', candidates: [{ type: 'near_duplicate', cueIndexes: [1, 2], removeCueIndexes: [2], confidence: 0.95, reason: '重复', evidence: [{ cueIndex: 1, quote: '前一句拼接后的错误引句' }, { cueIndex: 2, quote: '另一个错误引句' }] }] }, [
+    { cueIndex: 1, startSeconds: 0, endSeconds: 1, text: '完全相同的一句话' },
+    { cueIndex: 2, startSeconds: 1, endSeconds: 2, text: '完全相同的一句话' },
+    { cueIndex: 3, startSeconds: 2, endSeconds: 3, text: '结束' }
+  ])
+  assert.deepEqual(result.candidates[0].evidence, [{ cueIndex: 1, quote: '完全相同的一句话' }, { cueIndex: 2, quote: '完全相同的一句话' }])
+})
+
+test('semantic reviewer repairs one malformed model response and stops there', async () => {
+  let calls = 0
+  const result = await reviewSemanticTranscript({ cues, model: { model: 'agnes-2.5-flash' }, complete: async () => {
+    calls += 1
+    return calls === 1 ? { text: '{"topicSummary":"坏"引号","candidates":[]}' } : { text: JSON.stringify({ topicSummary: '产品介绍', candidates: [] }) }
+  } })
+  assert.equal(calls, 2)
+  assert.equal(result.topicSummary, '产品介绍')
+})

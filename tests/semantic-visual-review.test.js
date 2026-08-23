@@ -19,6 +19,7 @@ test('candidate visual moments freeze before, middle and after frames for each p
   const moments = candidateFrameMoments({ cues, candidates: review.candidates, durationSeconds: 10 })
   assert.deepEqual(moments.map((item) => [item.label, item.seconds]), [
     ['candidate-1-before', 2.95], ['candidate-1-middle', 3.8], ['candidate-1-after', 4.65],
+    ['candidate-1-reference', 2.4],
     ['candidate-2-before', 4.35], ['candidate-2-middle', 5.2], ['candidate-2-after', 6.05]
   ])
 })
@@ -27,20 +28,33 @@ test('visual reviewer accepts only high-confidence safe verdicts citing all thre
   let images = []
   const result = await reviewSemanticCandidateVisuals({
     sourcePath: 'D:\\video\\talk.mp4', cues, review, durationSeconds: 10,
-    model: { providerId: 'agnes', providerName: 'Agnes AI', model: 'agnes-2.0-flash', local: false },
+    model: { providerId: 'agnes', providerName: 'Agnes AI', model: 'agnes-2.5-flash', local: false },
     readFrame: async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
     completeVisionMulti: async (input) => { images = input.images; return { text: JSON.stringify({ validations: [
-      { candidateIndex: 1, verdict: 'safe', confidence: 0.93, reason: '前后场景连续且中间无独有演示', evidenceLabels: ['candidate-1-before', 'candidate-1-middle', 'candidate-1-after'] },
+      { candidateIndex: 1, verdict: 'safe', confidence: 0.93, reason: '前后场景连续且中间无独有演示', evidenceLabels: ['candidate-1-before', 'candidate-1-middle', 'candidate-1-after', 'candidate-1-reference'] },
       { candidateIndex: 2, verdict: 'unsafe', confidence: 0.95, reason: '候选中出现独有产品操作', evidenceLabels: ['candidate-2-before', 'candidate-2-middle', 'candidate-2-after'] }
     ] }) } }
   })
-  assert.equal(images.length, 6)
+  assert.equal(images.length, 7)
   assert.deepEqual(result.safeCandidateIndexes, [1])
   assert.deepEqual(result.blockedCandidateIndexes, [2])
-  assert.equal(result.model.model, 'agnes-2.0-flash')
+  assert.equal(result.model.model, 'agnes-2.5-flash')
 })
 
 test('a safe verdict missing one frame label fails closed', () => {
   const moments = candidateFrameMoments({ cues, candidates: review.candidates, durationSeconds: 10 })
   assert.throws(() => validateVisualReview({ validations: [{ candidateIndex: 1, verdict: 'safe', confidence: 0.99, reason: '安全', evidenceLabels: ['candidate-1-before', 'candidate-1-after'] }] }, moments, review.candidates), /必须引用候选前中后三帧/)
+})
+
+test('visual reviewer retries one transient empty response without repeating frame extraction', async () => {
+  let calls = 0
+  let reads = 0
+  const result = await reviewSemanticCandidateVisuals({
+    sourcePath: 'D:\\video\\talk.mp4', cues, review: { candidates: [review.candidates[0]] }, durationSeconds: 10,
+    model: { model: 'agnes-2.5-flash' }, readFrame: async () => { reads += 1; return Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
+    completeVisionMulti: async () => { calls += 1; if (calls === 1) throw new Error('视觉模型没有返回内容'); return { text: JSON.stringify({ validations: [{ candidateIndex: 1, verdict: 'safe', confidence: 0.9, reason: '连续', evidenceLabels: ['candidate-1-before', 'candidate-1-middle', 'candidate-1-after', 'candidate-1-reference'] }] }) } }
+  })
+  assert.equal(calls, 2)
+  assert.equal(reads, 4)
+  assert.deepEqual(result.safeCandidateIndexes, [1])
 })

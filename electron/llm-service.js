@@ -449,7 +449,7 @@ class AgentEngine {
     try {
       return await this.completeVisionMultiOnce(options)
     } catch (error) {
-      // agnes-2.5-flash 实测不收图（504/400）：agnes 厂商自动回退已验证视觉型号 agnes-2.0-flash 重试一次
+      // 2026-08-24 agnes-2.5-flash 已真实单图返回；仍保留2.0作为端点明确报不支持图片时的历史兼容回退。
       const config = typeof options.apiKey === 'object' && options.apiKey !== null ? options.apiKey : null
       const message = String(error?.message || '')
       const unsupported = /504|400|multimodal|does not support|unsupported.*(image|vision|media|modality)|invalid.*(image|image_url|content)|(不支持|不接受).{0,4}(图|图片|图像|多模态)/i.test(message)

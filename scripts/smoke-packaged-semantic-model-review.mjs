@@ -29,7 +29,7 @@ const modelPayload = {
   ]
 }
 const visualPayload = { validations: [
-  { candidateIndex: 1, verdict: 'safe', confidence: 0.93, reason: '候选前后场景连续，中间没有独有演示动作', evidenceLabels: ['candidate-1-before', 'candidate-1-middle', 'candidate-1-after'] },
+  { candidateIndex: 1, verdict: 'safe', confidence: 0.93, reason: '候选前后场景连续，中间没有独有演示动作', evidenceLabels: ['candidate-1-before', 'candidate-1-middle', 'candidate-1-after', 'candidate-1-reference'] },
   { candidateIndex: 2, verdict: 'safe', confidence: 0.92, reason: '候选前后场景连续，中间没有独有产品证据', evidenceLabels: ['candidate-2-before', 'candidate-2-middle', 'candidate-2-after'] }
 ] }
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -74,7 +74,7 @@ try {
   const pageResult = await evaluate(`(async () => {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); const waitFor = async (probe, label, timeoutMs = 120000) => { const started = Date.now(); while (Date.now() - started < timeoutMs) { const value = await probe(); if (value) return value; await wait(100) } throw new Error('等待超时：' + label) }
     const initial = await waitFor(() => { const input = document.querySelector('.agent-composer input[type="text"]'); const video = document.querySelector('video[data-ai-player-video="true"]'); return input && video && video.readyState >= 1 ? { duration: video.duration } : null }, '视频与对话就绪', 60000)
-    const savedModel = await window.aiPlayer.models.save({ role: 'chat', providerId: 'agnes', model: 'agnes-2.0-flash', baseUrl: ${JSON.stringify(`http://127.0.0.1:${modelPort}/v1`)}, apiKey: 'packaged-smoke-key' })
+    const savedModel = await window.aiPlayer.models.save({ role: 'chat', providerId: 'agnes', model: 'agnes-2.5-flash', baseUrl: ${JSON.stringify(`http://127.0.0.1:${modelPort}/v1`)}, apiKey: 'packaged-smoke-key' })
     if (savedModel.providerId !== 'agnes' || !savedModel.hasApiKey) throw new Error('安装态视觉模型配置失败')
     const input = document.querySelector('.agent-composer input[type="text"]'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
     setter.call(input, ${JSON.stringify(instruction)}); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(instruction)} })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
@@ -90,7 +90,7 @@ try {
     return { initial, task, preview, undo, body: document.body.innerText }
   })()`)
   const textRequests = modelRequests.filter((item) => item.kind === 'text'); const visionRequests = modelRequests.filter((item) => item.kind === 'vision')
-  if (textRequests.length !== 1 || visionRequests.length !== 1 || !textRequests[0].prompt.includes('[2][1.80-3.00]') || !textRequests[0].prompt.includes('只能引用以上字幕序号') || !visionRequests[0].prompt.includes('candidate-1-before')) throw new Error('安装态模型没有收到唯一的字幕请求和镜头请求')
+  if (textRequests.length !== 1 || visionRequests.length !== 1 || !textRequests[0].prompt.includes('[2][1.80-3.00]') || !textRequests[0].prompt.includes('只能引用以上字幕序号') || !visionRequests[0].prompt.includes('candidate-1-reference')) throw new Error('安装态模型没有收到唯一的字幕请求和完整镜头请求')
   const outputPath = pageResult.task.result.outputPath
   const receipt = { acceptedAt: new Date().toISOString(), executable, source: { path: sourcePath, durationSeconds: probeDuration(sourcePath), sha256: sourceHash, unchanged: sha256(sourcePath) === sourceHash }, modelCalls: modelRequests.length, textCalls: textRequests.length, visionCalls: visionRequests.length, decision: pageResult.task.spec.decision, result: { outputPath, durationSeconds: probeDuration(outputPath), quality: pageResult.task.quality }, ui: { confirmationVisible: pageResult.body.includes('请回复“确认执行”或“取消”'), visualEvidenceVisible: pageResult.body.includes('镜头交叉验证：2 个候选通过'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration } }
   if (!receipt.source.unchanged || !fs.existsSync(outputPath)) throw new Error('安装态语义模型成果或原件保护失败')

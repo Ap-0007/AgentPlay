@@ -5,7 +5,7 @@ const os = require('os')
 const path = require('path')
 const { execFile } = require('child_process')
 const { promisify } = require('util')
-const { TranscriptionService } = require('../electron/transcription-service')
+const { TranscriptionService, clampSrtToDuration, wavDurationSeconds } = require('../electron/transcription-service')
 const { DocumentWorkspaceService, classifyTask } = require('../electron/document-workspace-service')
 
 const execFileAsync = promisify(execFile)
@@ -90,4 +90,19 @@ test('真实 whisper 中文转写（仅 Windows 且组件在位）', async (t) =
   assert.ok(result2.text.length > 5)
   fs.rmSync(wav, { force: true })
   fs.rmSync(chineseNamed, { force: true })
+})
+
+test('timed transcription bounds subtitle cue length for semantic editing', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'electron', 'transcription-service.js'), 'utf8')
+  assert.match(source, /if \(timestamps\) args\.push\('-osrt', '-sow', '-ml', '36'\)/)
+})
+
+test('timed transcription clamps padded whisper cues to the decoded wav duration', () => {
+  const wav = Buffer.alloc(44 + 16000 * 2 * 5)
+  wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVE', 8)
+  wav.write('fmt ', 12); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34)
+  wav.write('data', 36); wav.writeUInt32LE(wav.length - 44, 40)
+  assert.equal(wavDurationSeconds(wav), 5)
+  const srt = '1\n00:00:00,000 --> 00:00:03,000\n第一句\n\n2\n00:00:03,000 --> 00:00:06,000\n第二句\n\n3\n00:00:06,000 --> 00:00:09,000\n越界句\n'
+  assert.equal(clampSrtToDuration(srt, 5), '1\n00:00:00,000 --> 00:00:03,000\n第一句\n\n2\n00:00:03,000 --> 00:00:05,000\n第二句')
 })

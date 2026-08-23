@@ -71,7 +71,7 @@ async function requestScreenGuide(config, question) {
     if (!response.ok) {
       const text = await response.text()
       if ([400, 415, 422].includes(response.status)) {
-        throw new Error(`当前模型 ${config.model} 不支持看图，屏幕指路需要视觉模型（如 Agnes agnes-2.0-flash）`)
+        throw new Error(`当前模型 ${config.model} 不支持看图，屏幕指路需要视觉模型（如 Agnes agnes-2.5-flash）`)
       }
       throw new Error(`模型返回 ${response.status}: ${text.slice(0, 300)}`)
     }
@@ -112,7 +112,7 @@ async function askAboutImage(config, { dataUrl, question }) {
     })
     if (!response.ok) {
       const text = await response.text()
-      if ([400, 415, 422].includes(response.status)) throw new Error(`当前模型 ${config.model} 不支持看图，画面问答需要视觉模型（如 Agnes agnes-2.0-flash）`)
+      if ([400, 415, 422].includes(response.status)) throw new Error(`当前模型 ${config.model} 不支持看图，画面问答需要视觉模型（如 Agnes agnes-2.5-flash）`)
       throw new Error(`模型返回 ${response.status}: ${text.slice(0, 300)}`)
     }
     const payload = await response.json()

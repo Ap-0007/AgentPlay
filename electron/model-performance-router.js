@@ -56,7 +56,7 @@ function taskKindForPersistentType(type) {
 
 function supportsVision(config) {
   if (config?.capabilities?.vision === true) return true
-  // Agnes 由调用层把不收图的 2.5 自动回退到已验证的 2.0 视觉模型。
+  // Agnes 2.5 已支持视觉；调用层仍保留2.0作为历史端点明确拒图时的兼容回退。
   return config?.providerId === 'agnes'
 }
 
