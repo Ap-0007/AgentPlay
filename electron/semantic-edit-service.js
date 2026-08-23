@@ -3,6 +3,7 @@ const path = require('path')
 const PAUSE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除|自动剪掉)[^，。；]{0,12}(?:长)?(?:停顿|静音)|(?:长)?(?:停顿|静音)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const TEXT_CLEANUP_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)[^，。；]{0,12}(?:口头禅|废话|重复(?:的话|内容|句子)?)|(?:口头禅|废话|重复(?:的话|内容|句子)?)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const FILLER_ONLY_PATTERN = /^(?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧)$/i
+const EMBEDDED_FILLER_PATTERN = /(?:^|[\s，,、。！？!?；;：:])((?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧))(?=$|[\s，,、。！？!?；;：:])/gi
 const DEFAULT_MIN_SILENCE_SECONDS = 0.9
 const DEFAULT_KEEP_PADDING_SECONDS = 0.12
 const MAX_RETAINED_SEGMENTS = 24
@@ -25,6 +26,11 @@ function normalizedCueText(text) {
 
 function standaloneFiller(text) {
   return FILLER_ONLY_PATTERN.test(normalizedCueText(text))
+}
+
+function embeddedFillers(text) {
+  if (standaloneFiller(text)) return []
+  return [...String(text || '').matchAll(EMBEDDED_FILLER_PATTERN)].map((match) => match[1]).filter(Boolean)
 }
 
 function requestedMinimumSilence(instruction) {
@@ -134,29 +140,52 @@ function buildPauseRemovalDecision({ instruction, sourcePath, durationSeconds, s
   }
 }
 
-function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues } = {}) {
+function analyzeTextCleanupCues(cues, durationSeconds) {
   const duration = Number(durationSeconds)
-  if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能生成字幕语义剪辑方案')
   const normalized = (Array.isArray(cues) ? cues : []).map((cue, index) => ({
     cueIndex: index + 1,
     startSeconds: Number(cue.startSeconds ?? cue.start),
     endSeconds: Number(cue.endSeconds ?? cue.end),
     text: String(cue.text || '').trim()
   })).filter((cue) => Number.isFinite(cue.startSeconds) && Number.isFinite(cue.endSeconds) && cue.startSeconds >= 0 && cue.endSeconds > cue.startSeconds && cue.endSeconds <= duration + 0.25 && cue.text)
-  if (!normalized.length) throw new Error('字幕里没有可定位的有效时间轴条目')
   const detected = []
-  let previousSubstantive = null
+  const reviewOnly = []
+  const firstSeen = new Map()
   for (const cue of normalized) {
     const normalizedText = normalizedCueText(cue.text)
     if (standaloneFiller(cue.text) && cue.endSeconds - cue.startSeconds <= 2.5) {
       detected.push({ ...cue, reason: '独立口头禅', normalizedText })
       continue
     }
-    const repeatable = normalizedText.length >= 4
-    if (repeatable && previousSubstantive && normalizedText === previousSubstantive.normalizedText && cue.startSeconds - previousSubstantive.endSeconds <= 3) {
-      detected.push({ ...cue, reason: `相邻重复第${previousSubstantive.cueIndex}条`, normalizedText })
-    } else if (repeatable) previousSubstantive = { ...cue, normalizedText }
+    const matches = embeddedFillers(cue.text)
+    if (matches.length) reviewOnly.push({ ...cue, reason: '句中疑似口头禅', matches: [...new Set(matches)] })
+    if (normalizedText.length < 4) continue
+    const previous = firstSeen.get(normalizedText)
+    if (!previous) {
+      firstSeen.set(normalizedText, { ...cue, normalizedText })
+      continue
+    }
+    const adjacent = cue.startSeconds - previous.endSeconds <= 3
+    detected.push({
+      ...cue,
+      reason: adjacent ? `相邻重复第${previous.cueIndex}条` : `非紧邻完全重复第${previous.cueIndex}条`,
+      normalizedText
+    })
   }
+  return { normalized, detected, reviewOnly }
+}
+
+function textCleanupReviewSummary(reviewOnly) {
+  const lines = reviewOnly.slice(0, 8).map((item) => `第${item.cueIndex}条（${item.startSeconds.toFixed(2)}–${item.endSeconds.toFixed(2)}秒）“${item.text}”：${item.reason}“${item.matches.join('、')}”`)
+  return `已定位 ${reviewOnly.length} 条需要人工核对的字幕：\n${lines.join('\n')}\n这些字幕没有逐词时间戳，AgentPlay 不会删除整句；请先生成逐词字幕或给出明确时间段。`
+}
+
+function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues, analysis: suppliedAnalysis } = {}) {
+  const duration = Number(durationSeconds)
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能生成字幕语义剪辑方案')
+  const analysis = suppliedAnalysis || analyzeTextCleanupCues(cues, duration)
+  const { normalized, detected, reviewOnly } = analysis
+  if (!normalized.length) throw new Error('字幕里没有可定位的有效时间轴条目')
   const removed = mergeRanges(detected.map((cue) => ({
     startSeconds: Number((cue.startSeconds + 0.04).toFixed(3)),
     endSeconds: Number((cue.endSeconds - 0.04).toFixed(3)),
@@ -186,13 +215,15 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
     return segment
   })
   const totalRemovedSeconds = Number(removed.reduce((sum, item) => sum + item.durationSeconds, 0).toFixed(3))
+  const confirmationRequired = detected.some((item) => item.reason.startsWith('非紧邻完全重复'))
   return {
     schemaVersion: 1, kind: 'media.concat-segments', instruction: String(instruction || '').trim(),
     source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
     timeline: { segments, durationSeconds: Number(targetCursor.toFixed(3)) },
     semanticCut: {
       schemaVersion: 1, strategy: 'subtitle-cue-cleanup-v1', target: 'filler-and-adjacent-repeat',
-      subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)), detected, removed, totalRemovedSeconds
+      subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)), detected, removed, reviewOnly,
+      confirmationRequired, totalRemovedSeconds
     },
     output: { container: 'mp4', overwrite: false, suffix: '去口头禅重复版' },
     verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: 'subtitle-cue-cleanup-v1', removedCount: removed.length, totalRemovedSeconds } }
@@ -211,7 +242,11 @@ class SemanticEditService {
       const transcript = await this.loadTranscript?.(sourcePath)
       if (!transcript?.path || !Array.isArray(transcript.cues) || !transcript.cues.length) throw new Error('没有找到带时间轴的现成字幕，请先生成字幕后再删除口头禅或重复句')
       const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
-      return { matched: true, decision: buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues }) }
+      const analysis = analyzeTextCleanupCues(transcript.cues, durationSeconds)
+      if (!analysis.detected.length && analysis.reviewOnly.length) {
+        return { matched: true, review: { kind: 'semantic-text-review', summary: textCleanupReviewSummary(analysis.reviewOnly), candidates: analysis.reviewOnly } }
+      }
+      return { matched: true, decision: buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues, analysis }) }
     }
     if (!await this.frames.probeHasAudio(sourcePath, { signal })) throw new Error('这个视频没有可分析的音轨，无法检测停顿')
     const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
@@ -230,7 +265,7 @@ class SemanticEditService {
 }
 
 module.exports = {
-  SemanticEditService, buildPauseRemovalDecision, buildTextCleanupDecision,
+  SemanticEditService, analyzeTextCleanupCues, buildPauseRemovalDecision, buildTextCleanupDecision, embeddedFillers,
   matchesPauseEditInstruction, matchesTextCleanupInstruction, normalizedCueText,
   parseSilenceEvents, requestedMinimumSilence, standaloneFiller
 }

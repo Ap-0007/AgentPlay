@@ -51,7 +51,7 @@ const generated = spawnSync(ffmpegPath, [
   '-map', '[vout]', '-map', '[aout]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', sourcePath
 ], { encoding: 'utf8', windowsHide: true })
 if (generated.status !== 0 || !fs.existsSync(sourcePath)) throw new Error(generated.stderr || '安装态夹具生成失败')
-fs.writeFileSync(subtitlePath, `1\n00:00:00,000 --> 00:00:01,000\n欢迎大家\n\n2\n00:00:01,000 --> 00:00:01,600\n嗯\n\n3\n00:00:01,600 --> 00:00:03,000\n今天介绍产品\n\n4\n00:00:03,200 --> 00:00:04,600\n今天介绍产品。\n\n5\n00:00:04,800 --> 00:00:06,200\n然后我们介绍价格\n\n6\n00:00:06,300 --> 00:00:08,000\n价格是一百元\n\n7\n00:00:08,100 --> 00:00:10,000\n谢谢观看\n`, 'utf8')
+fs.writeFileSync(subtitlePath, `1\n00:00:00,000 --> 00:00:01,000\n欢迎大家\n\n2\n00:00:01,000 --> 00:00:01,600\n嗯\n\n3\n00:00:01,600 --> 00:00:03,000\n今天介绍产品\n\n4\n00:00:03,200 --> 00:00:04,600\n今天介绍产品。\n\n5\n00:00:04,800 --> 00:00:05,600\n核心结论有三点\n\n6\n00:00:05,700 --> 00:00:08,700\n就是，先说一个完全不同的例子\n\n7\n00:00:09,000 --> 00:00:10,000\n核心结论有三点。\n`, 'utf8')
 const sourceHash = sha256(sourcePath)
 
 const port = await freePort()
@@ -93,12 +93,16 @@ try {
     const undo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 && document.body.innerText.includes('项目版本：1/2') ? { duration: video.duration, src: video.currentSrc } : null }, '对话撤销回原片', 30000)
     const cleanupInstruction = '删掉口头禅和重复的话'
     const cleanupPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: cleanupInstruction, sourcePath: ${JSON.stringify(sourcePath)} })
-    if (!cleanupPlan.matched || cleanupPlan.decision?.semanticCut?.strategy !== 'subtitle-cue-cleanup-v1' || cleanupPlan.decision.semanticCut.removed.length !== 2) throw new Error('安装态字幕语义清理方案不合格')
+    if (!cleanupPlan.matched || cleanupPlan.decision?.semanticCut?.strategy !== 'subtitle-cue-cleanup-v1' || cleanupPlan.decision.semanticCut.removed.length !== 3 || cleanupPlan.decision.semanticCut.confirmationRequired !== true || cleanupPlan.decision.semanticCut.reviewOnly?.length !== 1) throw new Error('安装态字幕语义审阅方案不合格')
     setter.call(input, cleanupInstruction); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: cleanupInstruction })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    await waitFor(() => document.body.innerText.includes('先给你核对方案，尚未执行') && document.body.innerText.includes('请回复“确认执行”或“取消”'), '非紧邻重复确认方案可见', 30000)
+    const beforeConfirmTasks = (await window.aiPlayer.taskRuntime.list()).filter((item) => item.type === 'media.edit-concat' && item.spec?.decision?.semanticCut?.strategy === 'subtitle-cue-cleanup-v1').length
+    if (beforeConfirmTasks !== 0) throw new Error('用户确认前不应创建字幕语义剪辑任务')
+    setter.call(input, '确认执行'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '确认执行' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
     const cleanupTask = await waitFor(async () => { const items = await window.aiPlayer.taskRuntime.list(); const found = [...items].reverse().find((item) => item.type === 'media.edit-concat' && item.spec?.decision?.semanticCut?.strategy === 'subtitle-cue-cleanup-v1'); return found && ['completed','failed','cancelled'].includes(found.state) ? found : null }, '字幕语义清理任务完成', 180000)
-    if (cleanupTask.state !== 'completed' || cleanupTask.quality?.passed !== true || cleanupTask.result?.semanticCut?.removed?.length !== 2) throw new Error(cleanupTask.error || '字幕语义清理质量门失败')
+    if (cleanupTask.state !== 'completed' || cleanupTask.quality?.passed !== true || cleanupTask.result?.semanticCut?.removed?.length !== 3 || cleanupTask.result?.semanticCut?.reviewOnly?.length !== 1) throw new Error(cleanupTask.error || '字幕语义清理质量门失败')
     const cleanupPreview = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - cleanupTask.spec.decision.timeline.durationSeconds) <= 0.25 ? { duration: video.duration, src: video.currentSrc } : null }, '自动预览字幕清理成片', 30000)
-    if (!document.body.innerText.includes('字幕时间轴') || !document.body.innerText.includes('独立口头禅或相邻重复句')) throw new Error('对话没有显示字幕语义清理证据')
+    if (!document.body.innerText.includes('字幕时间轴') || !document.body.innerText.includes('仅标记未删除')) throw new Error('对话没有显示字幕语义清理证据与未删边界')
     setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
     const cleanupUndo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 ? { duration: video.duration, src: video.currentSrc } : null }, '字幕语义清理撤销回原片', 30000)
     return { task, preview, undo, cleanupTask, cleanupPreview, cleanupUndo, body: document.body.innerText }
@@ -111,7 +115,7 @@ try {
     decision: task.spec.decision,
     result: { outputPath, durationSeconds: probeDuration(outputPath), quality: task.quality, frameProof: task.result.frameProof },
     cleanup: { decision: pageResult.cleanupTask.spec.decision, outputPath: pageResult.cleanupTask.result.outputPath, durationSeconds: probeDuration(pageResult.cleanupTask.result.outputPath), quality: pageResult.cleanupTask.quality, frameProof: pageResult.cleanupTask.result.frameProof },
-    ui: { semanticReceiptVisible: pageResult.body.includes('真实音轨证据'), cleanupReceiptVisible: pageResult.body.includes('字幕时间轴'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration, cleanupPreviewDuration: pageResult.cleanupPreview.duration, cleanupUndoDuration: pageResult.cleanupUndo.duration }
+    ui: { semanticReceiptVisible: pageResult.body.includes('真实音轨证据'), cleanupReceiptVisible: pageResult.body.includes('字幕时间轴'), confirmationVisible: pageResult.body.includes('先给你核对方案，尚未执行'), reviewOnlyVisible: pageResult.body.includes('仅标记未删除'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration, cleanupPreviewDuration: pageResult.cleanupPreview.duration, cleanupUndoDuration: pageResult.cleanupUndo.duration }
   }
   if (!receipt.source.unchanged || !fs.existsSync(outputPath)) throw new Error('安装态成果或原件保护失败')
   fs.mkdirSync(path.dirname(receiptPath), { recursive: true }); fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')

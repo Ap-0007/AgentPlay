@@ -2238,7 +2238,7 @@ app.whenReady().then(async () => {
         semanticCut: decision.semanticCut,
         summary: decision.semanticCut.target === 'long-pauses'
           ? `已按真实音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；每处保留 ${Number(decision.semanticCut.keepPaddingSeconds).toFixed(2)} 秒呼吸边界，原文件未改动`
-          : `已按字幕时间轴删除 ${decision.semanticCut.removed.length} 条独立口头禅或相邻重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动`
+          : `已按字幕时间轴删除 ${decision.semanticCut.removed.length} 条独立口头禅或重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动${decision.semanticCut.reviewOnly?.length ? `；另有 ${decision.semanticCut.reviewOnly.length} 条句中疑似口头禅因没有逐词时间戳，仅标记未删除` : ''}`
       } : {}),
       projectCapsule
     }

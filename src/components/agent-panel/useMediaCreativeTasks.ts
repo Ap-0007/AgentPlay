@@ -22,6 +22,7 @@ type TrimInput = {
   segments?: Array<{ startSeconds: number; endSeconds: number }>
   decision?: MediaEditDecisionV1
 }
+type PendingSemanticReview = { sourcePath: string; decision: MediaEditDecisionV1 }
 
 type MediaCreativeTaskOptions = {
   busyRef: CurrentRef<boolean>
@@ -64,6 +65,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   const compressInputRef = useRef<CompressInput>({ instruction: '', sourcePath: '', targetMb: 25, mode: 'compress' })
   const trimInputRef = useRef<TrimInput>({ instruction: '', sourcePath: '', startSeconds: 0, endSeconds: 0 })
   const pendingEditClarificationRef = useRef<MediaEditClarification | null>(null)
+  const pendingSemanticReviewRef = useRef<PendingSemanticReview | null>(null)
   const videoGenInstructionRef = useRef('')
   const dedupInstructionRef = useRef('')
 
@@ -228,6 +230,39 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   const runTrimTask = async (text: string, override?: TrimInput): Promise<boolean> => {
     if (!text) return false
     const currentPath = override?.sourcePath || usePlayerStore.getState().videoSrc
+    const pendingSemanticReview = override ? null : pendingSemanticReviewRef.current
+    if (pendingSemanticReview && (!currentPath || !sameLocalPath(currentPath, pendingSemanticReview.sourcePath))) {
+      pendingSemanticReviewRef.current = null
+      addMessage('user', text)
+      setInputText('')
+      addMessage('agent', '当前视频已经切换，刚才待确认的语义剪辑方案已取消；请对当前视频重新说明。')
+      return true
+    }
+    if (pendingSemanticReview) {
+      addMessage('user', text)
+      setInputText('')
+      if (/^(?:算了|取消|不执行|先不剪了)[吧。！!]*$/.test(text.trim())) {
+        pendingSemanticReviewRef.current = null
+        addMessage('agent', '好的，已取消这份语义剪辑方案，没有创建任务，也没有改动文件。')
+        return true
+      }
+      if (!/^(?:确认(?:执行)?|执行|就按这个(?:方案)?|按这个方案执行)[吧。！!]*$/.test(text.trim())) {
+        addMessage('agent', '这份方案包含非紧邻重复句，尚未执行。请回复“确认执行”或“取消”。')
+        return true
+      }
+      pendingSemanticReviewRef.current = null
+      const reviewDecision = pendingSemanticReview.decision
+      const reviewSegments = reviewDecision.timeline?.segments || []
+      return runTrimTask(reviewDecision.instruction, {
+        instruction: reviewDecision.instruction,
+        sourcePath: pendingSemanticReview.sourcePath,
+        startSeconds: Number(reviewSegments[0]?.sourceStartSeconds || 0),
+        endSeconds: Number(reviewSegments.at(-1)?.sourceEndSeconds || 0),
+        operation: 'concat',
+        segments: reviewSegments.map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds })),
+        decision: reviewDecision
+      })
+    }
     const pendingClarification = override ? null : pendingEditClarificationRef.current
     if (pendingClarification && (!currentPath || !sameLocalPath(currentPath, pendingClarification.sourcePath))) {
       pendingEditClarificationRef.current = null
@@ -270,6 +305,13 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           addMessage('agent', plan.clarification.question)
           return true
         }
+        if (plan?.review?.summary) {
+          pendingEditClarificationRef.current = null
+          addMessage('user', text)
+          setInputText('')
+          addMessage('agent', plan.review.summary)
+          return true
+        }
         const decision = plan?.decision
         if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music', 'media.concat-sources', 'media.burn-subtitles', 'media.shift-subtitles', 'media.mux-subtitles', 'media.translate-subtitles', 'media.edit-subtitle-cues'].includes(decision.kind)) {
           pendingEditClarificationRef.current = null
@@ -278,6 +320,18 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         pendingEditClarificationRef.current = null
         frozenDecision = decision
         semanticCut = decision.semanticCut
+        if (semanticCut?.confirmationRequired) {
+          pendingSemanticReviewRef.current = { sourcePath, decision }
+          pendingEditClarificationRef.current = null
+          addMessage('user', text)
+          setInputText('')
+          const removable = semanticCut.removed.map((item) => `第${item.cueIndex || '?'}条（${item.startSeconds.toFixed(2)}–${item.endSeconds.toFixed(2)}秒）“${item.text || ''}”：${item.reason}`).join('\n')
+          const reviewOnly = semanticCut.reviewOnly?.length
+            ? `\n另有 ${semanticCut.reviewOnly.length} 条句中疑似口头禅因没有逐词时间戳，只标记、不删除。`
+            : ''
+          addMessage('agent', `先给你核对方案，尚未执行：\n${removable}${reviewOnly}\n请回复“确认执行”或“取消”。`)
+          return true
+        }
         executionInstruction = decision.instruction || text
         operation = decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.burn-subtitles' ? 'subtitle' : decision.kind === 'media.mux-subtitles' ? 'mux' : decision.kind === 'media.translate-subtitles' ? 'translate' : decision.kind === 'media.edit-subtitle-cues' ? 'cue-edit' : decision.kind === 'media.shift-subtitles' ? 'shift' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' || decision.kind === 'media.concat-sources' ? 'concat' : 'trim'
         startSeconds = Number(decision.timeline?.startSeconds || decision.timeline?.segments?.[0]?.sourceStartSeconds || 0)

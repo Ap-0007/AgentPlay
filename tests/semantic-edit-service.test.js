@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { SemanticEditService, buildPauseRemovalDecision, buildTextCleanupDecision, matchesPauseEditInstruction, matchesTextCleanupInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
+const { SemanticEditService, analyzeTextCleanupCues, buildPauseRemovalDecision, buildTextCleanupDecision, matchesPauseEditInstruction, matchesTextCleanupInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
 const { attachEditDecisionList, assertEditDecisionList } = require('../electron/edit-decision-list')
 
 test('semantic pause intent is narrow and the requested threshold is bounded', () => {
@@ -104,4 +104,44 @@ test('subtitle cleanup plan uses the existing timed transcript once and never sc
   assert.equal(result.decision.semanticCut.removed.length, 2)
   assert.equal(loads, 1)
   assert.equal(scans, 0)
+})
+
+test('embedded fillers stay review-only while non-adjacent exact repeats require confirmation', () => {
+  const cues = [
+    { start: 0, end: 1.2, text: '欢迎大家' },
+    { start: 1.3, end: 2.7, text: '就是，我们今天介绍产品' },
+    { start: 2.8, end: 4, text: '核心结论有三点' },
+    { start: 4.1, end: 6.5, text: '先说完全不同的例子' },
+    { start: 7.4, end: 8.8, text: '核心结论有三点。' },
+    { start: 8.9, end: 10, text: '谢谢大家' }
+  ]
+  const analysis = analyzeTextCleanupCues(cues, 10)
+  assert.deepEqual(analysis.reviewOnly.map((item) => [item.cueIndex, item.reason, item.matches]), [
+    [2, '句中疑似口头禅', ['就是']]
+  ])
+  assert.deepEqual(analysis.detected.map((item) => [item.cueIndex, item.reason]), [
+    [5, '非紧邻完全重复第3条']
+  ])
+  const decision = buildTextCleanupDecision({
+    instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 10, cues, analysis
+  })
+  assert.equal(decision.semanticCut.confirmationRequired, true)
+  assert.equal(decision.semanticCut.reviewOnly.length, 1)
+  assert.equal(decision.semanticCut.removed[0].cueIndex, 5)
+})
+
+test('review-only embedded filler returns located evidence without creating an executable EDL', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [
+      { start: 0, end: 1.4, text: '欢迎大家' },
+      { start: 1.5, end: 3.2, text: '就是，我们开始介绍产品' },
+      { start: 3.3, end: 5, text: '今天只讲价格' }
+    ] })
+  })
+  const result = await service.plan({ instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.matched, true)
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /第2条.*1\.50–3\.20秒.*就是/)
+  assert.match(result.review.summary, /没有逐词时间戳.*不会删除整句/)
 })
