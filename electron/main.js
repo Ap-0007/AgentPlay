@@ -82,6 +82,7 @@ const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decis
 const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-edit-service')
 const { MediaEditProjectStore } = require('./media-edit-project-store')
 const { SemanticEditService } = require('./semantic-edit-service')
+const { createWordTimingLoader } = require('./word-timing-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -681,7 +682,8 @@ const semanticEditService = new SemanticEditService({
     const subtitlePath = findAdjacentSubtitle(sourcePath)
     if (!subtitlePath || !fs.existsSync(subtitlePath)) return null
     return { path: subtitlePath, cues: parseSubtitleCues(fs.readFileSync(subtitlePath, 'utf8'), path.extname(subtitlePath)) }
-  }
+  },
+  loadWordTimings: createWordTimingLoader({ frames: videoFrames, transcription: transcriptionService })
 })
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
 const projectCapsules = new ProjectCapsuleStore({ rootDir: path.join(app.getPath('userData'), 'project-capsules') })
@@ -2238,7 +2240,7 @@ app.whenReady().then(async () => {
         semanticCut: decision.semanticCut,
         summary: decision.semanticCut.target === 'long-pauses'
           ? `已按真实音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；每处保留 ${Number(decision.semanticCut.keepPaddingSeconds).toFixed(2)} 秒呼吸边界，原文件未改动`
-          : `已按字幕时间轴删除 ${decision.semanticCut.removed.length} 条独立口头禅或重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动${decision.semanticCut.reviewOnly?.length ? `；另有 ${decision.semanticCut.reviewOnly.length} 条句中疑似口头禅因没有逐词时间戳，仅标记未删除` : ''}`
+          : `已按字幕${decision.semanticCut.wordTimingEvidence?.length ? '与本机逐词DTW' : ''}时间轴删除 ${decision.semanticCut.removed.length} 条口头禅或重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动${decision.semanticCut.reviewOnly?.length ? `；另有 ${decision.semanticCut.reviewOnly.length} 条句中疑似口头禅因没有可信逐词时间戳，仅标记未删除` : ''}`
       } : {}),
       projectCapsule
     }

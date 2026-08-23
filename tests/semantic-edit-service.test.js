@@ -145,3 +145,30 @@ test('review-only embedded filler returns located evidence without creating an e
   assert.match(result.review.summary, /第2条.*1\.50–3\.20秒.*就是/)
   assert.match(result.review.summary, /没有逐词时间戳.*不会删除整句/)
 })
+
+test('real word timing evidence turns an embedded filler into a precise confirm-before-write EDL', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [
+      { start: 0, end: 1.4, text: '欢迎大家' },
+      { start: 1.5, end: 3.2, text: '就是，我们开始介绍产品' },
+      { start: 3.3, end: 5, text: '今天只讲价格' }
+    ] }),
+    loadWordTimings: async (_sourcePath, candidates) => ({
+      resolved: [{ ...candidates[0], match: '就是', preciseStartSeconds: 1.72, preciseEndSeconds: 2.02, timingConfidence: 0.93, timingMethod: 'whisper.cpp-dtw-v1', model: 'ggml-small.bin' }],
+      unresolved: [], model: 'ggml-small.bin', timingMethod: 'whisper.cpp-dtw-v1'
+    })
+  })
+  const result = await service.plan({ instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.matched, true)
+  assert.equal(result.review, undefined)
+  assert.equal(result.decision.semanticCut.confirmationRequired, true)
+  assert.deepEqual(result.decision.semanticCut.removed.map((item) => [item.startSeconds, item.endSeconds, item.reason]), [
+    [1.74, 2, '逐词对齐口头禅“就是”']
+  ])
+  assert.equal(result.decision.semanticCut.wordTimingEvidence[0].confidence, 0.93)
+  const frozen = attachEditDecisionList(result.decision)
+  assert.doesNotThrow(() => assertEditDecisionList(frozen))
+  frozen.semanticCut.wordTimingEvidence[0].startSeconds += 0.2
+  assert.throws(() => assertEditDecisionList(frozen), /EDL 与冻结决策不一致/)
+})

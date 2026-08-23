@@ -105,7 +105,8 @@ function buildEditDecisionList(decision) {
     if (Math.abs(cursor - expectedDuration) > 0.001) throw new Error('EDL 拼接总时长无效')
     return {
       schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
-      ...videoMaterialAndTracks(decision.source), operations, output, quality
+      ...videoMaterialAndTracks(decision.source), operations, output,
+      quality: { ...quality, ...(decision.semanticCut ? { semanticCut: JSON.parse(JSON.stringify(decision.semanticCut)) } : {}) }
     }
   }
   if (decision.kind === 'media.concat-sources') {

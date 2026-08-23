@@ -187,12 +187,13 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
   const { normalized, detected, reviewOnly } = analysis
   if (!normalized.length) throw new Error('字幕里没有可定位的有效时间轴条目')
   const removed = mergeRanges(detected.map((cue) => ({
-    startSeconds: Number((cue.startSeconds + 0.04).toFixed(3)),
-    endSeconds: Number((cue.endSeconds - 0.04).toFixed(3)),
-    durationSeconds: Number(Math.max(0, cue.endSeconds - cue.startSeconds - 0.08).toFixed(3)),
+    startSeconds: Number(((Number.isFinite(cue.preciseStartSeconds) ? cue.preciseStartSeconds : cue.startSeconds) + (Number.isFinite(cue.preciseStartSeconds) ? 0.02 : 0.04)).toFixed(3)),
+    endSeconds: Number(((Number.isFinite(cue.preciseEndSeconds) ? cue.preciseEndSeconds : cue.endSeconds) - (Number.isFinite(cue.preciseEndSeconds) ? 0.02 : 0.04)).toFixed(3)),
+    durationSeconds: Number(Math.max(0, (Number.isFinite(cue.preciseEndSeconds) ? cue.preciseEndSeconds : cue.endSeconds) - (Number.isFinite(cue.preciseStartSeconds) ? cue.preciseStartSeconds : cue.startSeconds) - (Number.isFinite(cue.preciseStartSeconds) ? 0.04 : 0.08)).toFixed(3)),
     cueIndex: cue.cueIndex,
     text: cue.text,
-    reason: cue.reason
+    reason: cue.reason,
+    ...(cue.timingMethod ? { timingMethod: cue.timingMethod, timingConfidence: cue.timingConfidence, model: cue.model, match: cue.match } : {})
   })).filter((item) => item.durationSeconds >= 0.1 && item.startSeconds > 0.05 && item.endSeconds < duration - 0.05))
   if (!removed.length) throw new Error('字幕中没有检测到可安全整段删除的独立口头禅或相邻重复句')
 
@@ -215,7 +216,12 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
     return segment
   })
   const totalRemovedSeconds = Number(removed.reduce((sum, item) => sum + item.durationSeconds, 0).toFixed(3))
-  const confirmationRequired = detected.some((item) => item.reason.startsWith('非紧邻完全重复'))
+  const confirmationRequired = detected.some((item) => item.reason.startsWith('非紧邻完全重复') || item.reason.startsWith('逐词对齐口头禅'))
+  const wordTimingEvidence = detected.filter((item) => item.timingMethod).map((item) => ({
+    cueIndex: item.cueIndex, text: item.text, match: item.match,
+    startSeconds: item.preciseStartSeconds, endSeconds: item.preciseEndSeconds,
+    confidence: item.timingConfidence, method: item.timingMethod, model: item.model
+  }))
   return {
     schemaVersion: 1, kind: 'media.concat-segments', instruction: String(instruction || '').trim(),
     source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
@@ -223,15 +229,21 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
     semanticCut: {
       schemaVersion: 1, strategy: 'subtitle-cue-cleanup-v1', target: 'filler-and-adjacent-repeat',
       subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)), detected, removed, reviewOnly,
-      confirmationRequired, totalRemovedSeconds
+      confirmationRequired, wordTimingEvidence, totalRemovedSeconds
     },
     output: { container: 'mp4', overwrite: false, suffix: '去口头禅重复版' },
-    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: 'subtitle-cue-cleanup-v1', removedCount: removed.length, totalRemovedSeconds } }
+    verification: {
+      toleranceSeconds: 0.25,
+      semanticEvidence: {
+        strategy: 'subtitle-cue-cleanup-v1', removedCount: removed.length, totalRemovedSeconds,
+        wordTimingEvidence: wordTimingEvidence.map((item) => ({ cueIndex: item.cueIndex, match: item.match, startSeconds: item.startSeconds, endSeconds: item.endSeconds, confidence: item.confidence, method: item.method, model: item.model }))
+      }
+    }
   }
 }
 
 class SemanticEditService {
-  constructor({ frames, loadTranscript = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript }
+  constructor({ frames, loadTranscript = null, loadWordTimings = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings }
 
   matches(instruction) { return matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) }
 
@@ -242,7 +254,12 @@ class SemanticEditService {
       const transcript = await this.loadTranscript?.(sourcePath)
       if (!transcript?.path || !Array.isArray(transcript.cues) || !transcript.cues.length) throw new Error('没有找到带时间轴的现成字幕，请先生成字幕后再删除口头禅或重复句')
       const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
-      const analysis = analyzeTextCleanupCues(transcript.cues, durationSeconds)
+      let analysis = analyzeTextCleanupCues(transcript.cues, durationSeconds)
+      if (analysis.reviewOnly.length && this.loadWordTimings) {
+        const wordTiming = await this.loadWordTimings(sourcePath, analysis.reviewOnly, { signal })
+        const resolved = (wordTiming?.resolved || []).map((item) => ({ ...item, reason: `逐词对齐口头禅“${item.match}”` }))
+        analysis = { ...analysis, detected: [...analysis.detected, ...resolved], reviewOnly: wordTiming?.unresolved || analysis.reviewOnly }
+      }
       if (!analysis.detected.length && analysis.reviewOnly.length) {
         return { matched: true, review: { kind: 'semantic-text-review', summary: textCleanupReviewSummary(analysis.reviewOnly), candidates: analysis.reviewOnly } }
       }

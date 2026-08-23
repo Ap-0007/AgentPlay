@@ -2,6 +2,7 @@ const { spawn } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { parseWhisperWordJson } = require('./word-timing-service')
 
 // 离线录音转写：whisper.cpp（whisper-cli）+ ggml-tiny 模型。
 // whisper-cli 原生可读 mp3/ogg/flac/wav；其它音频与视频先经 mpv 抽音为 wav。
@@ -139,6 +140,40 @@ class TranscriptionService {
       if (!text) throw new Error('没有识别到语音内容（可能是纯音乐或音量过低）')
       if (lang === 'zh') text = toSimplified(text)
       return { text, timestamps }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
+  }
+
+  async transcribeWords({ sourcePath, lang = 'auto', signal, timeoutMs, model } = {}) {
+    const status = this.availability()
+    if (!status.available) throw new Error(`${status.reason}，请先在模型接入中心下载转写组件`)
+    const ext = path.extname(sourcePath).toLowerCase()
+    if (![...DIRECT_AUDIO_EXTS, ...EXTRACT_AUDIO_EXTS].includes(ext)) throw new Error(`不支持逐词转写的格式：${ext || '未知'}`)
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-whisper-words-'))
+    try {
+      let input = sourcePath
+      if (EXTRACT_AUDIO_EXTS.includes(ext)) {
+        const wavPath = path.join(tempDir, 'audio.wav')
+        await this.exec(this.mpvPath, ['--no-video', '--ao=pcm', `--ao-pcm-file=${wavPath}`, sourcePath], 5 * 60 * 1000, { signal })
+        input = wavPath
+      } else if (/[^\x00-\x7F]/.test(input) || !path.isAbsolute(input)) {
+        const staged = path.join(tempDir, `audio${ext}`)
+        fs.copyFileSync(input, staged)
+        input = staged
+      }
+      const modelFile = /^ggml-[\w.-]+\.bin$/.test(String(model || '')) ? String(model) : (status.smallAvailable ? 'ggml-small.bin' : 'ggml-tiny.bin')
+      const dtwPreset = modelFile.replace(/^ggml-/, '').replace(/\.bin$/, '').replace(/-q\d.*$/i, '')
+      const outputBase = path.join(tempDir, 'words')
+      const args = ['-m', modelFile, '-l', lang, '-f', input, '-nt', '-np', '-sow', '-ojf', '-dtw', dtwPreset, '-nfa', '-of', outputBase]
+      await this.exec(path.join(this.whisperRoot, 'engine', 'whisper-cli.exe'), args, timeoutMs || this.timeoutMs, { cwd: this.whisperRoot, signal })
+      const jsonPath = `${outputBase}.json`
+      if (!fs.existsSync(jsonPath)) throw new Error('逐词转写没有生成JSON证据')
+      const payload = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+      const words = parseWhisperWordJson(payload)
+      if (!words.length) throw new Error('逐词转写没有生成可用DTW时间段')
+      if (lang === 'zh') words.forEach((word) => { word.text = toSimplified(word.text) })
+      return { words, model: modelFile, language: payload?.result?.language || lang, timingMethod: 'whisper.cpp-dtw-v1' }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true })
     }

@@ -80,6 +80,12 @@ test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dep
   assert.match(content, /7\.222秒成片/)
   assert.match(content, /801 tests、801 pass、0 fail、0 skip/)
   assert.match(content, /逐词时间戳生成、语义近似重复、跑题证据与五类素材人工标定仍未完成/)
+  assert.match(content, /第四个纵向切片/)
+  assert.match(content, /DTW tiny/)
+  assert.match(content, /11\.74–12\.58秒边界/)
+  assert.match(content, /2\.62–3\.48秒/)
+  assert.match(content, /805 tests、805 pass、0 fail、0 skip/)
+  assert.match(content, /语义近似重复、跑题证据与五类素材人工标定尚未完成/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

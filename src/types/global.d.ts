@@ -193,9 +193,10 @@ interface MediaEditDecisionV1 {
     subtitlePath?: string
     confirmationRequired?: boolean
     sourceDurationSeconds: number
-    detected: Array<{ startSeconds: number; endSeconds: number; durationSeconds?: number; cueIndex?: number; text?: string; reason?: string }>
-    removed: Array<{ startSeconds: number; endSeconds: number; durationSeconds: number; cueIndex?: number; text?: string; reason: string }>
+    detected: Array<{ startSeconds: number; endSeconds: number; durationSeconds?: number; cueIndex?: number; text?: string; reason?: string; preciseStartSeconds?: number; preciseEndSeconds?: number; timingMethod?: string; timingConfidence?: number; model?: string; match?: string }>
+    removed: Array<{ startSeconds: number; endSeconds: number; durationSeconds: number; cueIndex?: number; text?: string; reason: string; timingMethod?: string; timingConfidence?: number; model?: string; match?: string }>
     reviewOnly?: Array<{ startSeconds: number; endSeconds: number; cueIndex: number; text: string; reason: string; matches: string[] }>
+    wordTimingEvidence?: Array<{ cueIndex: number; text: string; match: string; startSeconds: number; endSeconds: number; confidence: number; method: string; model: string }>
     totalRemovedSeconds: number
   }
   output: { overwrite: false; suffix: string; container?: string }
