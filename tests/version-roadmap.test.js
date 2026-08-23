@@ -66,6 +66,9 @@ test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dep
   assert.match(content, /多轨对白、音乐、环境声和音效/)
   assert.match(content, /个人编辑 Skill/)
   assert.match(content, /不以复刻剪映全部界面为目标/)
+  assert.match(content, /audio-silencedetect-v1/)
+  assert.match(content, /质量95通过/)
+  assert.match(content, /废话、重复、跑题的语义证据.*尚未完成/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

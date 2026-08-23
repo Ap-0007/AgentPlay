@@ -81,6 +81,7 @@ const { MediaEditConversation } = require('./media-edit-conversation')
 const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decision-list')
 const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-edit-service')
 const { MediaEditProjectStore } = require('./media-edit-project-store')
+const { SemanticEditService } = require('./semantic-edit-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -674,6 +675,7 @@ const videoFrames = new VideoFrameService({
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
+const semanticEditService = new SemanticEditService({ frames: videoFrames })
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
 const projectCapsules = new ProjectCapsuleStore({ rootDir: path.join(app.getPath('userData'), 'project-capsules') })
 const publicLinkService = new PublicLinkService()
@@ -2213,13 +2215,22 @@ app.whenReady().then(async () => {
     assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的多片段拼接决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(`正在按指定顺序拼接 ${decision.timeline.segments.length} 个片段`)
+    status(decision.semanticCut
+      ? `正在按音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿并重建连续时间线`
+      : `正在按指定顺序拼接 ${decision.timeline.segments.length} 个片段`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
       : await mediaEditService.concatSegments({ sourcePath, outputPath, decision, signal })
     validateMediaSources(task.spec.sources)
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
-    const completed = { ...result, projectCapsule }
+    const completed = {
+      ...result,
+      ...(decision.semanticCut ? {
+        semanticCut: decision.semanticCut,
+        summary: `已按真实音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；每处保留 ${Number(decision.semanticCut.keepPaddingSeconds).toFixed(2)} 秒呼吸边界，原文件未改动`
+      } : {}),
+      projectCapsule
+    }
     checkpoint({ stage: 'artifact-written', result: completed })
     userAuthorizedPaths.add(path.resolve(outputPath))
     return completed
@@ -2470,10 +2481,14 @@ app.whenReady().then(async () => {
   })
 
   // 明确时间段剪辑：先冻结唯一时间线，再由主进程另存、探测并回执；询问/否定/举例不会进入写文件路径。
-  ipcMain.handle('media:edit-plan', (event, input = {}) => {
+  ipcMain.handle('media:edit-plan', async (event, input = {}) => {
     assertTrustedSender(event)
     try {
       const sourcePath = assertAllowedPath(input.sourcePath)
+      if (semanticEditService.matches(input.instruction)) {
+        const semantic = await semanticEditService.plan({ instruction: input.instruction, sourcePath })
+        return semantic.decision ? { ...semantic, decision: attachEditDecisionList(semantic.decision) } : semantic
+      }
       return mediaEditConversation.plan({ instruction: input.instruction, sourcePath, clarificationId: input.clarificationId })
     } catch (error) {
       return { matched: false, error: error instanceof Error ? error.message : String(error) }
@@ -2511,8 +2526,18 @@ app.whenReady().then(async () => {
     const requestId = normalizeRequestId(input.requestId, 'media-edit-trim')
     try {
       const sourcePath = assertAllowedPath(input.sourcePath)
-      const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
-      const decision = rawDecision ? attachEditDecisionList(rawDecision) : null
+      let decision = null
+      if (input.decision) {
+        assertEditDecisionList(input.decision)
+        const decisionSource = input.decision.kind === 'media.concat-sources'
+          ? input.decision.sources?.[0]?.path
+          : input.decision.source?.path
+        if (path.resolve(String(decisionSource || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑方案与当前视频不一致')
+        decision = JSON.parse(JSON.stringify(input.decision))
+      } else {
+        const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+        decision = rawDecision ? attachEditDecisionList(rawDecision) : null
+      }
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-sources'
         ? 'media.edit-concat-sources'

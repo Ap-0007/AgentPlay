@@ -20,6 +20,7 @@ type TrimInput = {
   endSeconds: number
   operation?: 'trim' | 'remove' | 'concat' | 'music' | 'subtitle' | 'shift' | 'mux' | 'translate' | 'cue-edit'
   segments?: Array<{ startSeconds: number; endSeconds: number }>
+  decision?: MediaEditDecisionV1
 }
 
 type MediaCreativeTaskOptions = {
@@ -242,6 +243,8 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     let operation: 'trim' | 'remove' | 'concat' | 'music' | 'subtitle' | 'shift' | 'mux' | 'translate' | 'cue-edit' = override?.operation || 'trim'
     let segments = override?.segments || []
     let sourceCount = 0
+    let semanticCut: MediaEditDecisionV1['semanticCut'] | undefined = override?.decision?.semanticCut
+    let frozenDecision: MediaEditDecisionV1 | undefined = override?.decision
     let executionInstruction = text
     if (!override) {
       try {
@@ -273,6 +276,8 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           return false
         }
         pendingEditClarificationRef.current = null
+        frozenDecision = decision
+        semanticCut = decision.semanticCut
         executionInstruction = decision.instruction || text
         operation = decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.burn-subtitles' ? 'subtitle' : decision.kind === 'media.mux-subtitles' ? 'mux' : decision.kind === 'media.translate-subtitles' ? 'translate' : decision.kind === 'media.edit-subtitle-cues' ? 'cue-edit' : decision.kind === 'media.shift-subtitles' ? 'shift' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' || decision.kind === 'media.concat-sources' ? 'concat' : 'trim'
         startSeconds = Number(decision.timeline?.startSeconds || decision.timeline?.segments?.[0]?.sourceStartSeconds || 0)
@@ -284,24 +289,24 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       }
     }
     if (busyRef.current) return true
-    const input: TrimInput = { instruction: executionInstruction, sourcePath, startSeconds, endSeconds, operation, segments }
+    const input: TrimInput = { instruction: executionInstruction, sourcePath, startSeconds, endSeconds, operation, segments, ...(frozenDecision ? { decision: frozenDecision } : {}) }
     trimInputRef.current = input
     busyRef.current = true
     if (!override) {
       addMessage('user', text)
       setInputText('')
     }
-    const actionLabel = operation === 'music' ? '配乐（对白闪避）' : operation === 'subtitle' ? '烧录硬字幕' : operation === 'mux' ? '封装软字幕' : operation === 'translate' ? '翻译字幕' : operation === 'cue-edit' ? '字幕校对' : operation === 'shift' ? '字幕时间调移' : operation === 'concat' ? (sourceCount > 0 ? `按顺序合并 ${sourceCount} 个素材` : `按顺序拼接 ${segments.length} 个片段`) : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
+    const actionLabel = semanticCut ? `删除长停顿 ${semanticCut.removed.length} 处` : operation === 'music' ? '配乐（对白闪避）' : operation === 'subtitle' ? '烧录硬字幕' : operation === 'mux' ? '封装软字幕' : operation === 'translate' ? '翻译字幕' : operation === 'cue-edit' ? '字幕校对' : operation === 'shift' ? '字幕时间调移' : operation === 'concat' ? (sourceCount > 0 ? `按顺序合并 ${sourceCount} 个素材` : `按顺序拼接 ${segments.length} 个片段`) : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
       kind: 'media', label: actionLabel, phase: 'running',
-      status: operation === 'music' ? '正在按音乐选段与循环策略混音，并做两遍响度归一和编码后复测…' : operation === 'subtitle' ? '正在把字幕逐条烧录进画面并核验成品时长与音轨…' : operation === 'mux' ? '正在把字幕封装成可开关的软字幕轨（不重编码）并核验…' : operation === 'translate' ? '正在逐句翻译字幕并核对译文与条目数…' : operation === 'cue-edit' ? '正在按条目校订字幕并逐条复核…' : operation === 'shift' ? '正在按秒数平移整条字幕时间轴并逐条复核…' : operation === 'concat' ? (sourceCount > 0 ? '正在统一分辨率与音轨、按顺序拼接多个素材并核验成品…' : '正在按口述顺序重排片段、拼接连续音画并核验成品…') : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
+      status: semanticCut ? `正在按真实音轨证据删除 ${semanticCut.removed.length} 处长停顿并核验成片…` : operation === 'music' ? '正在按音乐选段与循环策略混音，并做两遍响度归一和编码后复测…' : operation === 'subtitle' ? '正在把字幕逐条烧录进画面并核验成品时长与音轨…' : operation === 'mux' ? '正在把字幕封装成可开关的软字幕轨（不重编码）并核验…' : operation === 'translate' ? '正在逐句翻译字幕并核对译文与条目数…' : operation === 'cue-edit' ? '正在按条目校订字幕并逐条复核…' : operation === 'shift' ? '正在按秒数平移整条字幕时间轴并逐条复核…' : operation === 'concat' ? (sourceCount > 0 ? '正在统一分辨率与音轨、按顺序拼接多个素材并核验成品…' : '正在按口述顺序重排片段、拼接连续音画并核验成品…') : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
       retry: { kind: 'trim', instruction: executionInstruction, sourcePath }
     })
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     pendingTaskRef.current = 'trim'
     bindCancelableRequest(requestId)
     try {
-      const result = await window.aiPlayer.mediaTools.trim({ sourcePath, instruction: executionInstruction, requestId, workspaceTaskId: executionTaskIdRef.current })
+      const result = await window.aiPlayer.mediaTools.trim({ sourcePath, instruction: executionInstruction, requestId, workspaceTaskId: executionTaskIdRef.current, ...(input.decision ? { decision: input.decision } : {}) })
       if (!result?.success || !result.outputPath) throw new Error(result?.error || '视频剪辑失败')
       const timeline = (result.timelineReceipt || []).map((item) => `${item.operation}：${operation === 'music' ? '音乐' : '源片'} ${item.sourceRange}；成片 ${item.outputRange}`).join('\n')
       const summary = result.summary || (result.music

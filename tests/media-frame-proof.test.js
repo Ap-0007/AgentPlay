@@ -20,6 +20,14 @@ const packagedSmoke = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'smo
 const FFMPEG = process.env.AIPLAYER_FFMPEG || 'C:/Program Files/ffmpeg/ffmpeg-8.0.1-essentials_build/bin/ffmpeg.exe'
 const hasFfmpeg = fs.existsSync(FFMPEG)
 
+test('a boundary matching both the requested frame and one neighbour is inconclusive, not a false mismatch', () => {
+  const editor = new MediaEditService({ frames: {} })
+  const frame = (value) => Buffer.alloc(32, value)
+  assert.equal(editor.judgeFrameBoundary(frame(10), [frame(10)], [frame(10), frame(30)]).verdict, 'inconclusive')
+  assert.equal(editor.judgeFrameBoundary(frame(10), [frame(10)], [frame(30)]).verdict, 'matched')
+  assert.equal(editor.judgeFrameBoundary(frame(10), [frame(30)], [frame(10)]).verdict, 'mismatch')
+})
+
 function makeFrames() {
   const ffprobe = FFMPEG.replace('ffmpeg.exe', 'ffprobe.exe')
   return {

@@ -504,7 +504,7 @@ class MediaEditService {
     const altDiffs = (altFrames || []).filter(Boolean).map((frame) => meanAbsDiff(outputFrame, frame))
     const bestAlt = altDiffs.length ? Math.min(...altDiffs) : null
     const margin = bestAlt == null ? null : Number((bestAlt - dMatch).toFixed(3))
-    if (dMatch < 0.5 && altDiffs.every((d) => d < 0.5)) return { verdict: 'inconclusive', matchDiff: Number(dMatch.toFixed(3)), margin }
+    if (dMatch < 0.5 && altDiffs.some((d) => d < 0.5)) return { verdict: 'inconclusive', matchDiff: Number(dMatch.toFixed(3)), margin }
     if (dMatch <= 1.5 && (margin == null || margin > 0.3)) return { verdict: 'matched', matchDiff: Number(dMatch.toFixed(3)), margin }
     return { verdict: 'mismatch', matchDiff: Number(dMatch.toFixed(3)), margin }
   }
