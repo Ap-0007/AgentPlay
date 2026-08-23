@@ -19,6 +19,7 @@ import useIncomingFiles from './agent-panel/useIncomingFiles'
 import usePersistentTaskRuntime from './agent-panel/usePersistentTaskRuntime'
 import useContinueTask from './agent-panel/useContinueTask'
 import useCrossMaterialQaTasks from './agent-panel/useCrossMaterialQaTasks'
+import useTaskNotificationNavigation from './agent-panel/useTaskNotificationNavigation'
 import { selectDocumentPreviewPath, selectPrimaryPreviewPath } from '../document-preview-routing.mjs'
 export default function AgentPanel() {
   const { messages, inputText, setInputText, send, cancel, thinking, listening, toggleListening, setListening, addMessage } =
@@ -42,6 +43,7 @@ export default function AgentPanel() {
   const startTask = useAgentStore((s) => s.startTask)
   const tasks = useAgentStore((s) => s.tasks)
   const selectTask = useAgentStore((s) => s.selectTask)
+  useTaskNotificationNavigation({ selectTask, openTaskCenter: () => setShowTaskCenter(true) })
   const executionTaskIdRef = useRef('')
   const docRequestIdRef = useRef('')
   usePersistentTaskRuntime(docRequestIdRef)

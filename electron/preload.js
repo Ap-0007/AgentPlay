@@ -365,6 +365,15 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('task-runtime:event', handler)
     }
   },
+  notifications: {
+    history: () => ipcRenderer.invoke('notifications:history'),
+    activate: (id) => ipcRenderer.invoke('notifications:activate', id),
+    onActivate: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('task-notification:activate', handler)
+      return () => ipcRenderer.removeListener('task-notification:activate', handler)
+    }
+  },
   onlineMedia: {
     search: (input) => ipcRenderer.invoke('onlineMedia:search', input),
     files: (input) => ipcRenderer.invoke('onlineMedia:files', input),

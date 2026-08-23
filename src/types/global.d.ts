@@ -399,6 +399,11 @@ interface AiPlayerAPI {
     cancel: (id: string) => Promise<boolean>
     onEvent: (cb: (task: PersistentRuntimeTask) => void) => () => void
   }
+  notifications?: {
+    history: () => Promise<Array<{ schemaVersion: 1; id: string; runtimeTaskId: string; workspaceTaskId: string; taskType: string; state: 'waiting_approval' | 'completed' | 'failed'; title: string; body: string; outputPath: string; nativeShown: boolean; nativeSupported: boolean; createdAt: number; activatedAt: number | null }>>
+    activate: (id: string) => Promise<boolean>
+    onActivate: (cb: (record: { id: string; runtimeTaskId: string; workspaceTaskId: string; state: string; outputPath: string }) => void) => () => void
+  }
   translatePack?: {
     status: () => Promise<{ available: boolean; missing: string[]; reason: string; modelDir: string; download: Partial<LocalAiDownloadProgress> & { active: boolean; installed: boolean; presentBytes: number; totalBytes: number }; pack: { tag: string; totalBytes: number; assetCount: number } }>
     download: () => Promise<{ success: boolean; error?: string; availability?: unknown }>

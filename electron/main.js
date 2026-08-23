@@ -1,7 +1,7 @@
 // AgentPlay Electron 主进程
 // dev: 加载 Vite dev server；prod: 加载构建产物
 // 集成 mpv sidecar，IPC 桥接渲染进程
-const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session, desktopCapturer, globalShortcut } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, dialog, safeStorage, session, desktopCapturer, globalShortcut, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -72,6 +72,7 @@ const { compileOutcomeWorkflow, assertOutcomeWorkflow } = require('./outcome-wor
 const { OutcomeWorkflowRunner } = require('./outcome-workflow-runner')
 const { ProjectCapsuleStore } = require('./project-capsule-store')
 const { PublicLinkService } = require('./public-link-service')
+const { TaskNotificationService } = require('./task-notification-service')
 const { videoTime, documentPage, sheetCell, imageRegion } = require('./evidence-reference')
 const { CrossMaterialQaService, detectCrossMaterialQuestion } = require('./cross-material-qa-service')
 const { imageSize } = require('./docx-image')
@@ -110,9 +111,11 @@ let activeRecutProcess = null
 let documentWorkspace = null
 let localAiDownload = null
 let persistentTaskRuntime = null
+let taskNotificationService = null
 let pluginService = null
 const pendingExternalMedia = []
 const pendingDocumentFiles = []
+const pendingTaskNotificationActivations = []
 let documentFlushTimer = null
 const activeAiRequests = new Map()
 const activeComputerUseRequests = new Map()
@@ -202,6 +205,26 @@ function flushPendingDocuments() {
   return true
 }
 
+function revealMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+  return true
+}
+
+function flushPendingTaskNotificationActivations() {
+  if (!rendererLoaded || !mainWindow || mainWindow.isDestroyed()) return false
+  while (pendingTaskNotificationActivations.length > 0) mainWindow.webContents.send('task-notification:activate', pendingTaskNotificationActivations.shift())
+  return true
+}
+
+function activateTaskNotification(record) {
+  revealMainWindow()
+  pendingTaskNotificationActivations.push(record)
+  flushPendingTaskNotificationActivations()
+}
+
 // Windows 资源管理器“用 AgentPlay 智能处理”动词：多选时每个文件会各起一个
 // 进程，这里汇总后成批交给文档工作台，绝不送入播放器。
 function queueDocumentVerbArgs(argv) {
@@ -245,6 +268,8 @@ app.on('open-file', (event, filePath) => {
 })
 
 queueExternalMediaArgs(process.argv)
+
+if (process.platform === 'win32') app.setAppUserModelId('com.aiplayer.app')
 
 // 创作类功能（生图/生视频/重构短片）天然需要云端大模型：当前 chat 切了本地小模型时，
 // 自动使用一键切换时 stash 的云端配置（含加密 Key），用户无感；无 stash 才回落当前配置。
@@ -413,6 +438,7 @@ function createWindow() {
     rendererLoaded = true
     flushPendingExternalMedia()
     flushPendingDocuments()
+    flushPendingTaskNotificationActivations()
     try {
       const injected = await mainWindow.webContents.executeJavaScript('window.aiPlayer?.isElectron === true')
       log.info(`桌面桥接注入状态: ${injected}`)
@@ -907,6 +933,16 @@ log.info('AgentPlay 启动')
 
 app.whenReady().then(async () => {
   const win = createWindow()
+  taskNotificationService = new TaskNotificationService({
+    rootDir: path.join(app.getPath('userData'), 'task-notifications'),
+    notificationFactory: (options) => new Notification(options),
+    isSupported: () => Notification.isSupported(),
+    shouldShowNative: (task) => task.state === 'waiting_approval'
+      || !mainWindow?.isFocused()
+      || Date.now() - Number(task.createdAt || Date.now()) >= 3000,
+    onActivate: activateTaskNotification,
+    logger: log
+  })
 
   // 全局热键：随叫随到——任何场景下唤起主窗口并直接开麦克风；主键被占用时回退备选
   const wakeApp = () => {
@@ -1111,6 +1147,7 @@ app.whenReady().then(async () => {
   })
 
   const publishTaskRuntimeEvent = (task) => {
+    taskNotificationService?.notify(task)
     if (!mainWindow || mainWindow.isDestroyed()) return
     mainWindow.webContents.send('task-runtime:event', task)
     if (String(task.type || '').startsWith('download.')) {
@@ -4101,6 +4138,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('studio:offline-analysis', (event, input = {}) => {
     assertTrustedSender(event)
     return buildOfflineAnalysis(input)
+  })
+  ipcMain.handle('notifications:history', (event) => {
+    assertTrustedSender(event)
+    return taskNotificationService?.history() || []
+  })
+  ipcMain.handle('notifications:activate', (event, id) => {
+    assertTrustedSender(event)
+    return taskNotificationService?.activate(String(id || '')) || false
   })
   ipcMain.handle('outcome:detect', (event, input = {}) => {
     assertTrustedSender(event)

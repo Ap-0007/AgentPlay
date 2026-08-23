@@ -152,7 +152,9 @@ class PersistentTaskRuntime {
     this.state.tasks.push(task)
     this.state.tasks = this.state.tasks.slice(-200)
     this.persist()
-    return this.publicTask(task)
+    const snapshot = this.publicTask(task)
+    try { this.onChange?.(snapshot) } catch (error) { this.logger?.warn?.('持久任务创建通知失败', error) }
+    return snapshot
   }
 
   get(id) {

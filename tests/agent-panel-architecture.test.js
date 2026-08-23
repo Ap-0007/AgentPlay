@@ -9,7 +9,7 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 test('AgentPanel is a workflow container with bounded size and extracted surfaces', () => {
   const panel = read('src/components/AgentPanel.tsx')
   assert.ok(panel.split(/\r?\n/).length <= 580, '新任务族接入后 AgentPanel 仍应保持为轻量容器')
-  for (const moduleName of ['AgentComposer', 'AgentHome', 'RuntimeSettings', 'useVoiceInput', 'useIncomingFiles', 'useLinkMediaTasks', 'useDocumentAnalysisTasks', 'useCrossMaterialQaTasks', 'useMediaCreativeTasks', 'useContinueTask']) {
+  for (const moduleName of ['AgentComposer', 'AgentHome', 'RuntimeSettings', 'useVoiceInput', 'useIncomingFiles', 'useLinkMediaTasks', 'useDocumentAnalysisTasks', 'useCrossMaterialQaTasks', 'useTaskNotificationNavigation', 'useMediaCreativeTasks', 'useContinueTask']) {
     assert.match(panel, new RegExp(`import ${moduleName} from './agent-panel/${moduleName}'`))
   }
   assert.match(panel, /import \{ createIntentRouter \} from '.\/agent-panel\/intentRouter'/)
