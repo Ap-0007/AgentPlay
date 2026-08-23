@@ -69,6 +69,8 @@ test('0.9.1 keeps professional semantic and multitrack editing behind the v1 dep
   assert.match(content, /audio-silencedetect-v1/)
   assert.match(content, /质量95通过/)
   assert.match(content, /废话、重复、跑题的语义证据.*尚未完成/)
+  assert.match(content, /This operation was aborted/)
+  assert.match(content, /模型响应超时/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {
