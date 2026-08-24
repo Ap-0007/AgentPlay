@@ -23,6 +23,8 @@ type TrimInput = {
   decision?: MediaEditDecisionV1
 }
 type PendingSemanticReview = { sourcePath: string; decision: MediaEditDecisionV1 }
+type PendingLongVersionPlan = { sourcePath: string; plan: LongVideoVersionPlanV1 }
+type VersionBundleInput = { sourcePath: string; plan: LongVideoVersionPlanV1 }
 
 type MediaCreativeTaskOptions = {
   busyRef: CurrentRef<boolean>
@@ -66,6 +68,8 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   const trimInputRef = useRef<TrimInput>({ instruction: '', sourcePath: '', startSeconds: 0, endSeconds: 0 })
   const pendingEditClarificationRef = useRef<MediaEditClarification | null>(null)
   const pendingSemanticReviewRef = useRef<PendingSemanticReview | null>(null)
+  const pendingLongVersionRef = useRef<PendingLongVersionPlan | null>(null)
+  const versionBundleInputRef = useRef<VersionBundleInput | null>(null)
   const videoGenInstructionRef = useRef('')
   const dedupInstructionRef = useRef('')
 
@@ -227,9 +231,62 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     }
   }
 
+  const runVersionBundleTask = async (input: VersionBundleInput): Promise<boolean> => {
+    if (busyRef.current) return true
+    busyRef.current = true
+    versionBundleInputRef.current = input
+    executionTaskIdRef.current = startTask({
+      kind: 'media', label: `生成长视频多版本 ${input.plan.variants.length + input.plan.chapters.length} 个`, phase: 'running',
+      status: '正在按共享章节与高光证据生成多个版本…', instruction: input.plan.instruction, source: input.sourcePath,
+      retry: { kind: 'versions', instruction: input.plan.instruction, sourcePath: input.sourcePath }
+    })
+    const requestId = `versions-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    pendingTaskRef.current = 'versions'
+    bindCancelableRequest(requestId)
+    try {
+      const result = await window.aiPlayer?.mediaTools?.runVersionBundle({ sourcePath: input.sourcePath, plan: input.plan, requestId, workspaceTaskId: executionTaskIdRef.current })
+      if (!result?.success || !result.outputs?.length) throw new Error(result?.error || '长视频多版本生成失败')
+      completeExecutionTask({ outputs: result.outputs, summary: result.summary || `已生成 ${result.outputs.length} 个视频版本` })
+      const lines = (result.versions || []).map((item) => `- ${item.label}：${Number(item.durationSeconds || 0).toFixed(2)}秒`).join('\n')
+      addMessage('agent', `${result.summary || `已生成 ${result.outputs.length} 个视频版本`}\n${lines}\n所有版本来自同一份字幕证据，原文件未改动。`)
+      if (result.outputs[0]) window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputs[0] }))
+      return true
+    } catch (error) {
+      if (executionWasCancelled()) return true
+      const message = error instanceof Error ? error.message : String(error)
+      failExecutionTask(message)
+      addMessage('agent', `[错误] ${message}`)
+      return true
+    } finally {
+      releaseCancelableRequest(requestId)
+      busyRef.current = false
+    }
+  }
+
   const runTrimTask = async (text: string, override?: TrimInput): Promise<boolean> => {
     if (!text) return false
     const currentPath = override?.sourcePath || usePlayerStore.getState().videoSrc
+    const pendingLongVersion = override ? null : pendingLongVersionRef.current
+    if (pendingLongVersion && (!currentPath || !sameLocalPath(currentPath, pendingLongVersion.sourcePath))) {
+      pendingLongVersionRef.current = null
+      addMessage('user', text); setInputText('')
+      addMessage('agent', '当前视频已经切换，刚才待确认的长视频多版本方案已取消。')
+      return true
+    }
+    if (pendingLongVersion) {
+      addMessage('user', text); setInputText('')
+      if (/^(?:算了|取消|不执行|先不做了)[吧。！!]*$/.test(text.trim())) {
+        pendingLongVersionRef.current = null
+        addMessage('agent', '好的，已取消多版本方案，没有创建任务，也没有改动文件。')
+        return true
+      }
+      if (!/^(?:确认(?:执行)?|执行|就按这个(?:方案)?|按这个方案执行)[吧。！!]*$/.test(text.trim())) {
+        addMessage('agent', '多版本方案尚未执行。请回复“确认执行”或“取消”。')
+        return true
+      }
+      pendingLongVersionRef.current = null
+      return runVersionBundleTask({ sourcePath: pendingLongVersion.sourcePath, plan: pendingLongVersion.plan })
+    }
     const pendingSemanticReview = override ? null : pendingSemanticReviewRef.current
     if (pendingSemanticReview && (!currentPath || !sameLocalPath(currentPath, pendingSemanticReview.sourcePath))) {
       pendingSemanticReviewRef.current = null
@@ -306,6 +363,15 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           addMessage('user', text)
           setInputText('')
           addMessage('agent', plan.clarification.question)
+          return true
+        }
+        if (plan?.versionPlan) {
+          pendingLongVersionRef.current = { sourcePath, plan: plan.versionPlan }
+          pendingEditClarificationRef.current = null
+          addMessage('user', text); setInputText('')
+          const variants = plan.versionPlan.variants.map((item) => `${item.label}（目标${item.targetSeconds}秒，计划${item.durationSeconds.toFixed(2)}秒）`).join('、')
+          const chapters = plan.versionPlan.chapters.map((item) => `${item.label}（${item.sourceStartSeconds.toFixed(2)}–${item.sourceEndSeconds.toFixed(2)}秒）`).join('、')
+          addMessage('agent', `长视频多版本方案已完成，尚未执行：\n内容摘要：${plan.versionPlan.summary}\n时长版本：${variants}\n章节版：${chapters}\n共享证据由 ${plan.versionPlan.model.providerName} · ${plan.versionPlan.model.model} 一次规划，后续不会为每个版本重复调用模型。\n请回复“确认执行”或“取消”。`)
           return true
         }
         if (plan?.review?.summary) {
@@ -565,6 +631,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         if (!trimInputRef.current.sourcePath) return false
         void runTrimTask(trimInputRef.current.instruction, trimInputRef.current)
         return true
+      case 'versions':
+        if (!versionBundleInputRef.current) return false
+        void runVersionBundleTask(versionBundleInputRef.current)
+        return true
       case 'dedup':
         if (!dedupInstructionRef.current) return false
         void runDedupTask(dedupInstructionRef.current, true)
@@ -592,6 +662,11 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         })
       }
       void planAndRetry()
+      return true
+    }
+    if (retry.kind === 'versions' && retry.sourcePath && retry.instruction) {
+      usePlayerStore.getState().setMedia(retry.sourcePath.split(/[\\/]/).pop() || '待处理视频', retry.sourcePath)
+      void runTrimTask(retry.instruction)
       return true
     }
     if (retry.kind === 'compress' && retry.sourcePath) {

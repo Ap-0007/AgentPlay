@@ -1,5 +1,6 @@
 const path = require('path')
 const { matchesAutoInspectionInstruction } = require('./media-auto-inspection')
+const { compileLongVideoVersionBundle, matchesLongVersionInstruction } = require('./long-video-version-service')
 
 const PAUSE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除|自动剪掉)[^，。；]{0,12}(?:长)?(?:停顿|静音)|(?:长)?(?:停顿|静音)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const TEXT_CLEANUP_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)[^，。；]{0,12}(?:口头禅|废话|重复(?:的话|内容|句子)?)|(?:口头禅|废话|重复(?:的话|内容|句子)?)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
@@ -497,17 +498,34 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
 }
 
 class SemanticEditService {
-  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null, analyzeVisualCandidates = null, selectTopicCues = null, inspectMedia = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues; this.analyzeVisualCandidates = analyzeVisualCandidates; this.selectTopicCues = selectTopicCues; this.inspectMedia = inspectMedia }
+  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null, analyzeVisualCandidates = null, selectTopicCues = null, inspectMedia = null, planLongVersions = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues; this.analyzeVisualCandidates = analyzeVisualCandidates; this.selectTopicCues = selectTopicCues; this.inspectMedia = inspectMedia; this.planLongVersions = planLongVersions }
 
   setSemanticAnalyzer(analyzeSemanticCues) { this.analyzeSemanticCues = analyzeSemanticCues }
   setVisualAnalyzer(analyzeVisualCandidates) { this.analyzeVisualCandidates = analyzeVisualCandidates }
   setTopicSelector(selectTopicCues) { this.selectTopicCues = selectTopicCues }
+  setLongVersionPlanner(planLongVersions) { this.planLongVersions = planLongVersions }
 
-  matches(instruction) { return matchesAutoInspectionInstruction(instruction) || matchesExactQuoteStartInstruction(instruction) || matchesTopicSelectionInstruction(instruction) || matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
+  matches(instruction) { return matchesLongVersionInstruction(instruction) || matchesAutoInspectionInstruction(instruction) || matchesExactQuoteStartInstruction(instruction) || matchesTopicSelectionInstruction(instruction) || matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
 
   async plan({ instruction, sourcePath, signal } = {}) {
     if (!this.matches(instruction)) return { matched: false }
     if (!this.frames?.availability?.().available) throw new Error('缺少 ffmpeg 组件，无法分析音轨停顿')
+    if (matchesLongVersionInstruction(instruction)) {
+      const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
+      const transcript = await this.loadTranscript?.(sourcePath)
+      if (!transcript?.path || !Array.isArray(transcript.cues) || transcript.cues.length < 6) throw new Error('长视频多版本至少需要6条带时间轴字幕，请先生成字幕')
+      if (durationSeconds < 30) throw new Error('当前视频不足30秒，不属于长视频多版本场景')
+      if (!this.planLongVersions) return { matched: true, review: { kind: 'long-video-versions', summary: '当前没有可用的长视频版本规划模型，没有创建任务。', candidates: [] } }
+      try {
+        const normalized = analyzeTextCleanupCues(transcript.cues, durationSeconds).normalized
+        const reviewed = await this.planLongVersions({ cues: normalized, signal })
+        if (!reviewed?.available) return { matched: true, review: { kind: 'long-video-versions', summary: `${reviewed?.reason || '长视频版本规划模型不可用'}；没有创建任务。`, candidates: [] } }
+        return { matched: true, versionPlan: compileLongVideoVersionBundle({ instruction, sourcePath, subtitlePath: transcript.path, durationSeconds, cues: normalized, reviewed }) }
+      } catch (error) {
+        if (signal?.aborted || error?.message === '已取消') throw error
+        return { matched: true, review: { kind: 'long-video-versions', summary: `长视频版本计划未通过证据校验：${error instanceof Error ? error.message : String(error)}；没有创建任务。`, candidates: [] } }
+      }
+    }
     if (matchesAutoInspectionInstruction(instruction)) {
       const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
       const transcript = await this.loadTranscript?.(sourcePath)

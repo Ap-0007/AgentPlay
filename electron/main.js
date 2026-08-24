@@ -85,6 +85,7 @@ const { SemanticEditService } = require('./semantic-edit-service')
 const { MediaAutoInspection } = require('./media-auto-inspection')
 const { createWordTimingLoader } = require('./word-timing-service')
 const { reviewSemanticTranscript, reviewTopicSelection } = require('./semantic-transcript-review')
+const { assertLongVideoVersionPlan, freezeLongVideoVersionPlan, planLongVideoVersions } = require('./long-video-version-service')
 const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
@@ -1312,6 +1313,21 @@ app.whenReady().then(async () => {
       complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'semantic-topic-selection' })
     })
   })
+  semanticEditService.setLongVersionPlanner(async ({ cues, signal }) => {
+    const candidates = modelConfigStore.resolvedCandidates('chat').filter((config) => config.providerId !== 'bundled-lite')
+    const planned = candidates.length ? selectModelForTaskPlan({ taskKind: 'long-video-version-planning', requirements: { text: true }, candidates }) : null
+    const config = planned?.selected
+    if (!config) return { available: false, reason: '当前只有0.5B轻量模型，不能规划长视频多个版本；请连接工作模型' }
+    const local = isLocalModelConfig(config)
+    if (!local) {
+      const approved = await ensureCloudConsent('当前长视频的字幕序号、时间和文字将发送给所选工作模型，只规划一次共享章节与高光证据；不会上传视频或音频。')
+      if (!approved) return { available: false, reason: '你没有允许发送字幕文本到工作模型' }
+    }
+    return planLongVideoVersions({
+      cues, signal, model: { providerId: config.providerId, providerName: config.providerName, model: config.model, local },
+      complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'long-video-version-planning' })
+    })
+  })
   semanticEditService.setVisualAnalyzer(async ({ sourcePath, cues, review, durationSeconds, signal }) => {
     const candidates = modelConfigStore.resolvedCandidates('chat')
     const planned = candidates.length ? selectModelForTaskPlan({ taskKind: 'semantic-edit-vision', requirements: { vision: true }, candidates }) : null
@@ -2334,6 +2350,55 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  const buildVersionEditDecision = ({ sourcePath, plan, entry }) => {
+    const rawSegments = entry.segments || [{ sourceStartSeconds: entry.sourceStartSeconds, sourceEndSeconds: entry.sourceEndSeconds, durationSeconds: entry.durationSeconds }]
+    const segments = rawSegments.map((item) => ({ sourceStartSeconds: Number(item.sourceStartSeconds), sourceEndSeconds: Number(item.sourceEndSeconds), durationSeconds: Number(item.sourceEndSeconds) - Number(item.sourceStartSeconds) }))
+    const suffix = String(entry.label || entry.id || '多版本').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').slice(0, 60)
+    const common = {
+      schemaVersion: 1, instruction: plan.instruction, source: { path: sourcePath, name: path.basename(sourcePath) },
+      output: { container: 'mp4', overwrite: false, suffix },
+      verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: plan.strategy, variantId: entry.id, sharedEvidence: plan.sharedEvidence, model: plan.model } }
+    }
+    if (segments.length === 1) {
+      const segment = segments[0]
+      return attachEditDecisionList({ ...common, kind: 'media.trim', timeline: { startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds, durationSeconds: Number(segment.durationSeconds.toFixed(3)) } })
+    }
+    let cursor = 0
+    const timelineSegments = segments.map((segment) => { const durationSeconds = Number(segment.durationSeconds.toFixed(3)); const item = { sourceStartSeconds: segment.sourceStartSeconds, sourceEndSeconds: segment.sourceEndSeconds, durationSeconds, targetStartSeconds: Number(cursor.toFixed(3)), targetEndSeconds: Number((cursor + durationSeconds).toFixed(3)) }; cursor += durationSeconds; return item })
+    return attachEditDecisionList({ ...common, kind: 'media.concat-segments', timeline: { segments: timelineSegments, durationSeconds: Number(cursor.toFixed(3)) } })
+  }
+
+  persistentTaskRuntime.register('media.version-bundle', async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const plan = task.spec.plan
+    if (!plan || plan.schemaVersion !== 1 || plan.strategy !== 'shared-evidence-long-video-versions-v1' || path.resolve(String(plan.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的长视频多版本方案无效')
+    const entries = [...(plan.variants || []), ...(plan.chapters || [])]
+    if (entries.length < 4 || entries.length > 20 || task.spec.plannedOutputs?.length !== entries.length) throw new Error('冻结的长视频版本成果数量无效')
+    const results = Array.isArray(task.checkpoint?.results) ? [...task.checkpoint.results] : []
+    for (let index = 0; index < entries.length; index += 1) {
+      if (signal.aborted) throw new DOMException('长视频多版本任务已停止', 'AbortError')
+      const entry = entries[index]
+      const decision = buildVersionEditDecision({ sourcePath, plan, entry })
+      assertEditDecisionList(decision)
+      const outputPath = validatePlannedMediaOutput(task.spec.plannedOutputs[index], sourcePath, decision.output.suffix, '.mp4', task.id, index)
+      status(`正在生成 ${index + 1}/${entries.length}：${entry.label}`)
+      const editResult = fs.existsSync(outputPath)
+        ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
+        : decision.kind === 'media.trim'
+          ? await mediaEditService.trim({ sourcePath, outputPath, decision, signal })
+          : await mediaEditService.concatSegments({ sourcePath, outputPath, decision, signal })
+      validateMediaSources(task.spec.sources)
+      results[index] = { id: entry.id, label: entry.label, outputPath, durationSeconds: editResult.durationSeconds, targetSeconds: entry.targetSeconds, decision, frameProof: editResult.frameProof }
+      userAuthorizedPaths.add(path.resolve(outputPath))
+      checkpoint({ stage: 'versions-writing', nextIndex: index + 1, results })
+    }
+    const outputs = results.map((item) => item.outputPath)
+    const completed = { success: true, outputs, versions: results, plan, summary: `已从同一份共享字幕证据生成 ${plan.variants.length} 个时长版本和 ${plan.chapters.length} 个章节片段；原文件未改动` }
+    checkpoint({ stage: 'artifact-written', result: completed, results })
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.edit-concat-sources', async ({ task, signal, checkpoint, status }) => {
     const sourcePaths = validateMediaSources(task.spec.sources)
     const [sourcePath] = sourcePaths
@@ -2585,7 +2650,11 @@ app.whenReady().then(async () => {
       const sourcePath = assertAllowedPath(input.sourcePath)
       if (semanticEditService.matches(input.instruction)) {
         const semantic = await semanticEditService.plan({ instruction: input.instruction, sourcePath })
-        return semantic.decision ? { ...semantic, decision: attachEditDecisionList(semantic.decision) } : semantic
+        return semantic.decision
+          ? { ...semantic, decision: attachEditDecisionList(semantic.decision) }
+          : semantic.versionPlan
+            ? { ...semantic, versionPlan: freezeLongVideoVersionPlan(semantic.versionPlan) }
+            : semantic
       }
       return mediaEditConversation.plan({ instruction: input.instruction, sourcePath, clarificationId: input.clarificationId })
     } catch (error) {
@@ -2617,6 +2686,34 @@ app.whenReady().then(async () => {
       return { ...result, matched: true, summary }
     } catch (error) {
       return { success: false, matched: true, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('media:version-bundle-run', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'media-version-bundle')
+    try {
+      const sourcePath = assertAllowedPath(input.sourcePath)
+      const plan = JSON.parse(JSON.stringify(input.plan || {}))
+      assertLongVideoVersionPlan(plan)
+      if (path.resolve(String(plan.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('长视频版本方案与当前视频不一致')
+      const plannedSubtitle = path.resolve(String(plan.subtitlePath || ''))
+      const sourceParts = path.parse(sourcePath); const subtitleParts = path.parse(plannedSubtitle)
+      const adjacentSubtitle = subtitleParts.dir === sourceParts.dir && subtitleParts.name === sourceParts.name && SUBTITLE_ARTIFACT_EXTS.has(subtitleParts.ext.toLowerCase()) && fs.existsSync(plannedSubtitle)
+      const subtitlePath = adjacentSubtitle ? fs.realpathSync(plannedSubtitle) : assertAllowedPath(plan.subtitlePath)
+      if (adjacentSubtitle) userAuthorizedPaths.add(path.resolve(subtitlePath))
+      const entries = [...(plan.variants || []), ...(plan.chapters || [])]
+      persistentTaskRuntime.enqueue({
+        id: requestId, type: 'media.version-bundle', workspaceTaskId: input.workspaceTaskId,
+        spec: {
+          instruction: plan.instruction, plan, sources: snapshotMediaSources([sourcePath, subtitlePath]),
+          plannedOutputs: entries.map((entry, index) => plannedMediaOutput(sourcePath, entry.label, '.mp4', requestId, index))
+        }
+      })
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { success: false, requestId, cancelled: task.state === 'cancelled', error: task.error || '长视频多版本任务未完成' }
+      return { ...task.result, requestId }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
     }
   })
   ipcMain.handle('media:trim', async (event, input = {}) => {

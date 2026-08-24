@@ -256,6 +256,25 @@ interface MediaEditClarification {
   expiresAt: number
 }
 
+interface LongVideoVersionPlanV1 {
+  schemaVersion: 1
+  strategy: 'shared-evidence-long-video-versions-v1'
+  confirmationRequired: true
+  planHash: string
+  instruction: string
+  source: { path: string; name: string }
+  subtitlePath: string
+  sourceDurationSeconds: number
+  summary: string
+  model: { providerId: string; providerName: string; model: string; local: boolean }
+  sharedEvidence: {
+    chapters: Array<{ title: string; startCueIndex: number; endCueIndex: number; importance: number; reason: string; evidence: Array<{ cueIndex: number; quote: string }> }>
+    highlights: Array<{ startCueIndex: number; endCueIndex: number; importance: number; reason: string; evidence: Array<{ cueIndex: number; quote: string }> }>
+  }
+  variants: Array<{ id: string; label: string; targetSeconds: number; durationSeconds: number; segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; importance: number; reason: string }> }>
+  chapters: Array<{ id: string; label: string; title: string; sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; importance: number; reason: string }>
+}
+
 interface AiPlayerAPI {
   platform: string
   isElectron: boolean
@@ -758,10 +777,11 @@ interface AiPlayerAPI {
     onProgress: (cb: (event: { requestId?: string; done: number; total: number; name: string }) => void) => () => void
   }
   mediaTools?: {
-    planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; review?: { kind: string; summary: string; candidates: Array<{ cueIndex: number; startSeconds: number; endSeconds: number; text: string; reason: string; matches: string[] }> }; decision?: MediaEditDecisionV1; error?: string }>
+    planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; review?: { kind: string; summary: string; candidates: Array<{ cueIndex: number; startSeconds: number; endSeconds: number; text: string; reason: string; matches: string[] }> }; decision?: MediaEditDecisionV1; versionPlan?: LongVideoVersionPlanV1; error?: string }>
     planHistory: (input: { instruction: string; currentPath: string }) => Promise<{ matched: boolean; action?: { action: 'undo' | 'redo'; instruction: string }; error?: string }>
     navigateHistory: (input: { instruction: string; currentPath: string }) => Promise<{ success: boolean; matched?: boolean; action?: 'undo' | 'redo'; currentPath?: string; projectId?: string; versionId?: string; cursor?: number; versionCount?: number; canUndo?: boolean; canRedo?: boolean; summary?: string; error?: string }>
     trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; semanticSelect?: MediaEditDecisionV1['semanticSelect']; autoInspection?: MediaEditDecisionV1['autoInspection']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
+    runVersionBundle: (input: { sourcePath: string; plan: LongVideoVersionPlanV1; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputs?: string[]; versions?: Array<{ id: string; label: string; outputPath: string; durationSeconds: number; targetSeconds?: number }>; summary?: string; error?: string }>
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
     cancel: (requestId: string) => Promise<boolean>
   }

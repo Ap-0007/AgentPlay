@@ -20,6 +20,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isCreative = isVideoGeneration || isRecut
       const isBatch = runtimeTask.type === 'media.batch'
       const isCompress = runtimeTask.type === 'media.compress'
+      const isVersionBundle = runtimeTask.type === 'media.version-bundle'
       const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music' || runtimeTask.type === 'media.edit-concat-sources' || runtimeTask.type === 'media.edit-burn-subtitles' || runtimeTask.type === 'media.edit-mux-subtitles'
       const isSubtitleShift = runtimeTask.type === 'media.shift-subtitles'
       const isSubtitleTranslate = runtimeTask.type === 'media.translate-subtitles'
@@ -107,6 +108,9 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       } else if (isBatch) {
         kind = 'media'; label = batchKind === 'transcribe' ? `批量转写 ${sourceNames.length} 个文件` : `批量压缩 ${sourceNames.length} 个视频`
         instruction = batchKind === 'transcribe' ? '全部转写' : '全部压缩'; source = sourceNames.join('、'); retry = null
+      } else if (isVersionBundle) {
+        kind = 'media'; label = '长视频多版本'; instruction = String(runtimeTask.spec?.instruction || '生成长视频多版本'); source = firstSourcePath
+        retry = { kind: 'versions', instruction, sourcePath: firstSourcePath }
       } else if (isTimelineEdit) {
         const start = Number(trimDecision?.timeline?.startSeconds) || 0
         const end = Number(trimDecision?.timeline?.endSeconds) || 0
@@ -141,6 +145,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
             : isSubtitle ? '字幕生成完成（已从检查点恢复）'
               : isCreative ? '创作任务完成（已从检查点恢复）'
                 : isBatch ? `批量${batchKind === 'transcribe' ? '转写' : '压缩'}完成（已从检查点恢复）`
+                  : isVersionBundle ? '长视频多版本完成（已从共享证据检查点恢复）'
                   : isTimelineEdit ? '视频剪辑完成（已从冻结时间线恢复）'
                     : isSubtitleShift ? '字幕调时完成（已从冻结决策恢复）'
                       : isSubtitleTranslate ? '字幕翻译完成（已从冻结决策恢复）'
@@ -151,7 +156,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
           phase: 'completed', status: '', error: '', outputs: outputPaths, summary: String(runtimeTask.result?.summary || fallbackSummary),
           evidence: deliveryEvidence, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
         })
-        if ((isDownload || isCreative || isTimelineEdit) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
+        if ((isDownload || isCreative || isTimelineEdit || isVersionBundle) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
           surfacedOutputs.add(runtimeTask.id)
           window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: outputPaths[0] }))
         }

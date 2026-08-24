@@ -154,6 +154,7 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   },
   mediaTools: {
     planEdit: (input) => ipcRenderer.invoke('media:edit-plan', input),
+    runVersionBundle: (input) => ipcRenderer.invoke('media:version-bundle-run', input),
     planHistory: (input) => ipcRenderer.invoke('media:edit-history-plan', input),
     navigateHistory: (input) => ipcRenderer.invoke('media:edit-history', input),
     trim: (input) => ipcRenderer.invoke('media:trim', input),
