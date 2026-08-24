@@ -107,10 +107,14 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       if (event.requestId === requestId || !event.requestId) setTaskStatus(event.stage)
     })
     try {
-      const result = await window.aiPlayer?.studio?.recutShort({ ...input, requestId, workspaceTaskId: executionTaskIdRef.current })
+      setTaskStatus('正在本机提取节奏、景别、运镜、光线和色彩蓝图…')
+      const stylePlan = await window.aiPlayer?.studio?.planRecut?.({ ...input, count: 3 })
+      if (!stylePlan?.success || !stylePlan.blueprintSha256) throw new Error(stylePlan?.error || '风格蓝图生成失败')
+      addMessage('agent', `${stylePlan.summary}\n接下来只把抽象蓝图与原创目标交给模型；不会发送拉片报告正文或参考帧。`)
+      const result = await window.aiPlayer?.studio?.recutShort({ ...input, count: 3, blueprintSha256: stylePlan.blueprintSha256, requestId, workspaceTaskId: executionTaskIdRef.current })
       if (!result?.success || !result.outputPath) throw new Error(result?.error || '重构短片生成失败')
-      completeExecutionTask({ outputs: [result.outputPath], summary: '任务已完成' })
-      addMessage('agent', `重构短片已生成（${result.clips || 3} 个 AI 镜头拼接），正在为你播放：${result.outputPath}`)
+      completeExecutionTask({ outputs: [result.outputPath], summary: result.summary || '原创重构任务已完成' })
+      addMessage('agent', `${result.summary || '原创重构短片已生成'}\n共 ${result.clips || 3} 个 AI 镜头，正在为你播放：${result.outputPath}`)
       window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: result.outputPath }))
     } catch (error) {
       if (executionWasCancelled()) return

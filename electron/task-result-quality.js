@@ -11,6 +11,7 @@ const HARD_FAILURES = new Set([
   'EFFECT_RECEIPT_MISMATCH', 'EFFECT_CHANGE_MISSING', 'DIMENSION_MISMATCH',
   'REFRAME_OUTPUT_MISMATCH', 'TRACKING_EVIDENCE_MISSING', 'SUBJECT_COVERAGE_LOW',
   'VISUAL_REPAIR_PROOF_MISSING', 'STABILIZATION_NOT_IMPROVED', 'COLOR_REPAIR_NOT_IMPROVED', 'COMPARISON_MISSING',
+  'STYLE_BLUEPRINT_MISSING', 'STYLE_STRUCTURE_MISMATCH', 'COPYRIGHT_BOUNDARY_FAILED',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
@@ -441,6 +442,19 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt' || item.ext === '.vtt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '校对成果不是有效的 srt/vtt 字幕', true))
     add('cue-receipt', '条目回执', cueReceiptOk ? 1 : 0, 25, reason('CUE_RECEIPT_MISMATCH', `校对条目回执不一致：期望 ${expectedCueCount || 0} 条，实际 ${cueCount || 0} 条`, true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+  } else if (taskType === 'creative.recut-short') {
+    const blueprint = result.styleBlueprint
+    const receipt = result.styleReuseReceipt
+    const shots = Array.isArray(result.styleShots) ? result.styleShots : []
+    const blueprintOk = blueprint?.schemaVersion === 1 && blueprint?.strategy === 'abstract-style-blueprint-v1' && /^[a-f0-9]{64}$/i.test(String(blueprint?.sourceReportSha256 || '')) && blueprint?.sourceSpecificTextExcluded === true
+    const structureOk = receipt?.structureMatched === true && shots.length >= 2 && shots.length === Number(result.clips) && shots.every((shot, index) => Number(shot.duration) === Number(blueprint?.rhythm?.durations?.[index]) && shot.shotSize === blueprint?.shotSizes?.[index] && shot.movement === blueprint?.movements?.[index])
+    const copyrightOk = receipt?.rawReportSentToShotModel === false && receipt?.referenceImagesSent === 0 && receipt?.promptSafetyPassed === true && Array.isArray(receipt?.promptSha256) && receipt.promptSha256.length === shots.length && receipt.promptSha256.every((item) => /^[a-f0-9]{64}$/i.test(String(item)))
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '原创风格重构任务返回失败状态', false))
+    add('artifact', '原创重构成片', artifactRatio, 25, artifactFailure)
+    add('format', '成片结构', formatRatio, 15, formatFailure)
+    add('blueprint', '抽象风格蓝图', blueprintOk ? 1 : 0, 15, reason('STYLE_BLUEPRINT_MISSING', '缺少不含专有表达的抽象风格蓝图', false))
+    add('structure', '节奏景别运镜匹配', structureOk ? 1 : 0, 15, reason('STYLE_STRUCTURE_MISMATCH', '生成镜头没有遵循冻结的节奏/景别/运镜结构', false))
+    add('copyright', '版权与原创边界', copyrightOk ? 1 : 0, 20, reason('COPYRIGHT_BOUNDARY_FAILED', '拉片正文、参考帧或专有表达可能进入了镜头生成', false))
   } else if (taskType === 'media.compress') {
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('artifacts', '视频成果', artifactRatio, 50, artifactFailure)

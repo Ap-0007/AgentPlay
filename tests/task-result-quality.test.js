@@ -142,6 +142,21 @@ test('visual repair quality requires measurable stabilization/color improvement 
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('style recut quality requires an abstract blueprint, structural match and copyright-safe prompts', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-style-recut-'))
+  try {
+    const output = path.join(dir, 'recut.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const blueprint = { schemaVersion: 1, strategy: 'abstract-style-blueprint-v1', sourceReportSha256: 'a'.repeat(64), sourceSpecificTextExcluded: true, rhythm: { durations: [2, 3] }, shotSizes: ['中景', '近景'], movements: ['固定', '推'] }
+    const styleShots = [{ prompt: '原创场景一', duration: 2, shotSize: '中景', movement: '固定' }, { prompt: '原创场景二', duration: 3, shotSize: '近景', movement: '推' }]
+    const base = { success: true, outputs: [output], clips: 2, styleBlueprint: blueprint, styleShots, styleReuseReceipt: { structureMatched: true, rawReportSentToShotModel: false, referenceImagesSent: 0, promptSafetyPassed: true, promptSha256: ['b'.repeat(64), 'c'.repeat(64)] } }
+    assert.equal(evaluateTaskResult('creative.recut-short', base, {}).passed, true)
+    const unsafe = evaluateTaskResult('creative.recut-short', { ...base, styleReuseReceipt: { ...base.styleReuseReceipt, rawReportSentToShotModel: true } }, {})
+    assert.equal(unsafe.passed, false)
+    assert.ok(unsafe.reasons.some((item) => item.code === 'COPYRIGHT_BOUNDARY_FAILED'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('music edit quality requires decoded audio proof instead of trusting an audio stream flag', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-music-'))
   try {

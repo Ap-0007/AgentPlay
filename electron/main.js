@@ -90,6 +90,7 @@ const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require('./visual-effect-decision')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
+const { buildStyleShotPrompt, compileStyleBlueprint, extractProtectedFragments, hash: styleHash, validateStyleShots } = require('./style-reuse-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -4772,36 +4773,48 @@ app.whenReady().then(async () => {
   const preparePersistentRecut = (input) => {
     const mediaName = String(input.mediaName || '视频').trim().slice(0, 80) || '视频'
     const reportText = String(input.reportText || '').slice(0, 3000)
+    const count = Math.max(2, Math.min(4, Number(input.count) || 3))
+    const styleBlueprint = compileStyleBlueprint(reportText, { count })
+    const blueprintSha256 = styleHash(JSON.stringify(styleBlueprint))
+    if (input.blueprintSha256 && String(input.blueprintSha256) !== blueprintSha256) throw new Error('风格蓝图与当前拉片报告不一致，请重新规划')
+    const protectedFragments = extractProtectedFragments(reportText, mediaName)
+    const originalGoal = String(input.originalGoal || `围绕“${mediaName}”的核心信息做原创重构，不保留参考作品的专有人物、品牌、Logo或逐字文案`).trim().slice(0, 1000)
     const modelRoute = creativeTaskRoute('creative-planning')
     return {
       spec: {
-        instruction: '生成重构短片', reportText, mediaName,
-        count: Math.max(2, Math.min(4, Number(input.count) || 3)),
+        instruction: '按抽象风格蓝图生成原创重构短片', mediaName, originalGoal, styleBlueprint, blueprintSha256, protectedFragments, count,
         seconds: Math.max(2, Math.min(8, Number(input.seconds) || 4)), modelRoute
       },
-      approval: { action: 'paid', summary: `把拉片报告发送给 ${modelRoute.providerName} · ${modelRoute.model} 并生成多个 AI 视频镜头；可能多次消耗云端额度或产生费用` }
+      approval: { action: 'paid', summary: `只把本机提取的抽象节奏/景别/运镜/光线/色彩蓝图和新主题发送给 ${modelRoute.providerName} · ${modelRoute.model}，不发送拉片报告正文或参考帧；生成多个原创AI镜头可能消耗云端额度或产生费用` }
     }
   }
   const executePersistentRecut = async ({ task, signal, checkpoint, status }) => {
     if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
     const config = resolveTaskModelRoute(task.spec.modelRoute)
-    const reportText = String(task.spec.reportText || '')
     const mediaName = String(task.spec.mediaName || '视频')
     const count = Number(task.spec.count) || 3
-    const seconds = Number(task.spec.seconds) || 4
+    const blueprint = task.spec.styleBlueprint || compileStyleBlueprint(String(task.spec.reportText || ''), { count })
+    const protectedFragments = Array.isArray(task.spec.protectedFragments) ? task.spec.protectedFragments.map(String) : extractProtectedFragments(String(task.spec.reportText || ''), mediaName)
+    const originalGoal = String(task.spec.originalGoal || `围绕“${mediaName}”核心信息做原创重构`)
     let shots = Array.isArray(task.checkpoint?.shots) ? task.checkpoint.shots.map(String) : []
+    let styleShots = Array.isArray(task.checkpoint?.styleShots) ? task.checkpoint.styleShots : []
+    let styleReuseReceipt = task.checkpoint?.styleReuseReceipt || null
     if (!shots.length) {
-      status('正在把报告浓缩成镜头脚本')
+      status('正在按抽象风格蓝图设计原创镜头')
       const shotPlan = await llmComplete({
-        systemPrompt: '你是短视频导演，只返回 JSON。', modelConfig: config,
-        prompt: `根据这份视频拉片报告，为《${mediaName}》设计 ${count} 个重构镜头，每个镜头一句中文画面提示词（适合 AI 生视频：具象场景、动作、光线；不要人物正脸特写，不要画面文字）。返回 {"shots":["提示词1","提示词2","提示词3"]}，正好 ${count} 条。\n\n报告：\n${reportText || `主题：${mediaName}`}`,
+        systemPrompt: '你是原创短视频导演。只能使用抽象节奏、景别、运镜、光线和色彩规则，绝不复制参考作品专有表达；只返回JSON。', modelConfig: config,
+        prompt: buildStyleShotPrompt({ blueprint, originalGoal, count }),
         timeoutMs: 90000, signal, taskKind: 'creative-planning'
       })
       const planJson = JSON.parse(/\{[\s\S]*\}/.exec(shotPlan.text || '')?.[0] || '{}')
-      shots = (Array.isArray(planJson.shots) ? planJson.shots : []).map((shot) => String(shot || '').trim()).filter(Boolean).slice(0, count)
-      if (!shots.length) throw new Error('镜头脚本生成失败，请重试')
-      checkpoint({ stage: 'shots-planned', shots })
+      const validated = validateStyleShots(planJson.shots, { blueprint, protectedFragments, count })
+      styleShots = validated.shots
+      styleReuseReceipt = validated.receipt
+      shots = styleShots.map((shot) => shot.prompt)
+      checkpoint({ stage: 'shots-planned', shots, styleShots, styleReuseReceipt })
     }
+    if (!styleShots.length) styleShots = shots.map((prompt, index) => ({ prompt, duration: Number(blueprint.rhythm.durations[index]) || Number(task.spec.seconds) || 4, shotSize: blueprint.shotSizes[index], movement: blueprint.movements[index], originalityDeclaration: '原创重构，不复制原片专有表达' }))
+    if (!styleReuseReceipt) styleReuseReceipt = validateStyleShots(styleShots, { blueprint, protectedFragments, count }).receipt
     const clipPaths = Array.isArray(task.checkpoint?.clipPaths) ? [...task.checkpoint.clipPaths] : []
     const clipJobs = Array.isArray(task.checkpoint?.clipJobs) ? [...task.checkpoint.clipJobs] : []
     const outputDir = path.join(app.getPath('userData'), 'creative-assets', 'videos')
@@ -4809,24 +4822,24 @@ app.whenReady().then(async () => {
       if (clipPaths[index] && fs.existsSync(clipPaths[index]) && fs.statSync(clipPaths[index]).size > 0) continue
       status(`正在生成镜头 ${index + 1}/${shots.length}（每个约 1-2 分钟）`)
       const clip = await generateVideoWithReceipt(config, {
-        prompt: shots[index], duration: seconds, id: `${task.id}-clip-${index + 1}`, signal, outputDir,
+        prompt: styleShots[index].prompt, duration: styleShots[index].duration, id: `${task.id}-clip-${index + 1}`, signal, outputDir,
         resumeVideoId: clipJobs[index]?.videoId,
         onCheckpoint: (remote) => {
           clipJobs[index] = { ...clipJobs[index], ...remote }
-          checkpoint({ stage: 'clip-remote-created', shots, clipPaths, clipJobs })
+          checkpoint({ stage: 'clip-remote-created', shots, styleShots, styleReuseReceipt, clipPaths, clipJobs })
         }
       })
       clipPaths[index] = clip.outputPath
       clipJobs[index] = { ...clipJobs[index], videoId: clip.videoId, outputPath: clip.outputPath }
-      checkpoint({ stage: 'clips-generated', shots, clipPaths, clipJobs })
+      checkpoint({ stage: 'clips-generated', shots, styleShots, styleReuseReceipt, clipPaths, clipJobs })
     }
     status('正在拼接成片')
     if (!videoFrames.availability().available) throw new Error('缺少 ffmpeg 组件（随 yt-dlp 组件包提供）')
     const safeName = mediaName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.[^.]+$/, '')
     const outputPath = path.join(app.getPath('documents'), 'AgentPlay 输出', `${safeName}-AgentPlay重构短片-${task.id}.mp4`)
     if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
-      const result = { success: true, outputPath, outputs: [outputPath], shots, clips: clipPaths.length }
-      checkpoint({ stage: 'artifact-written', result, shots, clipPaths, clipJobs })
+      const result = { success: true, outputPath, outputs: [outputPath], shots, styleShots, clips: clipPaths.length, styleBlueprint: blueprint, styleReuseReceipt, summary: `已按抽象风格蓝图生成 ${clipPaths.length} 个原创镜头；仅复用节奏/景别/运镜/光线/色彩规则，未向镜头模型发送拉片报告正文或参考帧` }
+      checkpoint({ stage: 'artifact-written', result, shots, styleShots, styleReuseReceipt, clipPaths, clipJobs })
       return result
     }
     fs.mkdirSync(path.dirname(outputPath), { recursive: true })
@@ -4837,8 +4850,8 @@ app.whenReady().then(async () => {
     } finally {
       if (fs.existsSync(listFile)) fs.rmSync(listFile, { force: true })
     }
-    const result = { success: true, outputPath, outputs: [outputPath], shots, clips: clipPaths.length }
-    checkpoint({ stage: 'artifact-written', result, shots, clipPaths, clipJobs })
+    const result = { success: true, outputPath, outputs: [outputPath], shots, styleShots, clips: clipPaths.length, styleBlueprint: blueprint, styleReuseReceipt, summary: `已按抽象风格蓝图生成 ${clipPaths.length} 个原创镜头；仅复用节奏/景别/运镜/光线/色彩规则，未向镜头模型发送拉片报告正文或参考帧` }
+    checkpoint({ stage: 'artifact-written', result, shots, styleShots, styleReuseReceipt, clipPaths, clipJobs })
     return result
   }
   persistentTaskRuntime.register('creative.video-generate', executePersistentVideoGeneration, { autoResume: true })
@@ -4866,7 +4879,25 @@ app.whenReady().then(async () => {
       return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
     }
   })
-  // 拉片重构短片：报告 → AI 镜头脚本 → 逐镜头生视频 → ffmpeg 拼接成片（视频→报告→新成片闭环）
+  ipcMain.handle('studio:recut-style-plan', (event, input = {}) => {
+    assertTrustedSender(event)
+    const reportText = String(input.reportText || '').slice(0, 3000)
+    const mediaName = String(input.mediaName || '视频').slice(0, 80)
+    const count = Math.max(2, Math.min(4, Number(input.count) || 3))
+    const blueprint = compileStyleBlueprint(reportText, { count })
+    return { success: true, blueprint, blueprintSha256: styleHash(JSON.stringify(blueprint)), protectedFragmentCount: extractProtectedFragments(reportText, mediaName).length, summary: `已在本机抽象出${count}段节奏、景别与运镜结构；原片人物、品牌、Logo、逐字文案、独特构图和参考帧不会进入镜头模型` }
+  })
+  ipcMain.handle('studio:recut-style-validate', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const reportText = String(input.reportText || '').slice(0, 3000); const mediaName = String(input.mediaName || '视频').slice(0, 80); const count = Math.max(2, Math.min(4, Number(input.count) || 3))
+      const blueprint = compileStyleBlueprint(reportText, { count })
+      const validated = validateStyleShots(input.shots, { blueprint, protectedFragments: extractProtectedFragments(reportText, mediaName), count })
+      return { success: true, shots: validated.shots, receipt: validated.receipt }
+    } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) } }
+  })
+
+  // 拉片重构短片：本机抽象蓝图 → 原创AI镜头 → ffmpeg拼接；原报告正文与参考帧不进入镜头模型
   ipcMain.handle('studio:recut-short', async (event, input = {}) => {
     assertTrustedSender(event)
     const requestId = normalizeRequestId(input.requestId, 'recut')
