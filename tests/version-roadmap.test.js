@@ -106,6 +106,12 @@ test('0.9.1 records the first completed semantic-editing item without overstatin
   assert.match(content, /真实`agnes-2\.5-flash`/)
   assert.match(content, /824 tests、824 pass、0 fail、0 skip/)
   assert.match(content, /A5的全组五类标定仍需等A2–A4完成后再勾选/)
+  assert.match(content, /第八个纵向切片（A2首段/)
+  assert.match(content, /subtitle-exact-quote-v1/)
+  assert.match(content, /第九个纵向切片（A2第二段/)
+  assert.match(content, /model-topic-selection-v1/)
+  assert.match(content, /831 tests、831 pass、0 fail、0 skip/)
+  assert.match(content, /A2现在只剩“原话位于一条字幕中间”/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

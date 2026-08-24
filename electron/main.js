@@ -83,7 +83,7 @@ const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-
 const { MediaEditProjectStore } = require('./media-edit-project-store')
 const { SemanticEditService } = require('./semantic-edit-service')
 const { createWordTimingLoader } = require('./word-timing-service')
-const { reviewSemanticTranscript } = require('./semantic-transcript-review')
+const { reviewSemanticTranscript, reviewTopicSelection } = require('./semantic-transcript-review')
 const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
@@ -1293,6 +1293,22 @@ app.whenReady().then(async () => {
       complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'semantic-edit-review' })
     })
   })
+  semanticEditService.setTopicSelector(async ({ topic, cues, signal }) => {
+    const candidates = modelConfigStore.resolvedCandidates('chat').filter((config) => config.providerId !== 'bundled-lite')
+    const planned = candidates.length ? selectModelForTaskPlan({ taskKind: 'semantic-topic-selection', requirements: { text: true }, candidates }) : null
+    const config = planned?.selected
+    if (!config) return { available: false, reason: '当前只有0.5B轻量模型，不能作为主题剪辑依据；请连接本机8B级、订阅或云端工作模型' }
+    const local = isLocalModelConfig(config)
+    if (!local) {
+      const approved = await ensureCloudConsent(`当前视频字幕的序号、时间和文字将发送给所选工作模型，用于定位“${topic}”主题片段；不会上传视频或音频。`)
+      if (!approved) return { available: false, reason: '你没有允许发送字幕文本到工作模型' }
+    }
+    return reviewTopicSelection({
+      cues, requestedTopic: topic, signal,
+      model: { providerId: config.providerId, providerName: config.providerName, model: config.model, local },
+      complete: (input) => llmComplete({ ...input, modelConfig: config, taskKind: 'semantic-topic-selection' })
+    })
+  })
   semanticEditService.setVisualAnalyzer(async ({ sourcePath, cues, review, durationSeconds, signal }) => {
     const candidates = modelConfigStore.resolvedCandidates('chat')
     const planned = candidates.length ? selectModelForTaskPlan({ taskKind: 'semantic-edit-vision', requirements: { vision: true }, candidates }) : null
@@ -2197,7 +2213,9 @@ app.whenReady().then(async () => {
     assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(decision.semanticLocate
+    status(decision.semanticSelect
+      ? `正在按字幕主题“${decision.semanticSelect.topic}”保留 ${decision.semanticSelect.selectedCueIndexes.length} 条证据并剪辑`
+      : decision.semanticLocate
       ? `正在按字幕定位从第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”开始剪辑`
       : `正在剪辑 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒`)
     const result = fs.existsSync(outputPath)
@@ -2210,6 +2228,10 @@ app.whenReady().then(async () => {
       ...(decision.semanticLocate ? {
         semanticLocate: decision.semanticLocate,
         summary: `已从字幕第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”（${decision.semanticLocate.cueStartSeconds.toFixed(2)} 秒）开始保留；原文件未改动`
+      } : {}),
+      ...(decision.semanticSelect ? {
+        semanticSelect: decision.semanticSelect,
+        summary: `已按字幕主题“${decision.semanticSelect.topic}”保留 ${decision.semanticSelect.selectedCueIndexes.length} 条引用证据；工作模型为 ${decision.semanticSelect.model.providerName} · ${decision.semanticSelect.model.model}，原文件未改动`
       } : {}),
       projectCapsule
     }
@@ -2268,13 +2290,15 @@ app.whenReady().then(async () => {
     assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的多片段拼接决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(decision.semanticCut
-      ? decision.semanticCut.target === 'long-pauses'
+    status(decision.semanticSelect
+      ? `正在按字幕主题“${decision.semanticSelect.topic}”拼接 ${decision.semanticSelect.ranges.length} 个保留片段`
+      : decision.semanticCut
+        ? decision.semanticCut.target === 'long-pauses'
         ? `正在按音轨证据删除 ${decision.semanticCut.removed.length} 处长停顿并重建连续时间线`
         : decision.semanticCut.target === 'near-duplicate-and-offtopic'
           ? `正在按已确认的模型引用证据删除 ${decision.semanticCut.removed.length} 条语义重复或跑题字幕并重建时间线`
           : `正在按字幕证据删除 ${decision.semanticCut.removed.length} 条口头禅或相邻重复句并重建连续时间线`
-      : `正在按指定顺序拼接 ${decision.timeline.segments.length} 个片段`)
+        : `正在按指定顺序拼接 ${decision.timeline.segments.length} 个片段`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
       : await mediaEditService.concatSegments({ sourcePath, outputPath, decision, signal })
@@ -2289,6 +2313,10 @@ app.whenReady().then(async () => {
           : decision.semanticCut.target === 'near-duplicate-and-offtopic'
             ? `已按你确认的字幕语义与镜头交叉证据删除 ${decision.semanticCut.removed.length} 条语义重复或跑题字幕，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；文字模型为 ${decision.semanticCut.modelEvidence?.model?.providerName || ''} · ${decision.semanticCut.modelEvidence?.model?.model || ''}，视觉模型为 ${decision.semanticCut.visualEvidence?.model?.providerName || ''} · ${decision.semanticCut.visualEvidence?.model?.model || ''}，原字幕与视频均未改动`
             : `已按字幕${decision.semanticCut.wordTimingEvidence?.length ? '与本机逐词DTW' : ''}时间轴删除 ${decision.semanticCut.removed.length} 条口头禅或重复句，共压缩 ${Number(decision.semanticCut.totalRemovedSeconds).toFixed(2)} 秒；原字幕与视频均未改动${decision.semanticCut.reviewOnly?.length ? `；另有 ${decision.semanticCut.reviewOnly.length} 条句中疑似口头禅因没有可信逐词时间戳，仅标记未删除` : ''}`
+      } : {}),
+      ...(decision.semanticSelect ? {
+        semanticSelect: decision.semanticSelect,
+        summary: `已按字幕主题“${decision.semanticSelect.topic}”保留 ${decision.semanticSelect.selectedCueIndexes.length} 条引用证据并拼接 ${decision.semanticSelect.ranges.length} 个片段；工作模型为 ${decision.semanticSelect.model.providerName} · ${decision.semanticSelect.model.model}，原文件未改动`
       } : {}),
       projectCapsule
     }

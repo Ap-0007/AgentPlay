@@ -99,4 +99,72 @@ async function reviewSemanticTranscript({ cues, complete, model, signal } = {}) 
   throw previousError
 }
 
-module.exports = { MAX_REVIEW_CANDIDATES, MAX_REVIEW_CUES, MIN_SEMANTIC_CONFIDENCE, buildSemanticReviewPrompt, parseSemanticReviewJson, reviewSemanticTranscript, validateSemanticReview }
+function normalizedTopic(value) {
+  return String(value || '').toLowerCase().replace(/[\s，。！？!?、；;：:“”"'‘’…—-]+/g, '')
+}
+
+function validateTopicSelection(payload, cues, requestedTopic) {
+  const normalizedCues = normalizeReviewCues(cues)
+  const byIndex = new Map(normalizedCues.map((cue) => [cue.cueIndex, cue]))
+  const topic = String(payload?.topic || '').trim().slice(0, 80)
+  const requested = String(requestedTopic || '').trim().slice(0, 80)
+  if (!requested || normalizedTopic(topic) !== normalizedTopic(requested)) throw new Error('主题定位返回的主题不一致')
+  const rawIndexes = Array.isArray(payload?.selectedCueIndexes) ? payload.selectedCueIndexes : []
+  if (rawIndexes.length > 12) throw new Error('主题定位候选超过12条安全上限')
+  const selectedCueIndexes = [...new Set(rawIndexes.map(Number).filter((item) => byIndex.has(item)))].sort((left, right) => left - right)
+  const confidence = Number(payload?.confidence)
+  const reason = String(payload?.reason || '').trim().slice(0, 300)
+  if (!reason) throw new Error('主题定位缺少选择理由')
+  if (!selectedCueIndexes.length) return { topic: requested, confidence: 0, selectedCueIndexes: [], reason, evidence: [] }
+  if (!Number.isFinite(confidence) || confidence < MIN_SEMANTIC_CONFIDENCE || confidence > 1) throw new Error(`主题定位置信度必须不低于${MIN_SEMANTIC_CONFIDENCE}`)
+  if (selectedCueIndexes.length === normalizedCues.length) throw new Error('整段都匹配该主题，无需生成剪辑任务')
+  const rawEvidence = Array.isArray(payload?.evidence) ? payload.evidence : []
+  const evidence = selectedCueIndexes.map((cueIndex) => {
+    const cue = byIndex.get(cueIndex)
+    const item = rawEvidence.find((entry) => Number(entry?.cueIndex) === cueIndex)
+    const quote = String(item?.quote || '').trim().slice(0, 240)
+    if (!quote || !cue.text.includes(quote)) throw new Error(`第${cueIndex}条引句不在原字幕中`)
+    return { cueIndex, quote }
+  })
+  let groups = 0
+  selectedCueIndexes.forEach((cueIndex, index) => { if (index === 0 || cueIndex !== selectedCueIndexes[index - 1] + 1) groups += 1 })
+  if (groups > 6) throw new Error('主题定位结果过于零碎，请缩小主题或分次处理')
+  return { topic: requested, confidence: Number(confidence.toFixed(3)), selectedCueIndexes, reason, evidence }
+}
+
+function buildTopicSelectionPrompt(cues, requestedTopic) {
+  const topic = String(requestedTopic || '').trim()
+  const lines = normalizeReviewCues(cues).map((cue) => `[${cue.cueIndex}][${cue.startSeconds.toFixed(2)}-${cue.endSeconds.toFixed(2)}] ${cue.text}`)
+  return [
+    `只选择直接回答“${topic}”的字幕，用于生成一个只保留该主题的新视频。`,
+    '不要选择寒暄、无关铺垫、转场或仅含同义词但没有回答该主题的字幕；必要解释、数字、条件和结论应一起保留。',
+    `只有置信度不低于${MIN_SEMANTIC_CONFIDENCE}时才能选择。最多12条、最多6个连续组；只能引用以下字幕序号及其中连续原文，不能发明时间、文字或改写用户主题。`,
+    '如果没有高置信度匹配，selectedCueIndexes和evidence返回空数组。',
+    `只返回JSON：{"topic":${JSON.stringify(topic)},"confidence":0.0,"selectedCueIndexes":[2,3],"reason":"理由","evidence":[{"cueIndex":2,"quote":"原文连续引句"}]}`,
+    '',
+    ...lines
+  ].join('\n')
+}
+
+async function reviewTopicSelection({ cues, requestedTopic, complete, model, signal } = {}) {
+  if (typeof complete !== 'function') return { available: false, reason: '没有可用的主题定位模型' }
+  const basePrompt = buildTopicSelectionPrompt(cues, requestedTopic)
+  const systemPrompt = '你是专业视频主题剪辑审阅器。你只能从给定字幕中选择有直接原文证据的条目，不执行剪辑，不猜测时间，不改变用户主题。'
+  let previousText = ''
+  let previousError = null
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const prompt = attempt === 1 ? basePrompt : `${basePrompt}\n\n上一版未通过合同：${String(previousError?.message || previousError).slice(0, 300)}\n只修正JSON、主题、序号和引句，不新增候选。上一版：\n${previousText.slice(0, 5000)}`
+    const result = await complete({ systemPrompt, prompt, signal, timeoutMs: 120000, maxTokens: 1800 })
+    previousText = String(result?.text || '')
+    try {
+      const validated = validateTopicSelection(parseSemanticReviewJson(previousText), cues, requestedTopic)
+      return { available: true, ...validated, model: { providerId: String(model?.providerId || ''), providerName: String(model?.providerName || ''), model: String(model?.model || ''), local: Boolean(model?.local) } }
+    } catch (error) {
+      previousError = error
+      if (attempt === 2) throw error
+    }
+  }
+  throw previousError
+}
+
+module.exports = { MAX_REVIEW_CANDIDATES, MAX_REVIEW_CUES, MIN_SEMANTIC_CONFIDENCE, buildSemanticReviewPrompt, buildTopicSelectionPrompt, parseSemanticReviewJson, reviewSemanticTranscript, reviewTopicSelection, validateSemanticReview, validateTopicSelection }

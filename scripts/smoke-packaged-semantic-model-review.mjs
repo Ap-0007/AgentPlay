@@ -32,6 +32,10 @@ const visualPayload = { validations: [
   { candidateIndex: 1, verdict: 'safe', confidence: 0.93, reason: '候选前后场景连续，中间没有独有演示动作', evidenceLabels: ['candidate-1-before', 'candidate-1-middle', 'candidate-1-after', 'candidate-1-reference'] },
   { candidateIndex: 2, verdict: 'safe', confidence: 0.92, reason: '候选前后场景连续，中间没有独有产品证据', evidenceLabels: ['candidate-2-before', 'candidate-2-middle', 'candidate-2-after'] }
 ] }
+const topicPayload = {
+  topic: '产品价格', confidence: 0.95, selectedCueIndexes: [2, 3], reason: '两条字幕直接说明产品价格',
+  evidence: [{ cueIndex: 2, quote: '这款产品的价格是一百元' }, { cueIndex: 3, quote: '这款产品卖一百块钱' }]
+}
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const sha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
 const probeDuration = (filePath) => Number(String(spawnSync(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath], { encoding: 'utf8', windowsHide: true }).stdout).trim()) || 0
@@ -53,7 +57,8 @@ const modelServer = http.createServer((request, response) => {
     const parsed = JSON.parse(body); const serialized = JSON.stringify(parsed); const visual = serialized.includes('image_url')
     const prompt = (parsed.messages || []).map((item) => typeof item.content === 'string' ? item.content : JSON.stringify(item.content)).join('\n')
     modelRequests.push({ kind: visual ? 'vision' : 'text', prompt })
-    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(visual ? visualPayload : modelPayload) } }], usage: { prompt_tokens: 320, completion_tokens: 180 } }))
+    const payload = visual ? visualPayload : prompt.includes('只选择直接回答“产品价格”的字幕') ? topicPayload : modelPayload
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) } }], usage: { prompt_tokens: 320, completion_tokens: 180 } }))
   })
 })
 await new Promise((resolve, reject) => { modelServer.once('error', reject); modelServer.listen(modelPort, '127.0.0.1', resolve) })
@@ -87,15 +92,27 @@ try {
     const preview = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - task.spec.decision.timeline.durationSeconds) <= 0.25 ? { duration: video.duration } : null }, '自动预览语义精简成片', 30000)
     setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
     const undo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 ? { duration: video.duration } : null }, '模型语义剪辑撤销回原片', 30000)
-    return { initial, task, preview, undo, body: document.body.innerText }
+    const topicInstruction = '保留讲产品价格的部分'
+    setter.call(input, topicInstruction); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: topicInstruction })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    await waitFor(() => document.body.innerText.includes('核对保留主题“产品价格”') && document.body.innerText.includes('第2条：“这款产品的价格是一百元”') && document.body.innerText.includes('置信度 95%') && document.body.innerText.includes('请回复“确认执行”或“取消”'), '主题保留确认方案可见', 120000)
+    const beforeTopic = (await window.aiPlayer.taskRuntime.list()).filter((item) => item.type === 'media.edit-trim' && item.spec?.decision?.semanticSelect).length
+    if (beforeTopic !== 0) throw new Error('确认前不应创建主题保留剪辑任务')
+    setter.call(input, '确认执行'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '确认执行' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    const topicTask = await waitFor(async () => { const items = await window.aiPlayer.taskRuntime.list(); const found = [...items].reverse().find((item) => item.type === 'media.edit-trim' && item.spec?.decision?.semanticSelect?.strategy === 'model-topic-selection-v1'); return found && ['completed','failed','cancelled'].includes(found.state) ? found : null }, '主题保留剪辑任务完成', 180000)
+    if (topicTask.state !== 'completed' || topicTask.quality?.passed !== true || topicTask.result?.semanticSelect?.topic !== '产品价格' || topicTask.result.semanticSelect.selectedCueIndexes.join(',') !== '2,3') throw new Error(topicTask.error || '主题保留剪辑质量门失败')
+    const topicPreview = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - topicTask.spec.decision.timeline.durationSeconds) <= 0.25 ? { duration: video.duration } : null }, '自动预览主题保留成片', 30000)
+    if (!document.body.innerText.includes('已按字幕主题“产品价格”保留 2 条引用证据')) throw new Error('对话没有显示主题保留证据回执')
+    setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    const topicUndo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 ? { duration: video.duration } : null }, '主题保留剪辑撤销回原片', 30000)
+    return { initial, task, preview, undo, topicTask, topicPreview, topicUndo, body: document.body.innerText }
   })()`)
   const textRequests = modelRequests.filter((item) => item.kind === 'text'); const visionRequests = modelRequests.filter((item) => item.kind === 'vision')
-  if (textRequests.length !== 1 || visionRequests.length !== 1 || !textRequests[0].prompt.includes('[2][1.80-3.00]') || !textRequests[0].prompt.includes('只能引用以上字幕序号') || !visionRequests[0].prompt.includes('candidate-1-reference')) throw new Error('安装态模型没有收到唯一的字幕请求和完整镜头请求')
+  if (textRequests.length !== 2 || visionRequests.length !== 1 || !textRequests[0].prompt.includes('[2][1.80-3.00]') || !textRequests[0].prompt.includes('只能引用以上字幕序号') || !textRequests[1].prompt.includes('只选择直接回答“产品价格”的字幕') || !visionRequests[0].prompt.includes('candidate-1-reference')) throw new Error('安装态模型没有收到预期的语义审阅、主题定位和镜头请求')
   const outputPath = pageResult.task.result.outputPath
-  const receipt = { acceptedAt: new Date().toISOString(), executable, source: { path: sourcePath, durationSeconds: probeDuration(sourcePath), sha256: sourceHash, unchanged: sha256(sourcePath) === sourceHash }, modelCalls: modelRequests.length, textCalls: textRequests.length, visionCalls: visionRequests.length, decision: pageResult.task.spec.decision, result: { outputPath, durationSeconds: probeDuration(outputPath), quality: pageResult.task.quality }, ui: { confirmationVisible: pageResult.body.includes('请回复“确认执行”或“取消”'), visualEvidenceVisible: pageResult.body.includes('镜头交叉验证：2 个候选通过'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration } }
-  if (!receipt.source.unchanged || !fs.existsSync(outputPath)) throw new Error('安装态语义模型成果或原件保护失败')
+  const receipt = { acceptedAt: new Date().toISOString(), executable, source: { path: sourcePath, durationSeconds: probeDuration(sourcePath), sha256: sourceHash, unchanged: sha256(sourcePath) === sourceHash }, modelCalls: modelRequests.length, textCalls: textRequests.length, visionCalls: visionRequests.length, decision: pageResult.task.spec.decision, result: { outputPath, durationSeconds: probeDuration(outputPath), quality: pageResult.task.quality }, topic: { decision: pageResult.topicTask.spec.decision, outputPath: pageResult.topicTask.result.outputPath, durationSeconds: probeDuration(pageResult.topicTask.result.outputPath), quality: pageResult.topicTask.quality }, ui: { confirmationVisible: pageResult.body.includes('请回复“确认执行”或“取消”'), visualEvidenceVisible: pageResult.body.includes('镜头交叉验证：2 个候选通过'), topicEvidenceVisible: pageResult.body.includes('已按字幕主题“产品价格”保留 2 条引用证据'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration, topicPreviewDuration: pageResult.topicPreview.duration, topicUndoDuration: pageResult.topicUndo.duration } }
+  if (!receipt.source.unchanged || !fs.existsSync(outputPath) || !fs.existsSync(receipt.topic.outputPath)) throw new Error('安装态语义模型成果或原件保护失败')
   fs.mkdirSync(path.dirname(receiptPath), { recursive: true }); fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ receiptPath, modelCalls: receipt.modelCalls, textCalls: receipt.textCalls, visionCalls: receipt.visionCalls, removed: receipt.decision.semanticCut.removed.length, textModel: receipt.decision.semanticCut.modelEvidence.model, visionModel: receipt.decision.semanticCut.visualEvidence.model, quality: receipt.result.quality.score, outputDuration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, sourceUnchanged: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ receiptPath, modelCalls: receipt.modelCalls, textCalls: receipt.textCalls, visionCalls: receipt.visionCalls, removed: receipt.decision.semanticCut.removed.length, textModel: receipt.decision.semanticCut.modelEvidence.model, visionModel: receipt.decision.semanticCut.visualEvidence.model, quality: receipt.result.quality.score, outputDuration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, topic: receipt.topic.decision.semanticSelect.topic, topicSelected: receipt.topic.decision.semanticSelect.selectedCueIndexes, topicQuality: receipt.topic.quality.score, topicDuration: receipt.topic.durationSeconds, topicUndoDuration: receipt.ui.topicUndoDuration, sourceUnchanged: true })}\n`)
   await Promise.race([command('Browser.close'), delay(1000)]).catch(() => {})
 } finally {
   if (!(await waitForExit(child))) { child.kill(); await waitForExit(child) }

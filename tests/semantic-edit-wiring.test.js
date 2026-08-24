@@ -22,6 +22,9 @@ test('main process plans semantic pauses once and executes the frozen EDL throug
   assert.match(main, /taskKind: 'semantic-edit-vision'/)
   assert.match(main, /reviewSemanticCandidateVisuals/)
   assert.match(main, /decision\.semanticLocate[\s\S]{0,260}字幕定位/)
+  assert.match(main, /semanticEditService\.setTopicSelector/)
+  assert.match(main, /taskKind: 'semantic-topic-selection'/)
+  assert.match(main, /decision\.semanticSelect[\s\S]{0,300}主题/)
 })
 
 test('renderer preserves the planned decision and shows semantic evidence instead of a generic concat label', () => {
@@ -36,12 +39,15 @@ test('renderer preserves the planned decision and shows semantic evidence instea
   assert.match(hook, /请回复“确认执行”或“取消”/)
   assert.match(hook, /plan\?\.review\?\.summary/)
   assert.match(hook, /semanticLocate/)
+  assert.match(hook, /semanticSelect/)
+  assert.match(hook, /保留主题/)
   assert.match(hook, /mediaTools\.trim\(\{[\s\S]{0,220}decision: input\.decision/)
   assert.match(types, /strategy: 'audio-silencedetect-v1'/)
   assert.match(types, /'subtitle-cue-cleanup-v1'/)
   assert.match(types, /confirmationRequired\?: boolean/)
   assert.match(types, /reviewOnly\?: Array/)
   assert.match(types, /semanticLocate\?: \{/)
+  assert.match(types, /semanticSelect\?: \{/)
   assert.match(types, /trim: \(input: \{[^\n]+decision\?: MediaEditDecisionV1/)
 })
 

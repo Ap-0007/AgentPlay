@@ -4,6 +4,7 @@ const PAUSE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除|自动剪掉)[
 const TEXT_CLEANUP_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)[^，。；]{0,12}(?:口头禅|废话|重复(?:的话|内容|句子)?)|(?:口头禅|废话|重复(?:的话|内容|句子)?)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const SEMANTIC_REVIEW_PATTERN = /(?:跑题|偏题|离题)|(?:(?:意思|语义)[^，。；]{0,6}(?:重复|相似|差不多))|(?:(?:重复|相似)[^，。；]{0,6}(?:意思|语义))|(?:内容[^，。；]{0,6}(?:相似|雷同))|(?:(?:相似|雷同)[^，。；]{0,6}内容)/
 const EXACT_QUOTE_START_PATTERN = /(?:从|由)(?:他|她|视频里|字幕里)?(?:说到|讲到|提到)?\s*[“”"'‘’]?(.{2,80}?)[“”"'‘’]?\s*(?:这句话|那句话|的位置|的地方)?(?:开始|起)(?:保留|剪|截|播放)?/
+const TOPIC_SELECTION_PATTERN = /(?:只)?(?:保留|留下|只要|截取|剪出|提取)(?:视频中|视频里)?(?:讲|说|介绍|关于|涉及)?(.{2,40}?)(?:的)?(?:部分|内容|片段)(?:就行|即可)?/
 const CONSULTATION_PATTERN = /能不能|可不可以|可以吗|是否|怎么|如何/
 const FILLER_ONLY_PATTERN = /^(?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧)$/i
 const EMBEDDED_FILLER_PATTERN = /(?:^|[\s，,、。！？!?；;：:])((?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧))(?=$|[\s，,、。！？!?；;：:])/gi
@@ -38,6 +39,17 @@ function extractExactQuoteStart(instruction) {
 
 function matchesExactQuoteStartInstruction(instruction) {
   return extractExactQuoteStart(instruction).length >= 2
+}
+
+function extractTopicSelection(instruction) {
+  const text = String(instruction || '').trim()
+  if (!text || CONSULTATION_PATTERN.test(text)) return ''
+  const raw = TOPIC_SELECTION_PATTERN.exec(text)?.[1] || ''
+  return String(raw).trim().replace(/^(?:讲|说|介绍|关于|涉及)/, '').replace(/^[，。！？!?、；;：:\s]+|[，。！？!?、；;：:\s]+$/g, '')
+}
+
+function matchesTopicSelectionInstruction(instruction) {
+  return extractTopicSelection(instruction).length >= 2
 }
 
 function normalizedCueText(text) {
@@ -245,6 +257,58 @@ function exactQuoteReview(query, matches) {
   return { kind: 'semantic-quote-locate', summary: `原话“${query}”位于第${item.cueIndex}条字幕中间；现有字幕只有整条起止时间，不会把字幕条起点冒充原话起点。请先生成逐词字幕，或改用该字幕开头的完整原话。`, candidates }
 }
 
+function buildTopicSelectionDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues, selection } = {}) {
+  const duration = Number(durationSeconds)
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能按主题定位')
+  const normalized = analyzeTextCleanupCues(cues, duration).normalized
+  const byIndex = new Map(normalized.map((cue) => [cue.cueIndex, cue]))
+  const selectedCueIndexes = [...new Set((selection?.selectedCueIndexes || []).map(Number))].sort((left, right) => left - right)
+  const selected = selectedCueIndexes.map((cueIndex) => byIndex.get(cueIndex)).filter(Boolean)
+  if (!selected.length || selected.length !== selectedCueIndexes.length) throw new Error('主题定位没有形成有效字幕范围')
+  const groups = []
+  for (const cue of selected) {
+    const previous = groups.at(-1)
+    if (previous && cue.cueIndex === previous.at(-1).cueIndex + 1 && cue.startSeconds - previous.at(-1).endSeconds <= 0.75) previous.push(cue)
+    else groups.push([cue])
+  }
+  if (groups.length > 6) throw new Error('主题定位结果过于零碎，请缩小主题或分次处理')
+  const ranges = groups.map((group) => ({
+    sourceStartSeconds: Number(Math.max(0, group[0].startSeconds - 0.08).toFixed(3)),
+    sourceEndSeconds: Number(Math.min(duration, group.at(-1).endSeconds + 0.08).toFixed(3)),
+    cueIndexes: group.map((cue) => cue.cueIndex)
+  }))
+  const semanticSelect = {
+    schemaVersion: 1, strategy: 'model-topic-selection-v1', target: 'keep-topic', topic: String(selection.topic || ''),
+    subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)), confidence: Number(selection.confidence),
+    selectedCueIndexes, evidence: selection.evidence || [], reason: String(selection.reason || ''), model: selection.model,
+    ranges, confirmationRequired: true
+  }
+  const common = {
+    schemaVersion: 1, instruction: String(instruction || '').trim(),
+    source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) }, semanticSelect,
+    output: { container: 'mp4', overwrite: false, suffix: '主题保留版' }
+  }
+  if (ranges.length === 1) {
+    const range = ranges[0]
+    return {
+      ...common, kind: 'media.trim',
+      timeline: { startSeconds: range.sourceStartSeconds, endSeconds: range.sourceEndSeconds, durationSeconds: Number((range.sourceEndSeconds - range.sourceStartSeconds).toFixed(3)) },
+      verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: semanticSelect.strategy, topic: semanticSelect.topic, selectedCueIndexes, ranges } }
+    }
+  }
+  let targetCursor = 0
+  const segments = ranges.map((range) => {
+    const segmentDuration = range.sourceEndSeconds - range.sourceStartSeconds
+    const segment = { sourceStartSeconds: range.sourceStartSeconds, sourceEndSeconds: range.sourceEndSeconds, durationSeconds: Number(segmentDuration.toFixed(3)), targetStartSeconds: Number(targetCursor.toFixed(3)), targetEndSeconds: Number((targetCursor + segmentDuration).toFixed(3)) }
+    targetCursor += segmentDuration
+    return segment
+  })
+  return {
+    ...common, kind: 'media.concat-segments', timeline: { segments, durationSeconds: Number(targetCursor.toFixed(3)) },
+    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: semanticSelect.strategy, topic: semanticSelect.topic, selectedCueIndexes, ranges } }
+  }
+}
+
 function textCleanupReviewSummary(reviewOnly) {
   const lines = reviewOnly.slice(0, 8).map((item) => `第${item.cueIndex}条（${item.startSeconds.toFixed(2)}–${item.endSeconds.toFixed(2)}秒）“${item.text}”：${item.reason}“${item.matches.join('、')}”`)
   return `已定位 ${reviewOnly.length} 条需要人工核对的字幕：\n${lines.join('\n')}\n这些字幕没有逐词时间戳，AgentPlay 不会删除整句；请先生成逐词字幕或给出明确时间段。`
@@ -353,12 +417,13 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
 }
 
 class SemanticEditService {
-  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null, analyzeVisualCandidates = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues; this.analyzeVisualCandidates = analyzeVisualCandidates }
+  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null, analyzeVisualCandidates = null, selectTopicCues = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues; this.analyzeVisualCandidates = analyzeVisualCandidates; this.selectTopicCues = selectTopicCues }
 
   setSemanticAnalyzer(analyzeSemanticCues) { this.analyzeSemanticCues = analyzeSemanticCues }
   setVisualAnalyzer(analyzeVisualCandidates) { this.analyzeVisualCandidates = analyzeVisualCandidates }
+  setTopicSelector(selectTopicCues) { this.selectTopicCues = selectTopicCues }
 
-  matches(instruction) { return matchesExactQuoteStartInstruction(instruction) || matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
+  matches(instruction) { return matchesExactQuoteStartInstruction(instruction) || matchesTopicSelectionInstruction(instruction) || matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
 
   async plan({ instruction, sourcePath, signal } = {}) {
     if (!this.matches(instruction)) return { matched: false }
@@ -371,6 +436,22 @@ class SemanticEditService {
       const matches = exactQuoteMatches(transcript.cues, durationSeconds, query)
       if (matches.length !== 1 || !matches[0].atStart) return { matched: true, review: exactQuoteReview(query, matches) }
       return { matched: true, decision: buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues }) }
+    }
+    if (matchesTopicSelectionInstruction(instruction)) {
+      const transcript = await this.loadTranscript?.(sourcePath)
+      if (!transcript?.path || !Array.isArray(transcript.cues) || transcript.cues.length < 2) throw new Error('没有找到足够的带时间轴字幕，请先生成字幕后再按主题保留')
+      const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
+      const topic = extractTopicSelection(instruction)
+      if (!this.selectTopicCues) return { matched: true, review: { kind: 'semantic-topic-selection', summary: '当前没有可用的主题定位模型，没有创建剪辑任务。请先在模型接入中心连接工作模型。', candidates: [] } }
+      try {
+        const selection = await this.selectTopicCues({ topic, cues: analyzeTextCleanupCues(transcript.cues, durationSeconds).normalized, signal })
+        if (!selection?.available) return { matched: true, review: { kind: 'semantic-topic-selection', summary: `${selection?.reason || '主题定位模型不可用'}；没有创建剪辑任务。`, candidates: [] } }
+        if (!selection.selectedCueIndexes?.length) return { matched: true, review: { kind: 'semantic-topic-selection', summary: `没有找到置信度达到0.85且有原文引句支持的“${topic}”片段；没有创建剪辑任务。`, candidates: [] } }
+        return { matched: true, decision: buildTopicSelectionDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues, selection }) }
+      } catch (error) {
+        if (signal?.aborted || error?.message === '已取消') throw error
+        return { matched: true, review: { kind: 'semantic-topic-selection', summary: `主题定位方案未通过证据校验：${error instanceof Error ? error.message : String(error)}；没有创建剪辑任务。`, candidates: [] } }
+      }
     }
     if (matchesSemanticReviewInstruction(instruction)) {
       const transcript = await this.loadTranscript?.(sourcePath)
@@ -426,7 +507,7 @@ class SemanticEditService {
 }
 
 module.exports = {
-  SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildSemanticModelDecision, buildTextCleanupDecision, embeddedFillers,
-  extractExactQuoteStart, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesSemanticReviewInstruction, matchesTextCleanupInstruction, normalizedCueText,
+  SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildSemanticModelDecision, buildTextCleanupDecision, buildTopicSelectionDecision, embeddedFillers,
+  extractExactQuoteStart, extractTopicSelection, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesSemanticReviewInstruction, matchesTextCleanupInstruction, matchesTopicSelectionInstruction, normalizedCueText,
   parseSilenceEvents, requestedMinimumSilence, standaloneFiller
 }

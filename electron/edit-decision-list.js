@@ -65,7 +65,11 @@ function buildEditDecisionList(decision) {
         targetRangeSeconds: { start: 0, end: duration }
       }],
       output,
-      quality: { ...quality, ...(decision.semanticLocate ? { semanticLocate: JSON.parse(JSON.stringify(decision.semanticLocate)) } : {}) }
+      quality: {
+        ...quality,
+        ...(decision.semanticLocate ? { semanticLocate: JSON.parse(JSON.stringify(decision.semanticLocate)) } : {}),
+        ...(decision.semanticSelect ? { semanticSelect: JSON.parse(JSON.stringify(decision.semanticSelect)) } : {})
+      }
     }
   }
   if (decision.kind === 'media.remove-segment') {
@@ -106,7 +110,11 @@ function buildEditDecisionList(decision) {
     return {
       schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
       ...videoMaterialAndTracks(decision.source), operations, output,
-      quality: { ...quality, ...(decision.semanticCut ? { semanticCut: JSON.parse(JSON.stringify(decision.semanticCut)) } : {}) }
+      quality: {
+        ...quality,
+        ...(decision.semanticCut ? { semanticCut: JSON.parse(JSON.stringify(decision.semanticCut)) } : {}),
+        ...(decision.semanticSelect ? { semanticSelect: JSON.parse(JSON.stringify(decision.semanticSelect)) } : {})
+      }
     }
   }
   if (decision.kind === 'media.concat-sources') {

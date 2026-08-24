@@ -195,6 +195,21 @@ interface MediaEditDecisionV1 {
     cueEndSeconds: number
     text: string
   }
+  semanticSelect?: {
+    schemaVersion: 1
+    strategy: 'model-topic-selection-v1'
+    target: 'keep-topic'
+    topic: string
+    subtitlePath: string
+    sourceDurationSeconds: number
+    confidence: number
+    selectedCueIndexes: number[]
+    evidence: Array<{ cueIndex: number; quote: string }>
+    reason: string
+    model: { providerId: string; providerName: string; model: string; local: boolean }
+    ranges: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; cueIndexes: number[] }>
+    confirmationRequired: true
+  }
   semanticCut?: {
     schemaVersion: 1
     strategy: 'audio-silencedetect-v1' | 'subtitle-cue-cleanup-v1' | 'model-semantic-review-v1'
@@ -728,7 +743,7 @@ interface AiPlayerAPI {
     planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; review?: { kind: string; summary: string; candidates: Array<{ cueIndex: number; startSeconds: number; endSeconds: number; text: string; reason: string; matches: string[] }> }; decision?: MediaEditDecisionV1; error?: string }>
     planHistory: (input: { instruction: string; currentPath: string }) => Promise<{ matched: boolean; action?: { action: 'undo' | 'redo'; instruction: string }; error?: string }>
     navigateHistory: (input: { instruction: string; currentPath: string }) => Promise<{ success: boolean; matched?: boolean; action?: 'undo' | 'redo'; currentPath?: string; projectId?: string; versionId?: string; cursor?: number; versionCount?: number; canUndo?: boolean; canRedo?: boolean; summary?: string; error?: string }>
-    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
+    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; semanticSelect?: MediaEditDecisionV1['semanticSelect']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
     cancel: (requestId: string) => Promise<boolean>
   }

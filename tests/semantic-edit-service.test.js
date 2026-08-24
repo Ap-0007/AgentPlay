@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildTextCleanupDecision, extractExactQuoteStart, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesTextCleanupInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
+const { SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildTextCleanupDecision, buildTopicSelectionDecision, extractExactQuoteStart, extractTopicSelection, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesTextCleanupInstruction, matchesTopicSelectionInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
 const { attachEditDecisionList, assertEditDecisionList } = require('../electron/edit-decision-list')
 
 test('semantic pause intent is narrow and the requested threshold is bounded', () => {
@@ -254,4 +254,37 @@ test('multiple or mid-cue quote matches stay non-executing and list exact locati
   assert.equal(midResult.decision, undefined)
   assert.match(midResult.review.summary, /位于第1条字幕中间/)
   assert.match(midResult.review.summary, /不会把字幕条起点冒充原话起点/)
+})
+
+test('topic keep intent is narrow and compiles cited adjacent cues into a confirm-only trim', () => {
+  assert.equal(extractTopicSelection('保留讲产品价格的部分'), '产品价格')
+  assert.equal(matchesTopicSelectionInstruction('只保留关于收费标准的内容'), true)
+  assert.equal(matchesTopicSelectionInstruction('能不能保留讲价格的部分？'), false)
+  assert.equal(matchesTopicSelectionInstruction('介绍产品价格'), false)
+  const decision = buildTopicSelectionDecision({
+    instruction: '保留讲产品价格的部分', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 10,
+    cues: [{ start: 0, end: 2, text: '开场' }, { start: 2, end: 4, text: '基础版价格一百元' }, { start: 4.2, end: 6, text: '专业版每月三百元' }, { start: 6.2, end: 10, text: '功能演示' }],
+    selection: { topic: '产品价格', confidence: 0.94, selectedCueIndexes: [2, 3], reason: '两条都是价格', evidence: [{ cueIndex: 2, quote: '基础版价格一百元' }, { cueIndex: 3, quote: '专业版每月三百元' }], model: { providerId: 'agnes', providerName: 'Agnes', model: 'agnes-2.5-flash', local: false } }
+  })
+  assert.equal(decision.kind, 'media.trim')
+  assert.deepEqual(decision.timeline, { startSeconds: 1.92, endSeconds: 6.08, durationSeconds: 4.16 })
+  assert.equal(decision.semanticSelect.confirmationRequired, true)
+  assert.deepEqual(decision.semanticSelect.selectedCueIndexes, [2, 3])
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(decision)))
+})
+
+test('non-adjacent topic cues compile a continuous ordered selection and require confirmation', async () => {
+  const cues = [{ start: 0, end: 1.5, text: '开场' }, { start: 1.6, end: 3, text: '基础版价格一百元' }, { start: 3.1, end: 5, text: '功能演示' }, { start: 5.1, end: 6.5, text: '专业版每月三百元' }, { start: 6.6, end: 8, text: '结尾' }]
+  const selection = { available: true, topic: '产品价格', confidence: 0.95, selectedCueIndexes: [2, 4], reason: '两处价格说明', evidence: [{ cueIndex: 2, quote: '基础版价格一百元' }, { cueIndex: 4, quote: '专业版每月三百元' }], model: { providerId: 'local', providerName: '本机模型', model: '8b', local: true } }
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 8 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues }),
+    selectTopicCues: async ({ topic }) => { assert.equal(topic, '产品价格'); return selection }
+  })
+  const result = await service.plan({ instruction: '保留讲产品价格的部分', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.kind, 'media.concat-segments')
+  assert.equal(result.decision.timeline.segments.length, 2)
+  assert.deepEqual(result.decision.timeline.segments.map((item) => [item.sourceStartSeconds, item.sourceEndSeconds]), [[1.52, 3.08], [5.02, 6.58]])
+  assert.equal(result.decision.semanticSelect.model.model, '8b')
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(result.decision)))
 })
