@@ -25,13 +25,8 @@ function parseJson(text) {
   return JSON.parse(raw.slice(start, end + 1))
 }
 
-function evidenceForRange(rawEvidence, byIndex, startCueIndex, endCueIndex, label) {
-  const evidence = (Array.isArray(rawEvidence) ? rawEvidence : []).map((item) => ({ cueIndex: Number(item?.cueIndex), quote: String(item?.quote || '').trim().slice(0, 240) }))
-  for (const cueIndex of [...new Set([startCueIndex, endCueIndex])]) {
-    const cue = byIndex.get(cueIndex); const item = evidence.find((entry) => entry.cueIndex === cueIndex)
-    if (!item?.quote || !cue?.text.includes(item.quote)) throw new Error(`${label}第${cueIndex}条引句不在原字幕中`)
-  }
-  return evidence.filter((item) => item.cueIndex >= startCueIndex && item.cueIndex <= endCueIndex && byIndex.get(item.cueIndex)?.text.includes(item.quote))
+function evidenceForRange(_rawEvidence, byIndex, startCueIndex, endCueIndex) {
+  return [...new Set([startCueIndex, endCueIndex])].map((cueIndex) => ({ cueIndex, quote: byIndex.get(cueIndex).text }))
 }
 
 function validateLongVideoPlan(payload, cues) {
@@ -64,8 +59,8 @@ function buildPrompt(cues) {
   return [
     '基于下面完整编号字幕，只规划一份共享章节与高光证据，后续所有短版、精华版、章节版和平台时长版都必须复用它。',
     'chapters必须2-12章、按字幕顺序连续覆盖全部字幕且不重叠；highlights必须选择最有信息密度、结论、冲突、案例或可行动价值的2-24段。',
-    '每个章节和高光都必须引用范围首尾字幕中的连续原文；不能发明时间、字幕或事实。importance范围0.5-1。',
-    '只返回JSON：{"summary":"摘要","chapters":[{"title":"章节","startCueIndex":1,"endCueIndex":4,"importance":0.8,"reason":"理由","evidence":[{"cueIndex":1,"quote":"原文"},{"cueIndex":4,"quote":"原文"}]}],"highlights":[{"startCueIndex":2,"endCueIndex":3,"importance":0.95,"reason":"理由","evidence":[{"cueIndex":2,"quote":"原文"},{"cueIndex":3,"quote":"原文"}]}]}',
+    '不能发明时间、字幕或事实。只返回字幕范围，主进程会从源字幕重建首尾原文证据，避免模型转义或改写引句。importance范围0.5-1。',
+    '只返回JSON：{"summary":"摘要","chapters":[{"title":"章节","startCueIndex":1,"endCueIndex":4,"importance":0.8,"reason":"理由"}],"highlights":[{"startCueIndex":2,"endCueIndex":3,"importance":0.95,"reason":"理由"}]}',
     '', ...lines
   ].join('\n')
 }
@@ -86,9 +81,10 @@ async function planLongVideoVersions({ cues, complete, model, signal } = {}) {
   throw previousError
 }
 
-function rangeFromCues(item, byIndex) {
+function rangeFromCues(item, byIndex, sourceDurationSeconds = Number.POSITIVE_INFINITY) {
   const first = byIndex.get(item.startCueIndex); const last = byIndex.get(item.endCueIndex)
-  return { sourceStartSeconds: Number(first.startSeconds.toFixed(3)), sourceEndSeconds: Number(last.endSeconds.toFixed(3)), durationSeconds: Number((last.endSeconds - first.startSeconds).toFixed(3)), importance: item.importance, reason: item.reason, cueIndexes: [item.startCueIndex, item.endCueIndex], evidence: item.evidence }
+  const endSeconds = Math.min(Number(sourceDurationSeconds), last.endSeconds)
+  return { sourceStartSeconds: Number(first.startSeconds.toFixed(3)), sourceEndSeconds: Number(endSeconds.toFixed(3)), durationSeconds: Number((endSeconds - first.startSeconds).toFixed(3)), importance: item.importance, reason: item.reason, cueIndexes: [item.startCueIndex, item.endCueIndex], evidence: item.evidence }
 }
 
 function selectForBudget(ranges, targetSeconds) {
@@ -108,14 +104,14 @@ function compileLongVideoVersionBundle({ instruction, sourcePath, subtitlePath, 
   const duration = Number(durationSeconds)
   if (!reviewed?.available || !Number.isFinite(duration) || duration < 30) throw new Error('长视频多版本需要至少30秒素材和有效共享证据')
   const normalized = normalizeCues(cues); const byIndex = new Map(normalized.map((cue) => [cue.cueIndex, cue]))
-  const highlightRanges = reviewed.highlights.map((item) => rangeFromCues(item, byIndex))
+  const highlightRanges = reviewed.highlights.map((item) => rangeFromCues(item, byIndex, duration))
   const profileDefs = [['short-30', '短版', 30], ['highlight-90', '精华版', 90], ['platform-15', '15秒平台版', 15], ['platform-30', '30秒平台版', 30], ['platform-60', '60秒平台版', 60]]
   const variants = profileDefs.map(([id, label, target]) => {
     const targetSeconds = Math.min(Number(target), duration)
     const segments = selectForBudget(highlightRanges, targetSeconds)
     return { id, label, targetSeconds, durationSeconds: Number(segments.reduce((sum, item) => sum + item.durationSeconds, 0).toFixed(3)), segments }
   }).filter((item) => item.segments.length)
-  const chapters = reviewed.chapters.map((item, index) => ({ id: `chapter-${index + 1}`, label: `章节${index + 1}-${item.title}`, title: item.title, ...rangeFromCues(item, byIndex) }))
+  const chapters = reviewed.chapters.map((item, index) => ({ id: `chapter-${index + 1}`, label: `章节${index + 1}-${item.title}`, title: item.title, ...rangeFromCues(item, byIndex, duration) }))
   return {
     schemaVersion: 1, strategy: 'shared-evidence-long-video-versions-v1', confirmationRequired: true,
     instruction: String(instruction || '').trim(), source: { path: String(sourcePath || ''), name: path.basename(String(sourcePath || '')) }, subtitlePath: String(subtitlePath || ''), sourceDurationSeconds: Number(duration.toFixed(3)),

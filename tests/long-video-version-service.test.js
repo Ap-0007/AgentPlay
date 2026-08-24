@@ -27,12 +27,12 @@ test('long-version intent is explicit and consultation stays non-executing', () 
   assert.equal(matchesLongVersionInstruction('这个视频太长了'), false)
 })
 
-test('model plan requires full ordered chapter coverage and exact cited highlights', () => {
+test('model plan requires full ordered chapter coverage and rebuilds exact source citations', () => {
   const result = validateLongVideoPlan(payload, cues)
   assert.equal(result.chapters.length, 3)
   assert.equal(result.highlights.length, 3)
   const forged = structuredClone(payload); forged.highlights[0].evidence[0].quote = '伪造引句'
-  assert.throws(() => validateLongVideoPlan(forged, cues), /引句不在原字幕/)
+  assert.deepEqual(validateLongVideoPlan(forged, cues).highlights[0].evidence, evidence([2, 3]))
   const gap = structuredClone(payload); gap.chapters[1].startCueIndex = 6; gap.chapters[1].evidence = evidence([6, 8])
   assert.throws(() => validateLongVideoPlan(gap, cues), /章节必须连续覆盖/)
 })

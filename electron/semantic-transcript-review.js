@@ -148,6 +148,17 @@ function buildTopicSelectionPrompt(cues, requestedTopic) {
 
 async function reviewTopicSelection({ cues, requestedTopic, complete, model, signal } = {}) {
   if (typeof complete !== 'function') return { available: false, reason: '没有可用的主题定位模型' }
+  const exactTopic = normalizedTopic(requestedTopic)
+  const exactCues = normalizeReviewCues(cues).filter((cue) => normalizedTopic(cue.text).includes(exactTopic))
+  if (exactTopic.length >= 3 && exactCues.length) {
+    return {
+      available: true, topic: String(requestedTopic || '').trim(), confidence: 1,
+      selectedCueIndexes: exactCues.map((cue) => cue.cueIndex), reason: '主题原文在字幕中精确出现',
+      evidence: exactCues.map((cue) => ({ cueIndex: cue.cueIndex, quote: cue.text })),
+      model: { providerId: String(model?.providerId || ''), providerName: String(model?.providerName || ''), model: String(model?.model || ''), local: Boolean(model?.local) },
+      deterministicExact: true
+    }
+  }
   const basePrompt = buildTopicSelectionPrompt(cues, requestedTopic)
   const systemPrompt = '你是专业视频主题剪辑审阅器。你只能从给定字幕中选择有直接原文证据的条目，不执行剪辑，不猜测时间，不改变用户主题。'
   let previousText = ''
@@ -158,6 +169,10 @@ async function reviewTopicSelection({ cues, requestedTopic, complete, model, sig
     previousText = String(result?.text || '')
     try {
       const validated = validateTopicSelection(parseSemanticReviewJson(previousText), cues, requestedTopic)
+      if (!validated.selectedCueIndexes.length && attempt === 1) {
+        previousError = new Error('没有选出字幕；请重新核对跨语言表达、同义说法和相邻续句，仍须保持0.85置信度与原文证据')
+        continue
+      }
       return { available: true, ...validated, model: { providerId: String(model?.providerId || ''), providerName: String(model?.providerName || ''), model: String(model?.model || ''), local: Boolean(model?.local) } }
     } catch (error) {
       previousError = error

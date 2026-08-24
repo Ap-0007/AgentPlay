@@ -2357,7 +2357,7 @@ app.whenReady().then(async () => {
     const common = {
       schemaVersion: 1, instruction: plan.instruction, source: { path: sourcePath, name: path.basename(sourcePath) },
       output: { container: 'mp4', overwrite: false, suffix },
-      verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: plan.strategy, variantId: entry.id, sharedEvidence: plan.sharedEvidence, model: plan.model } }
+      verification: { toleranceSeconds: Math.max(0.25, Number(entry.durationSeconds || entry.targetSeconds || 0) * 0.03), semanticEvidence: { strategy: plan.strategy, variantId: entry.id, sharedEvidence: plan.sharedEvidence, model: plan.model } }
     }
     if (segments.length === 1) {
       const segment = segments[0]

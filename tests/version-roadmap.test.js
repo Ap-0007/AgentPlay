@@ -57,12 +57,12 @@ test('0.9.0 reports strict closure separately from implementation coverage again
   assert.match(content, /轻量时间线回执、预览、撤销/)
 })
 
-test('0.9.1 records four completed semantic-editing items without overstating later work', () => {
+test('0.9.1 records the completed semantic-editing group without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*16%（4\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 4)
-  assert.equal(checkboxCount(content, false), 21)
-  assert.match(content, /#### A\. 语义剪辑（4\/5）/)
+  assert.match(content, /功能交付完成率：\*\*20%（5\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 5)
+  assert.equal(checkboxCount(content, false), 20)
+  assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
   assert.match(content, /个人编辑 Skill/)
@@ -126,6 +126,11 @@ test('0.9.1 records four completed semantic-editing items without overstating la
   assert.match(content, /模型严格只调用1次/)
   assert.match(content, /850 tests、850 pass、0 fail、0 skip/)
   assert.match(content, /A组更新为4\/5，0\.9\.1更新为4\/25=16%/)
+  assert.match(content, /第十三个纵向切片（A5闭环并正式勾选）/)
+  assert.match(content, /precision=1、recall=0\.9545/)
+  assert.match(content, /minimumExportQuality100/)
+  assert.match(content, /855 tests、854 pass、0 fail、1项外部Archive网络条件skip/)
+  assert.match(content, /A组5\/5闭环，0\.9\.1更新为5\/25=20%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

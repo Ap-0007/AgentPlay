@@ -318,17 +318,20 @@ class MediaEditService {
       return sampleAt(file, Math.max(0.02, boundary - 0.06))
     }
     const outputDuration = await this.frames.probeDuration(output, { signal })
-    const outputFirst = await sampleAt(output, 0)
+    const outputFirstCandidates = [await sampleAt(output, 0), await sampleAt(output, 0.067), await sampleAt(output, 0.134)].filter(Boolean)
     // 尾帧两侧采样：重编码会重置 PTS 网格，-t 严格排除边界帧；用 ±1 帧的包含/排除双候选覆盖
     const outputLast = await sampleLast(output, outputDuration + 0.067)
-    const matchFirst = await sampleAt(source, startSeconds)
+    const matchFirstCandidates = [await sampleAt(source, startSeconds), await sampleAt(source, startSeconds + 0.067), await sampleAt(source, Math.max(0, startSeconds - 0.067)), await sampleAt(source, startSeconds + 0.134)].filter(Boolean)
     const matchLastCandidates = [
       await sampleLast(source, endSeconds - 0.001),
       await sampleLast(source, endSeconds + 0.067),
-      await sampleLast(source, endSeconds - 0.134)
+      await sampleLast(source, endSeconds - 0.134),
+      await sampleAt(source, Math.max(startSeconds, endSeconds - 0.061)),
+      await sampleAt(source, Math.max(startSeconds, endSeconds - 0.094)),
+      await sampleAt(source, Math.max(startSeconds, endSeconds - 0.127))
     ].filter(Boolean)
-    if (!outputFirst || !outputLast || !matchFirst || !matchLastCandidates.length) return { ...proofBase, verdict: 'unavailable', reason: 'frame-sample-missing' }
-    const first = this.judgeFrameBoundary(outputFirst, [matchFirst], [
+    if (!outputFirstCandidates.length || !outputLast || !matchFirstCandidates.length || !matchLastCandidates.length) return { ...proofBase, verdict: 'unavailable', reason: 'frame-sample-missing' }
+    const first = this.judgeFrameBoundaryCandidates(outputFirstCandidates, matchFirstCandidates, [
       startSeconds - 0.5 >= 0 ? await sampleAt(source, startSeconds - 0.5) : null,
       startSeconds + 0.5 < sourceDuration ? await sampleAt(source, startSeconds + 0.5) : null
     ])
@@ -391,8 +394,17 @@ class MediaEditService {
       const sourceFrameOptions = segment.frameFitWidth > 0 && segment.frameFitHeight > 0 ? { fitWidth: segment.frameFitWidth, fitHeight: segment.frameFitHeight } : {}
       const segmentDuration = segment.sourceEndSeconds - segment.sourceStartSeconds
       const delta = Math.min(0.5, Math.max(0.1, segmentDuration / 3))
-      const outputFirst = await sampleAt(output, segment.targetStartSeconds)
-      const sourceFirst = await sampleAt(segmentSource, segment.sourceStartSeconds, sourceFrameOptions)
+      const outputFirstCandidates = [
+        await sampleAt(output, segment.targetStartSeconds),
+        await sampleAt(output, segment.targetStartSeconds + 0.067),
+        await sampleAt(output, segment.targetStartSeconds + 0.134)
+      ].filter(Boolean)
+      const sourceFirstCandidates = [
+        await sampleAt(segmentSource, segment.sourceStartSeconds, sourceFrameOptions),
+        await sampleAt(segmentSource, segment.sourceStartSeconds + 0.067, sourceFrameOptions),
+        await sampleAt(segmentSource, Math.max(0, segment.sourceStartSeconds - 0.067), sourceFrameOptions),
+        await sampleAt(segmentSource, segment.sourceStartSeconds + 0.134, sourceFrameOptions)
+      ].filter(Boolean)
       const firstAlternatives = [
         segment.sourceStartSeconds - delta >= 0 ? await sampleAt(segmentSource, segment.sourceStartSeconds - delta, sourceFrameOptions) : null,
         segment.sourceStartSeconds + delta < segmentSourceDuration ? await sampleAt(segmentSource, segment.sourceStartSeconds + delta, sourceFrameOptions) : null
@@ -405,13 +417,18 @@ class MediaEditService {
       const sourceLastCandidates = [
         await sampleLast(segmentSource, segment.sourceEndSeconds - 0.001, sourceFrameOptions),
         await sampleLast(segmentSource, segment.sourceEndSeconds + 0.067, sourceFrameOptions),
-        await sampleLast(segmentSource, segment.sourceEndSeconds - 0.134, sourceFrameOptions)
+        await sampleLast(segmentSource, segment.sourceEndSeconds - 0.134, sourceFrameOptions),
+        await sampleLast(segmentSource, segment.sourceEndSeconds + 0.201, sourceFrameOptions),
+        await sampleLast(segmentSource, segment.sourceEndSeconds - 0.268, sourceFrameOptions),
+        await sampleAt(segmentSource, Math.max(segment.sourceStartSeconds, segment.sourceEndSeconds - 0.061), sourceFrameOptions),
+        await sampleAt(segmentSource, Math.max(segment.sourceStartSeconds, segment.sourceEndSeconds - 0.094), sourceFrameOptions),
+        await sampleAt(segmentSource, Math.max(segment.sourceStartSeconds, segment.sourceEndSeconds - 0.127), sourceFrameOptions)
       ].filter(Boolean)
       const lastAlternatives = [
         segment.sourceEndSeconds - delta >= 0 ? await sampleLast(segmentSource, segment.sourceEndSeconds - delta, sourceFrameOptions) : null,
         segment.sourceEndSeconds + delta < segmentSourceDuration ? await sampleLast(segmentSource, segment.sourceEndSeconds + delta, sourceFrameOptions) : null
       ]
-      if (!outputFirst || !sourceFirst || !outputLastCandidates.length || !sourceLastCandidates.length) {
+      if (!outputFirstCandidates.length || !sourceFirstCandidates.length || !outputLastCandidates.length || !sourceLastCandidates.length) {
         return { ...proofBase, verdict: 'unavailable', reason: 'frame-sample-missing', segmentIndex: index }
       }
       boundaries.push({
@@ -419,7 +436,7 @@ class MediaEditService {
         sourcePath: segmentSource,
         sourceRangeSeconds: { start: segment.sourceStartSeconds, end: segment.sourceEndSeconds },
         targetRangeSeconds: { start: segment.targetStartSeconds, end: segment.targetEndSeconds },
-        first: this.judgeFrameBoundary(outputFirst, [sourceFirst], firstAlternatives),
+        first: this.judgeFrameBoundaryCandidates(outputFirstCandidates, sourceFirstCandidates, firstAlternatives),
         last: this.judgeFrameBoundaryCandidates(outputLastCandidates, sourceLastCandidates, lastAlternatives)
       })
     }

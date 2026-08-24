@@ -44,3 +44,21 @@ test('topic selector sends numbered evidence, repairs once and freezes model ide
   assert.equal(result.model.model, 'agnes-2.5-flash')
   assert.deepEqual(result.selectedCueIndexes, [2, 3])
 })
+
+test('an empty first topic result gets one bounded cross-language recheck', async () => {
+  let calls = 0
+  const result = await reviewTopicSelection({ cues, requestedTopic: '产品价格', model: { model: 'reviewer' }, complete: async () => {
+    calls += 1
+    return { text: JSON.stringify(calls === 1 ? { topic: '产品价格', confidence: 0, selectedCueIndexes: [], reason: '未找到', evidence: [] } : payload) }
+  } })
+  assert.equal(calls, 2)
+  assert.deepEqual(result.selectedCueIndexes, [2, 3])
+})
+
+test('an exact topic phrase in subtitles uses deterministic evidence without spending a model call', async () => {
+  let calls = 0
+  const result = await reviewTopicSelection({ cues: [{ cueIndex: 1, startSeconds: 0, endSeconds: 1, text: '背景' }, { cueIndex: 2, startSeconds: 1, endSeconds: 2, text: 'good cause to ask why science works' }], requestedTopic: 'why science works', model: { model: 'reviewer' }, complete: async () => { calls += 1; return { text: '{}' } } })
+  assert.equal(calls, 0)
+  assert.equal(result.deterministicExact, true)
+  assert.deepEqual(result.selectedCueIndexes, [2])
+})
