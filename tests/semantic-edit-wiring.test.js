@@ -26,6 +26,8 @@ test('main process plans semantic pauses once and executes the frozen EDL throug
   assert.match(main, /semanticEditService\.setTopicSelector/)
   assert.match(main, /taskKind: 'semantic-topic-selection'/)
   assert.match(main, /decision\.semanticSelect[\s\S]{0,300}主题/)
+  assert.match(main, /new MediaAutoInspection\(\{ frames: videoFrames \}\)/)
+  assert.match(main, /decision\.autoInspection[\s\S]{0,320}自动体检方案/)
 })
 
 test('renderer preserves the planned decision and shows semantic evidence instead of a generic concat label', () => {
@@ -42,6 +44,8 @@ test('renderer preserves the planned decision and shows semantic evidence instea
   assert.match(hook, /semanticLocate/)
   assert.match(hook, /semanticSelect/)
   assert.match(hook, /保留主题/)
+  assert.match(hook, /autoInspection/)
+  assert.match(hook, /自动体检方案已完成，尚未执行/)
   assert.match(hook, /mediaTools\.trim\(\{[\s\S]{0,220}decision: input\.decision/)
   assert.match(types, /strategy: 'audio-silencedetect-v1'/)
   assert.match(types, /'subtitle-cue-cleanup-v1'/)
@@ -50,12 +54,14 @@ test('renderer preserves the planned decision and shows semantic evidence instea
   assert.match(types, /semanticLocate\?: \{/)
   assert.match(types, /'whisper-dtw-phrase-start-v1'/)
   assert.match(types, /semanticSelect\?: \{/)
+  assert.match(types, /autoInspection\?: \{/)
   assert.match(types, /trim: \(input: \{[^\n]+decision\?: MediaEditDecisionV1/)
 })
 
 test('real semantic acceptance keeps the original and verifies detected silence, retained timeline and frame proof', () => {
-  const smoke = `${read('scripts/smoke-semantic-pause-edit.mjs')}\n${read('scripts/smoke-packaged-semantic-pause-edit.mjs')}`
+  const smoke = `${read('scripts/smoke-semantic-pause-edit.mjs')}\n${read('scripts/smoke-packaged-semantic-pause-edit.mjs')}\n${read('scripts/smoke-packaged-auto-inspection.mjs')}`
   for (const marker of ['anullsrc', 'semantic.plan', 'attachEditDecisionList', 'concatSegments', 'probeDuration', 'sourceUnchanged', 'frameProof']) {
     assert.ok(smoke.includes(marker), `missing semantic acceptance marker: ${marker}`)
   }
+  for (const marker of ['autoInspection', 'blackRanges', 'blurRanges', 'duplicateRanges', '仅标记未删除']) assert.ok(smoke.includes(marker), `missing auto inspection acceptance marker: ${marker}`)
 })

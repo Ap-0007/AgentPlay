@@ -113,7 +113,8 @@ function buildEditDecisionList(decision) {
       quality: {
         ...quality,
         ...(decision.semanticCut ? { semanticCut: JSON.parse(JSON.stringify(decision.semanticCut)) } : {}),
-        ...(decision.semanticSelect ? { semanticSelect: JSON.parse(JSON.stringify(decision.semanticSelect)) } : {})
+        ...(decision.semanticSelect ? { semanticSelect: JSON.parse(JSON.stringify(decision.semanticSelect)) } : {}),
+        ...(decision.autoInspection ? { autoInspection: JSON.parse(JSON.stringify(decision.autoInspection)) } : {})
       }
     }
   }

@@ -82,6 +82,7 @@ const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decis
 const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-edit-service')
 const { MediaEditProjectStore } = require('./media-edit-project-store')
 const { SemanticEditService } = require('./semantic-edit-service')
+const { MediaAutoInspection } = require('./media-auto-inspection')
 const { createWordTimingLoader } = require('./word-timing-service')
 const { reviewSemanticTranscript, reviewTopicSelection } = require('./semantic-transcript-review')
 const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
@@ -678,6 +679,7 @@ const videoFrames = new VideoFrameService({
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
+const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
 const semanticEditService = new SemanticEditService({
   frames: videoFrames,
   loadTranscript: (sourcePath) => {
@@ -685,7 +687,8 @@ const semanticEditService = new SemanticEditService({
     if (!subtitlePath || !fs.existsSync(subtitlePath)) return null
     return { path: subtitlePath, cues: parseSubtitleCues(fs.readFileSync(subtitlePath, 'utf8'), path.extname(subtitlePath)) }
   },
-  loadWordTimings: createWordTimingLoader({ frames: videoFrames, transcription: transcriptionService })
+  loadWordTimings: createWordTimingLoader({ frames: videoFrames, transcription: transcriptionService }),
+  inspectMedia: (input) => mediaAutoInspection.inspect(input)
 })
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
 const projectCapsules = new ProjectCapsuleStore({ rootDir: path.join(app.getPath('userData'), 'project-capsules') })
@@ -2290,7 +2293,9 @@ app.whenReady().then(async () => {
     assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的多片段拼接决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(decision.semanticSelect
+    status(decision.autoInspection
+      ? `正在按已确认的自动体检方案批量删除 ${decision.autoInspection.safeRemovals.length} 个安全区间并保留 ${decision.autoInspection.reviewOnly.length} 个审阅项`
+      : decision.semanticSelect
       ? `正在按字幕主题“${decision.semanticSelect.topic}”拼接 ${decision.semanticSelect.ranges.length} 个保留片段`
       : decision.semanticCut
         ? decision.semanticCut.target === 'long-pauses'
@@ -2317,6 +2322,10 @@ app.whenReady().then(async () => {
       ...(decision.semanticSelect ? {
         semanticSelect: decision.semanticSelect,
         summary: `已按字幕主题“${decision.semanticSelect.topic}”保留 ${decision.semanticSelect.selectedCueIndexes.length} 条引用证据并拼接 ${decision.semanticSelect.ranges.length} 个片段；工作模型为 ${decision.semanticSelect.model.providerName} · ${decision.semanticSelect.model.model}，原文件未改动`
+      } : {}),
+      ...(decision.autoInspection ? {
+        autoInspection: decision.autoInspection,
+        summary: `自动体检已批量处理 ${decision.autoInspection.safeRemovals.length} 个安全区间，共压缩 ${Number(decision.autoInspection.totalRemovedSeconds).toFixed(2)} 秒；${decision.autoInspection.reviewOnly.length} 个失焦、重复镜头或句中口头禅仅标记未删除，原文件未改动`
       } : {}),
       projectCapsule
     }

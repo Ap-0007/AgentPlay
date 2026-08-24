@@ -1,4 +1,5 @@
 const path = require('path')
+const { matchesAutoInspectionInstruction } = require('./media-auto-inspection')
 
 const PAUSE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除|自动剪掉)[^，。；]{0,12}(?:长)?(?:停顿|静音)|(?:长)?(?:停顿|静音)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const TEXT_CLEANUP_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)[^，。；]{0,12}(?:口头禅|废话|重复(?:的话|内容|句子)?)|(?:口头禅|废话|重复(?:的话|内容|句子)?)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
@@ -326,6 +327,68 @@ function buildTopicSelectionDecision({ instruction, sourcePath, durationSeconds,
   }
 }
 
+function mergeInspectionRemovals(ranges) {
+  const merged = []
+  for (const range of ranges.sort((left, right) => left.startSeconds - right.startSeconds)) {
+    const previous = merged.at(-1)
+    if (previous && range.startSeconds <= previous.endSeconds + 0.05) {
+      previous.endSeconds = Math.max(previous.endSeconds, range.endSeconds)
+      previous.durationSeconds = Number((previous.endSeconds - previous.startSeconds).toFixed(3))
+      previous.kinds = [...new Set([...previous.kinds, ...range.kinds])]
+      previous.reasons = [...new Set([...previous.reasons, ...range.reasons])]
+    } else merged.push({ ...range, kinds: [...range.kinds], reasons: [...range.reasons] })
+  }
+  return merged
+}
+
+function buildAutoInspectionDecision({ instruction, sourcePath, durationSeconds, subtitlePath, silences, textAnalysis, visual } = {}) {
+  const duration = Number(durationSeconds)
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能生成自动体检方案')
+  const safe = []
+  for (const item of Array.isArray(silences) ? silences : []) {
+    if (Number(item.durationSeconds) < DEFAULT_MIN_SILENCE_SECONDS || Number(item.startSeconds) <= 0.05 || Number(item.endSeconds) >= duration - 0.05) continue
+    const startSeconds = Number((Number(item.startSeconds) + DEFAULT_KEEP_PADDING_SECONDS).toFixed(3))
+    const endSeconds = Number((Number(item.endSeconds) - DEFAULT_KEEP_PADDING_SECONDS).toFixed(3))
+    if (endSeconds - startSeconds >= 0.1) safe.push({ startSeconds, endSeconds, durationSeconds: Number((endSeconds - startSeconds).toFixed(3)), kinds: ['silence'], reasons: [`长停顿 ${Number(item.durationSeconds).toFixed(2)} 秒`] })
+  }
+  const detectedText = Array.isArray(textAnalysis?.detected) ? textAnalysis.detected : []
+  for (const item of detectedText) {
+    if (!(String(item.reason || '').startsWith('独立口头禅') || String(item.reason || '').startsWith('相邻重复'))) continue
+    const startSeconds = Number((Number(item.startSeconds) + 0.04).toFixed(3))
+    const endSeconds = Number((Number(item.endSeconds) - 0.04).toFixed(3))
+    if (startSeconds > 0.05 && endSeconds < duration - 0.05 && endSeconds - startSeconds >= 0.1) safe.push({ startSeconds, endSeconds, durationSeconds: Number((endSeconds - startSeconds).toFixed(3)), kinds: ['filler'], reasons: [`第${item.cueIndex}条${item.reason}“${item.text}”`] })
+  }
+  for (const item of Array.isArray(visual?.blackRanges) ? visual.blackRanges : []) {
+    const startSeconds = Number(item.startSeconds); const endSeconds = Number(item.endSeconds)
+    if (Number(item.durationSeconds) >= 0.4 && startSeconds > 0.05 && endSeconds < duration - 0.05) safe.push({ startSeconds, endSeconds, durationSeconds: Number((endSeconds - startSeconds).toFixed(3)), kinds: ['black'], reasons: [`明显黑帧 ${Number(item.durationSeconds).toFixed(2)} 秒`] })
+  }
+  const safeRemovals = mergeInspectionRemovals(safe)
+  if (!safeRemovals.length) throw new Error('没有检测到可安全批量删除的内部静音、独立口头禅或明显黑帧')
+  const reviewOnly = []
+  for (const item of Array.isArray(textAnalysis?.reviewOnly) ? textAnalysis.reviewOnly : []) reviewOnly.push({ kind: 'embedded-filler', ...item })
+  for (const item of detectedText.filter((entry) => String(entry.reason || '').startsWith('非紧邻'))) reviewOnly.push({ kind: 'non-adjacent-repeat', ...item })
+  for (const item of Array.isArray(visual?.blurRanges) ? visual.blurRanges : []) reviewOnly.push({ kind: 'blur', ...item, reason: `明显失焦候选，模糊分数${Number(item.score).toFixed(2)}（基线${Number(item.baseline).toFixed(2)}）` })
+  for (const item of Array.isArray(visual?.duplicateRanges) ? visual.duplicateRanges : []) reviewOnly.push({ kind: 'duplicate-shot', ...item, reason: `与${Number(item.referenceStartSeconds).toFixed(2)}–${Number(item.referenceEndSeconds).toFixed(2)}秒连续画面重复` })
+  const retained = []
+  let cursor = 0
+  for (const range of safeRemovals) { if (range.startSeconds - cursor >= 0.08) retained.push({ sourceStartSeconds: cursor, sourceEndSeconds: range.startSeconds }); cursor = range.endSeconds }
+  if (duration - cursor >= 0.08) retained.push({ sourceStartSeconds: cursor, sourceEndSeconds: duration })
+  if (retained.length < 2 || retained.length > MAX_RETAINED_SEGMENTS) throw new Error('自动体检后的保留片段超出单次安全拼接范围')
+  let targetCursor = 0
+  const segments = retained.map((item) => { const segmentDuration = item.sourceEndSeconds - item.sourceStartSeconds; const segment = { sourceStartSeconds: Number(item.sourceStartSeconds.toFixed(3)), sourceEndSeconds: Number(item.sourceEndSeconds.toFixed(3)), durationSeconds: Number(segmentDuration.toFixed(3)), targetStartSeconds: Number(targetCursor.toFixed(3)), targetEndSeconds: Number((targetCursor + segmentDuration).toFixed(3)) }; targetCursor += segmentDuration; return segment })
+  const autoInspection = {
+    schemaVersion: 1, strategy: 'media-auto-inspection-v1', confirmationRequired: true, sourceDurationSeconds: Number(duration.toFixed(3)), subtitlePath: String(subtitlePath || ''),
+    findings: { silences: silences || [], subtitleCandidates: detectedText, blackRanges: visual?.blackRanges || [], blurRanges: visual?.blurRanges || [], duplicateRanges: visual?.duplicateRanges || [] },
+    safeRemovals, reviewOnly, totalRemovedSeconds: Number(safeRemovals.reduce((sum, item) => sum + item.durationSeconds, 0).toFixed(3))
+  }
+  return {
+    schemaVersion: 1, kind: 'media.concat-segments', instruction: String(instruction || '').trim(), source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
+    timeline: { segments, durationSeconds: Number(targetCursor.toFixed(3)) }, autoInspection,
+    output: { container: 'mp4', overwrite: false, suffix: '自动体检精简版' },
+    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: autoInspection.strategy, safeRemovals, reviewOnly, totalRemovedSeconds: autoInspection.totalRemovedSeconds } }
+  }
+}
+
 function textCleanupReviewSummary(reviewOnly) {
   const lines = reviewOnly.slice(0, 8).map((item) => `第${item.cueIndex}条（${item.startSeconds.toFixed(2)}–${item.endSeconds.toFixed(2)}秒）“${item.text}”：${item.reason}“${item.matches.join('、')}”`)
   return `已定位 ${reviewOnly.length} 条需要人工核对的字幕：\n${lines.join('\n')}\n这些字幕没有逐词时间戳，AgentPlay 不会删除整句；请先生成逐词字幕或给出明确时间段。`
@@ -434,17 +497,34 @@ function buildTextCleanupDecision({ instruction, sourcePath, durationSeconds, su
 }
 
 class SemanticEditService {
-  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null, analyzeVisualCandidates = null, selectTopicCues = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues; this.analyzeVisualCandidates = analyzeVisualCandidates; this.selectTopicCues = selectTopicCues }
+  constructor({ frames, loadTranscript = null, loadWordTimings = null, analyzeSemanticCues = null, analyzeVisualCandidates = null, selectTopicCues = null, inspectMedia = null } = {}) { this.frames = frames; this.loadTranscript = loadTranscript; this.loadWordTimings = loadWordTimings; this.analyzeSemanticCues = analyzeSemanticCues; this.analyzeVisualCandidates = analyzeVisualCandidates; this.selectTopicCues = selectTopicCues; this.inspectMedia = inspectMedia }
 
   setSemanticAnalyzer(analyzeSemanticCues) { this.analyzeSemanticCues = analyzeSemanticCues }
   setVisualAnalyzer(analyzeVisualCandidates) { this.analyzeVisualCandidates = analyzeVisualCandidates }
   setTopicSelector(selectTopicCues) { this.selectTopicCues = selectTopicCues }
 
-  matches(instruction) { return matchesExactQuoteStartInstruction(instruction) || matchesTopicSelectionInstruction(instruction) || matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
+  matches(instruction) { return matchesAutoInspectionInstruction(instruction) || matchesExactQuoteStartInstruction(instruction) || matchesTopicSelectionInstruction(instruction) || matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
 
   async plan({ instruction, sourcePath, signal } = {}) {
     if (!this.matches(instruction)) return { matched: false }
     if (!this.frames?.availability?.().available) throw new Error('缺少 ffmpeg 组件，无法分析音轨停顿')
+    if (matchesAutoInspectionInstruction(instruction)) {
+      const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
+      const transcript = await this.loadTranscript?.(sourcePath)
+      const textAnalysis = transcript?.cues?.length ? analyzeTextCleanupCues(transcript.cues, durationSeconds) : { detected: [], reviewOnly: [] }
+      const visual = this.inspectMedia ? await this.inspectMedia({ sourcePath, durationSeconds, signal }) : { blackRanges: [], blurRanges: [], duplicateRanges: [] }
+      let silences = []
+      if (await this.frames.probeHasAudio(sourcePath, { signal })) {
+        const result = await this.frames.run(['-hide_banner', '-nostats', '-i', sourcePath, '-map', '0:a:0', '-af', `silencedetect=noise=-35dB:d=${DEFAULT_MIN_SILENCE_SECONDS.toFixed(3)}`, '-f', 'null', '-'], { timeoutMs: Math.max(120000, Math.min(10 * 60 * 1000, Number(durationSeconds) * 500)), signal })
+        silences = parseSilenceEvents(result.stderr)
+      }
+      try {
+        return { matched: true, decision: buildAutoInspectionDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript?.path, silences, textAnalysis, visual }) }
+      } catch (error) {
+        const reviewCount = Number(visual?.blurRanges?.length || 0) + Number(visual?.duplicateRanges?.length || 0) + Number(textAnalysis.reviewOnly?.length || 0)
+        return { matched: true, review: { kind: 'media-auto-inspection', summary: `${error instanceof Error ? error.message : String(error)}；${reviewCount ? `另发现${reviewCount}处仅供审阅的失焦、重复镜头或句中口头禅。` : ''}没有创建剪辑任务。`, candidates: [] } }
+      }
+    }
     if (matchesExactQuoteStartInstruction(instruction)) {
       const transcript = await this.loadTranscript?.(sourcePath)
       if (!transcript?.path || !Array.isArray(transcript.cues) || !transcript.cues.length) throw new Error('没有找到带时间轴的现成字幕，请先生成字幕后再按原话定位')
@@ -534,7 +614,7 @@ class SemanticEditService {
 }
 
 module.exports = {
-  SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildSemanticModelDecision, buildTextCleanupDecision, buildTopicSelectionDecision, embeddedFillers,
+  SemanticEditService, analyzeTextCleanupCues, buildAutoInspectionDecision, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildSemanticModelDecision, buildTextCleanupDecision, buildTopicSelectionDecision, embeddedFillers,
   extractExactQuoteStart, extractTopicSelection, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesSemanticReviewInstruction, matchesTextCleanupInstruction, matchesTopicSelectionInstruction, normalizedCueText,
   parseSilenceEvents, requestedMinimumSilence, standaloneFiller
 }

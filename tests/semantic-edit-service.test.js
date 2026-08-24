@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildTextCleanupDecision, buildTopicSelectionDecision, extractExactQuoteStart, extractTopicSelection, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesTextCleanupInstruction, matchesTopicSelectionInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
+const { SemanticEditService, analyzeTextCleanupCues, buildAutoInspectionDecision, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildTextCleanupDecision, buildTopicSelectionDecision, extractExactQuoteStart, extractTopicSelection, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesTextCleanupInstruction, matchesTopicSelectionInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
 const { attachEditDecisionList, assertEditDecisionList } = require('../electron/edit-decision-list')
 
 test('semantic pause intent is narrow and the requested threshold is bounded', () => {
@@ -319,4 +319,36 @@ test('non-adjacent topic cues compile a continuous ordered selection and require
   assert.deepEqual(result.decision.timeline.segments.map((item) => [item.sourceStartSeconds, item.sourceEndSeconds]), [[1.52, 3.08], [5.02, 6.58]])
   assert.equal(result.decision.semanticSelect.model.model, '8b')
   assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(result.decision)))
+})
+
+test('auto inspection freezes safe removals separately from blur and duplicate review findings', () => {
+  const decision = buildAutoInspectionDecision({
+    instruction: '自动检查这个视频并给我剪辑方案', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 10,
+    silences: [{ startSeconds: 2, endSeconds: 3, durationSeconds: 1 }],
+    textAnalysis: { detected: [{ cueIndex: 3, startSeconds: 4, endSeconds: 4.5, text: '嗯', reason: '独立口头禅' }], reviewOnly: [{ cueIndex: 4, startSeconds: 5, endSeconds: 5.8, text: '然后继续', reason: '句中疑似口头禅', matches: ['然后'] }] },
+    visual: { schemaVersion: 1, strategy: 'ffmpeg-media-auto-inspection-v1', sampleFps: 2, blackRanges: [{ startSeconds: 6, endSeconds: 7, durationSeconds: 1, score: 1 }], blurRanges: [{ startSeconds: 7.5, endSeconds: 8.5, durationSeconds: 1, score: 12, baseline: 4 }], duplicateRanges: [{ startSeconds: 8.5, endSeconds: 10, durationSeconds: 1.5, referenceStartSeconds: 0, referenceEndSeconds: 1.5, score: 0 }] }
+  })
+  assert.equal(decision.kind, 'media.concat-segments')
+  assert.equal(decision.autoInspection.confirmationRequired, true)
+  assert.deepEqual(decision.autoInspection.safeRemovals.map((item) => [item.startSeconds, item.endSeconds, item.kinds]), [[2.12, 2.88, ['silence']], [4.04, 4.46, ['filler']], [6, 7, ['black']]])
+  assert.deepEqual(decision.autoInspection.reviewOnly.map((item) => item.kind), ['embedded-filler', 'blur', 'duplicate-shot'])
+  assert.equal(decision.timeline.segments.length, 4)
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(decision)))
+})
+
+test('auto inspection service scans each evidence family once and returns a confirm-only batch plan', async () => {
+  const calls = []
+  const frames = {
+    availability: () => ({ available: true }), probeDuration: async () => 10, probeHasAudio: async () => true,
+    run: async (args) => { calls.push(args); return { stderr: 'silence_start: 2\nsilence_end: 3 | silence_duration: 1' } }
+  }
+  const service = new SemanticEditService({
+    frames,
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 2, text: '开场' }, { start: 3, end: 3.5, text: '嗯' }, { start: 3.6, end: 10, text: '正文' }] }),
+    inspectMedia: async () => ({ schemaVersion: 1, strategy: 'ffmpeg-media-auto-inspection-v1', sampleFps: 2, blackRanges: [{ startSeconds: 6, endSeconds: 7, durationSeconds: 1, score: 1 }], blurRanges: [], duplicateRanges: [] })
+  })
+  const result = await service.plan({ instruction: '自动检查这个视频并给我剪辑方案', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.autoInspection.safeRemovals.length, 3)
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].join(' '), /silencedetect/)
 })
