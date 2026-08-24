@@ -12,6 +12,7 @@ const HARD_FAILURES = new Set([
   'REFRAME_OUTPUT_MISMATCH', 'TRACKING_EVIDENCE_MISSING', 'SUBJECT_COVERAGE_LOW',
   'VISUAL_REPAIR_PROOF_MISSING', 'STABILIZATION_NOT_IMPROVED', 'COLOR_REPAIR_NOT_IMPROVED', 'COMPARISON_MISSING',
   'STYLE_BLUEPRINT_MISSING', 'STYLE_STRUCTURE_MISMATCH', 'COPYRIGHT_BOUNDARY_FAILED',
+  'UNIFIED_VISUAL_QC_FAILED',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
@@ -219,16 +220,18 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const reviewOnlyOk = JSON.stringify(findings) === JSON.stringify(spec.decision?.repair?.lowQualityFindings || []) && findings.every((item) => item.action === 'review-only')
     const projectCapsule = result.projectCapsule
     const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && path.resolve(String(projectCapsule.currentPath || '')) === path.resolve(outputs[0] || '')
+    const visualQcOk = result.visualQc?.strategy === 'unified-visual-export-qc-v1' && result.visualQc?.passed === true && Array.isArray(result.visualQc?.artifacts) && result.visualQc.artifacts.length === 2
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '画面修复任务返回失败状态', false))
-    add('artifacts', '修复版与对比版', outputs.length === 2 ? artifactRatio : 0, 15, artifactFailure || reason('COMPARISON_MISSING', '缺少修复版或前后对比版', true))
+    add('artifacts', '修复版与对比版', outputs.length === 2 ? artifactRatio : 0, 10, artifactFailure || reason('COMPARISON_MISSING', '缺少修复版或前后对比版', true))
     add('formats', '视频文件结构', outputs.length === 2 ? formatRatio : 0, 10, formatFailure || reason('INVALID_FORMAT', '画面修复成果格式无效', true))
     add('duration', '时长保持', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', '画面修复成果时长与原片不一致', true))
-    add('stabilization', '防抖运动证明', stabilizationOk ? 1 : 0, 15, reason(stabilizationOk ? 'VISUAL_REPAIR_PROOF_MISSING' : 'STABILIZATION_NOT_IMPROVED', '防抖后运动幅度没有可验证改善', true))
+    add('stabilization', '防抖运动证明', stabilizationOk ? 1 : 0, 10, reason(stabilizationOk ? 'VISUAL_REPAIR_PROOF_MISSING' : 'STABILIZATION_NOT_IMPROVED', '防抖后运动幅度没有可验证改善', true))
     add('rotation', '旋转与尺寸', rotationOk ? 1 : 0, 10, reason('DIMENSION_MISMATCH', '旋转角度或成果尺寸与冻结决策不一致', true))
     add('color', '曝光与偏色改善', colorOk ? 1 : 0, 10, reason('COLOR_REPAIR_NOT_IMPROVED', '曝光/偏色统计没有改善', true))
-    add('comparison', '处理前后对比', comparisonOk ? 1 : 0, 10, reason('COMPARISON_MISSING', '前后对比视频缺失或无效', true))
+    add('comparison', '处理前后对比', comparisonOk ? 1 : 0, 5, reason('COMPARISON_MISSING', '前后对比视频缺失或无效', true))
     add('review-only', '低质量片段仅提示', reviewOnlyOk ? 1 : 0, 5, reason('VISUAL_REPAIR_PROOF_MISSING', '低质量片段提示与冻结方案不一致', true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '画面修复成果没有进入可撤销项目', true))
+    add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '修复版/对比版没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
   } else if (taskType === 'media.smart-reframe') {
     const expected = spec.decision?.reframe?.outputs || []
     const versions = Array.isArray(result.versions) ? result.versions : []
@@ -241,14 +244,16 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const coverageOk = Number(tracking?.minimumSubjectCoverage) >= Number(spec.decision?.verification?.minimumSubjectCoverage || 0.75)
     const projectCapsule = result.projectCapsule
     const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    const visualQcOk = result.visualQc?.strategy === 'unified-visual-export-qc-v1' && result.visualQc?.passed === true && result.visualQc?.artifacts?.length === 3
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '智能构图任务返回失败状态', false))
-    add('artifacts', '三个构图成果', outputs.length === 3 ? artifactRatio : 0, 20, artifactFailure || reason('REFRAME_OUTPUT_MISMATCH', '智能构图没有交付三个成果', true))
+    add('artifacts', '三个构图成果', outputs.length === 3 ? artifactRatio : 0, 15, artifactFailure || reason('REFRAME_OUTPUT_MISMATCH', '智能构图没有交付三个成果', true))
     add('formats', '视频文件结构', outputs.length === 3 ? formatRatio : 0, 10, formatFailure || reason('INVALID_FORMAT', '智能构图成果格式无效', true))
-    add('aspects', '三比例尺寸', versionsMatch ? 1 : 0, 20, reason('REFRAME_OUTPUT_MISMATCH', '16:9、9:16或1:1成果尺寸与冻结决策不一致', true))
+    add('aspects', '三比例尺寸', versionsMatch ? 1 : 0, 15, reason('REFRAME_OUTPUT_MISMATCH', '16:9、9:16或1:1成果尺寸与冻结决策不一致', true))
     add('duration', '三版时长一致', durationsMatch ? 1 : 0, 10, reason('DURATION_MISMATCH', '智能构图成果时长与原片不一致', true))
-    add('tracking', '冻结主体轨迹', evidenceOk ? 1 : 0, 15, reason('TRACKING_EVIDENCE_MISSING', '主体关键帧、置信度或目标对象与冻结决策不一致', true))
+    add('tracking', '冻结主体轨迹', evidenceOk ? 1 : 0, 10, reason('TRACKING_EVIDENCE_MISSING', '主体关键帧、置信度或目标对象与冻结决策不一致', true))
     add('coverage', '主体画幅覆盖', coverageOk ? 1 : 0, 10, reason('SUBJECT_COVERAGE_LOW', '主体在至少一个目标画幅中覆盖不足', true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '智能构图首个成果没有进入可撤销项目', true))
+    add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '三比例成果没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
   } else if (taskType === 'media.edit-visual-effects') {
     const receipt = result.effectReceipt
     const expectedKinds = spec.decision?.verification?.expectedEffectKinds || []
@@ -258,13 +263,15 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const changed = receipt?.changed === true && Number(receipt?.representativeSample?.meanAbsDiff) > 0.2
     const projectCapsule = result.projectCapsule
     const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    const visualQcOk = result.visualQc?.strategy === 'unified-visual-export-qc-v1' && result.visualQc?.passed === true && result.visualQc?.artifacts?.length === 1
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '视觉效果任务返回失败状态', false))
-    add('artifact', '成片文件', artifactRatio, 20, artifactFailure)
-    add('effects', '冻结效果清单', kindsMatch ? 1 : 0, 20, reason('EFFECT_RECEIPT_MISMATCH', '成片回执与冻结视觉效果清单不一致', true))
+    add('artifact', '成片文件', artifactRatio, 15, artifactFailure)
+    add('effects', '冻结效果清单', kindsMatch ? 1 : 0, 15, reason('EFFECT_RECEIPT_MISMATCH', '成片回执与冻结视觉效果清单不一致', true))
     add('duration', '成片时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', '视觉效果成片时长不符合冻结决策', true))
-    add('dimensions', '分辨率与裁切', dimensionsOk ? 1 : 0, 15, reason('DIMENSION_MISMATCH', '视觉效果成片分辨率与冻结决策不一致', true))
+    add('dimensions', '分辨率与裁切', dimensionsOk ? 1 : 0, 10, reason('DIMENSION_MISMATCH', '视觉效果成片分辨率与冻结决策不一致', true))
     add('pixel-change', '代表帧变化', changed ? 1 : 0, 10, reason('EFFECT_CHANGE_MISSING', '代表帧没有检测到视觉效果变化', true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '视觉效果成果没有进入可撤销项目', true))
+    add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '视觉效果成果没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
   } else if (taskType === 'media.edit-music') {
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)
@@ -449,12 +456,14 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const blueprintOk = blueprint?.schemaVersion === 1 && blueprint?.strategy === 'abstract-style-blueprint-v1' && /^[a-f0-9]{64}$/i.test(String(blueprint?.sourceReportSha256 || '')) && blueprint?.sourceSpecificTextExcluded === true
     const structureOk = receipt?.structureMatched === true && shots.length >= 2 && shots.length === Number(result.clips) && shots.every((shot, index) => Number(shot.duration) === Number(blueprint?.rhythm?.durations?.[index]) && shot.shotSize === blueprint?.shotSizes?.[index] && shot.movement === blueprint?.movements?.[index])
     const copyrightOk = receipt?.rawReportSentToShotModel === false && receipt?.referenceImagesSent === 0 && receipt?.promptSafetyPassed === true && Array.isArray(receipt?.promptSha256) && receipt.promptSha256.length === shots.length && receipt.promptSha256.every((item) => /^[a-f0-9]{64}$/i.test(String(item)))
+    const visualQcOk = result.visualQc?.strategy === 'unified-visual-export-qc-v1' && result.visualQc?.passed === true && result.visualQc?.artifacts?.length === 1
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '原创风格重构任务返回失败状态', false))
-    add('artifact', '原创重构成片', artifactRatio, 25, artifactFailure)
-    add('format', '成片结构', formatRatio, 15, formatFailure)
+    add('artifact', '原创重构成片', artifactRatio, 20, artifactFailure)
+    add('format', '成片结构', formatRatio, 10, formatFailure)
     add('blueprint', '抽象风格蓝图', blueprintOk ? 1 : 0, 15, reason('STYLE_BLUEPRINT_MISSING', '缺少不含专有表达的抽象风格蓝图', false))
     add('structure', '节奏景别运镜匹配', structureOk ? 1 : 0, 15, reason('STYLE_STRUCTURE_MISMATCH', '生成镜头没有遵循冻结的节奏/景别/运镜结构', false))
-    add('copyright', '版权与原创边界', copyrightOk ? 1 : 0, 20, reason('COPYRIGHT_BOUNDARY_FAILED', '拉片正文、参考帧或专有表达可能进入了镜头生成', false))
+    add('copyright', '版权与原创边界', copyrightOk ? 1 : 0, 15, reason('COPYRIGHT_BOUNDARY_FAILED', '拉片正文、参考帧或专有表达可能进入了镜头生成', false))
+    add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '原创重构成片没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
   } else if (taskType === 'media.compress') {
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('artifacts', '视频成果', artifactRatio, 50, artifactFailure)

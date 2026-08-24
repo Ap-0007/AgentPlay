@@ -63,7 +63,7 @@ try {
       throw new Error(error.message + '；诊断=' + JSON.stringify({ videoSrc: video?.currentSrc || video?.src || '', body: document.body.innerText.slice(-2000), tasks: items.slice(-5) }))
     })
     const task = await waitFor(async () => { const items = await window.aiPlayer.taskRuntime.list(); const found = items.find((item) => item.id === createdTask.id); return found && ['completed','failed','cancelled'].includes(found.state) ? found : null }, '视觉效果任务完成')
-    if (task.state !== 'completed' || task.quality?.passed !== true || task.result?.effectReceipt?.effectKinds?.length !== 8 || task.result.effectReceipt.dimensionMatch !== true || task.result.effectReceipt.changed !== true) throw new Error(task.error || '安装态视觉效果质量门失败')
+    if (task.state !== 'completed' || task.quality?.passed !== true || task.result?.effectReceipt?.effectKinds?.length !== 8 || task.result.effectReceipt.dimensionMatch !== true || task.result.effectReceipt.changed !== true || task.result?.visualQc?.passed !== true || task.result.visualQc.artifacts?.length !== 1) throw new Error(task.error || '安装态视觉效果质量门失败')
     const preview = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - task.result.durationSeconds) <= 0.35 ? { duration: video.duration } : null }, '自动预览视觉效果成片', 30000)
     if (!document.body.innerText.includes('已应用 8 类视觉效果')) throw new Error('对话没有显示视觉效果回执')
     setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
@@ -71,10 +71,10 @@ try {
     return { initial, plan, task, preview, undo, body: document.body.innerText }
   })()`)
   const result = pageResult.task.result; const outputPath = result.outputPath
-  const receipt = { acceptedAt: new Date().toISOString(), executable, source: { path: sourcePath, sha256: sourceHash, unchanged: sha256(sourcePath) === sourceHash }, pip: { path: pipPath, sha256: pipHash, unchanged: sha256(pipPath) === pipHash }, decision: pageResult.task.spec.decision, result: { outputPath, durationSeconds: probeDuration(outputPath), quality: pageResult.task.quality, effectReceipt: result.effectReceipt }, ui: { previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration } }
+  const receipt = { acceptedAt: new Date().toISOString(), executable, source: { path: sourcePath, sha256: sourceHash, unchanged: sha256(sourcePath) === sourceHash }, pip: { path: pipPath, sha256: pipHash, unchanged: sha256(pipPath) === pipHash }, decision: pageResult.task.spec.decision, result: { outputPath, durationSeconds: probeDuration(outputPath), quality: pageResult.task.quality, effectReceipt: result.effectReceipt, visualQc: result.visualQc }, ui: { previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration } }
   if (!receipt.source.unchanged || !receipt.pip.unchanged || !fs.existsSync(outputPath)) throw new Error('安装态视觉效果成果或原件保护失败')
   fs.mkdirSync(path.dirname(receiptPath), { recursive: true }); fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ receiptPath, effects: receipt.result.effectReceipt.effectKinds, dimensions: receipt.result.effectReceipt.outputDimensions, quality: receipt.result.quality.score, duration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, sourceUnchanged: true, pipUnchanged: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ receiptPath, effects: receipt.result.effectReceipt.effectKinds, dimensions: receipt.result.effectReceipt.outputDimensions, quality: receipt.result.quality.score, visualQc: receipt.result.visualQc.passed, qcArtifacts: receipt.result.visualQc.artifacts.length, duration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, sourceUnchanged: true, pipUnchanged: true })}\n`)
   accepted = true
   await Promise.race([command('Browser.close'), delay(1000)]).catch(() => {})
 } finally {

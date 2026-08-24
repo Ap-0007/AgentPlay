@@ -1,0 +1,41 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { spawnSync } = require('node:child_process')
+
+const { VideoFrameService } = require('../electron/video-frame-service')
+const { VisualExportQualityGate } = require('../electron/visual-export-quality')
+
+const bin = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ai-player', 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin')
+const ffmpeg = path.join(bin, 'ffmpeg.exe'); const ffprobe = path.join(bin, 'ffprobe.exe')
+
+test('unified visual export QC accepts a clean export and rejects codec, dimensions, new bars and new black frames', { timeout: 180000 }, async (t) => {
+  if (!fs.existsSync(ffmpeg)) return t.skip('ffmpeg unavailable')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-visual-qc-'))
+  const build = (args, output) => { const result = spawnSync(ffmpeg, ['-y', ...args, output, '-loglevel', 'error'], { timeout: 60000 }); assert.equal(result.status, 0, String(result.stderr || '')) }
+  try {
+    const source = path.join(dir, 'source.mp4'); const good = path.join(dir, 'good.mp4'); const bars = path.join(dir, 'bars.mp4'); const black = path.join(dir, 'black.mp4'); const codec = path.join(dir, 'codec.avi')
+    build(['-f', 'lavfi', '-i', 'testsrc2=duration=4:size=320x180:rate=15', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'], source)
+    build(['-i', source, '-c:v', 'libx264', '-pix_fmt', 'yuv420p'], good)
+    build(['-i', source, '-vf', 'scale=280:158,pad=320:180:20:10:color=black', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'], bars)
+    build(['-i', source, '-vf', "drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,1,2.8)'", '-c:v', 'libx264', '-pix_fmt', 'yuv420p'], black)
+    build(['-i', source, '-c:v', 'mpeg4', '-pix_fmt', 'yuv420p'], codec)
+    const frames = new VideoFrameService({ ffmpegPath: ffmpeg, ffprobePath: ffprobe })
+    const gate = new VisualExportQualityGate({ frames })
+    const spec = (file, extra = {}) => ({ path: file, role: 'primary', expectedDimensions: { width: 320, height: 180 }, expectedAspect: '16:9', ...extra })
+    const clean = await gate.inspect({ sourcePath: source, artifacts: [spec(good)], profile: 'test-clean' })
+    assert.equal(clean.passed, true, JSON.stringify(clean.failures))
+    const wrongDimensions = await gate.inspect({ sourcePath: source, artifacts: [spec(good, { expectedDimensions: { width: 300, height: 180 } })], profile: 'test-dimensions' })
+    assert.ok(wrongDimensions.failures.some((item) => item.code === 'DIMENSION_MISMATCH'))
+    const unwantedBars = await gate.inspect({ sourcePath: source, artifacts: [spec(bars)], profile: 'test-bars' })
+    assert.ok(unwantedBars.failures.some((item) => item.code === 'UNEXPECTED_BLACK_BARS'))
+    const newBlack = await gate.inspect({ sourcePath: source, artifacts: [spec(black)], profile: 'test-black' })
+    assert.ok(newBlack.failures.some((item) => item.code === 'NEW_BLACK_FRAMES'))
+    const badCodec = await gate.inspect({ sourcePath: source, artifacts: [spec(codec)], profile: 'test-codec' })
+    assert.ok(badCodec.failures.some((item) => item.code === 'UNSUPPORTED_VIDEO_CODEC'))
+    const allowedBars = await gate.inspect({ sourcePath: source, artifacts: [spec(bars, { allowBlackBars: true })], profile: 'test-explicit-bars' })
+    assert.equal(allowedBars.failures.some((item) => item.code === 'UNEXPECTED_BLACK_BARS'), false)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})

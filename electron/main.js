@@ -91,6 +91,7 @@ const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require(
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const { buildStyleShotPrompt, compileStyleBlueprint, extractProtectedFragments, hash: styleHash, validateStyleShots } = require('./style-reuse-service')
+const { VisualExportQualityGate } = require('./visual-export-quality')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -684,6 +685,7 @@ const videoFrames = new VideoFrameService({
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
+const visualExportQuality = new VisualExportQualityGate({ frames: videoFrames })
 const smartReframePlanner = new SmartReframePlanner({ frames: videoFrames })
 const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
 const visualRepairPlanner = new VisualRepairPlanner({ frames: videoFrames, inspectMedia: (input) => mediaAutoInspection.inspect(input) })
@@ -2390,8 +2392,10 @@ app.whenReady().then(async () => {
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
       : await mediaEditService.visualEffects({ sourcePath, outputPath, decision, signal })
     validateMediaSources(task.spec.sources)
+    const visualQc = await visualExportQuality.inspect({ sourcePath, artifacts: [{ path: outputPath, role: 'visual-effects', expectedDimensions: result.effectReceipt?.outputDimensions, allowBlackBars: decision.effects.some((item) => item.type === 'scale' && Number(item.factor) < 1) }], profile: 'b1-visual-effects', signal })
+    if (!visualQc.passed) { if (fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true }); throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((item) => item.code).join('、')}`) }
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
-    const completed = { ...result, projectCapsule }
+    const completed = { ...result, visualQc, projectCapsule }
     checkpoint({ stage: 'artifact-written', result: completed })
     userAuthorizedPaths.add(path.resolve(outputPath))
     return completed
@@ -2408,8 +2412,10 @@ app.whenReady().then(async () => {
     status(`正在围绕“${decision.reframe.subject.description}”生成16:9、9:16和1:1三个版本`)
     const result = await mediaEditService.smartReframe({ sourcePath, outputPaths, decision, signal })
     validateMediaSources(task.spec.sources)
+    const visualQc = await visualExportQuality.inspect({ sourcePath, artifacts: result.versions.map((item) => ({ path: item.outputPath, role: `reframe-${item.aspect}`, expectedDimensions: item.dimensions, expectedAspect: item.aspect })), profile: 'b2-smart-reframe', signal })
+    if (!visualQc.passed) { outputPaths.forEach((item) => { if (fs.existsSync(item)) fs.rmSync(item, { force: true }) }); throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((item) => item.code).join('、')}`) }
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath: outputPaths[0], relatedOutputPaths: outputPaths.slice(1), decision, repairing: task.checkpoint?.stage === 'quality-repair' })
-    const completed = { ...result, projectCapsule }
+    const completed = { ...result, visualQc, projectCapsule }
     checkpoint({ stage: 'artifact-written', result: completed })
     outputPaths.forEach((item) => userAuthorizedPaths.add(path.resolve(item)))
     return completed
@@ -2427,8 +2433,10 @@ app.whenReady().then(async () => {
     status(`正在执行${decision.repair.stabilize ? '防抖、' : ''}${decision.repair.rotationDegrees ? `旋转${decision.repair.rotationDegrees}度、` : ''}${decision.repair.autoColor ? '曝光/偏色校正、' : ''}并生成前后对比`)
     const result = await mediaEditService.visualRepair({ sourcePath, outputPaths, decision, signal })
     validateMediaSources(task.spec.sources)
+    const visualQc = await visualExportQuality.inspect({ sourcePath, artifacts: [{ path: outputPaths[0], role: 'visual-repair', expectedDimensions: decision.repair.expectedDimensions }, { path: outputPaths[1], role: 'before-after-comparison', expectedDimensions: result.repairReceipt?.comparison?.dimensions, allowBlackBars: true }], profile: 'b3-visual-repair', signal })
+    if (!visualQc.passed) { outputPaths.forEach((item) => { if (fs.existsSync(item)) fs.rmSync(item, { force: true }) }); throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((item) => item.code).join('、')}`) }
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath: outputPaths[0], relatedOutputPaths: outputPaths.slice(1), decision, repairing: task.checkpoint?.stage === 'quality-repair' })
-    const completed = { ...result, projectCapsule }
+    const completed = { ...result, visualQc, projectCapsule }
     checkpoint({ stage: 'artifact-written', result: completed })
     outputPaths.forEach((item) => userAuthorizedPaths.add(path.resolve(item)))
     return completed
@@ -4838,7 +4846,9 @@ app.whenReady().then(async () => {
     const safeName = mediaName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.[^.]+$/, '')
     const outputPath = path.join(app.getPath('documents'), 'AgentPlay 输出', `${safeName}-AgentPlay重构短片-${task.id}.mp4`)
     if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
-      const result = { success: true, outputPath, outputs: [outputPath], shots, styleShots, clips: clipPaths.length, styleBlueprint: blueprint, styleReuseReceipt, summary: `已按抽象风格蓝图生成 ${clipPaths.length} 个原创镜头；仅复用节奏/景别/运镜/光线/色彩规则，未向镜头模型发送拉片报告正文或参考帧` }
+      const visualQc = await visualExportQuality.inspect({ artifacts: [{ path: outputPath, role: 'style-recut', expectedDimensions: { width: 1280, height: 720 }, expectedAspect: '16:9' }], profile: 'b4-style-recut', signal })
+      if (!visualQc.passed) { fs.rmSync(outputPath, { force: true }); throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((item) => item.code).join('、')}`) }
+      const result = { success: true, outputPath, outputs: [outputPath], shots, styleShots, clips: clipPaths.length, styleBlueprint: blueprint, styleReuseReceipt, visualQc, summary: `已按抽象风格蓝图生成 ${clipPaths.length} 个原创镜头；仅复用节奏/景别/运镜/光线/色彩规则，未向镜头模型发送拉片报告正文或参考帧` }
       checkpoint({ stage: 'artifact-written', result, shots, styleShots, styleReuseReceipt, clipPaths, clipJobs })
       return result
     }
@@ -4850,7 +4860,9 @@ app.whenReady().then(async () => {
     } finally {
       if (fs.existsSync(listFile)) fs.rmSync(listFile, { force: true })
     }
-    const result = { success: true, outputPath, outputs: [outputPath], shots, styleShots, clips: clipPaths.length, styleBlueprint: blueprint, styleReuseReceipt, summary: `已按抽象风格蓝图生成 ${clipPaths.length} 个原创镜头；仅复用节奏/景别/运镜/光线/色彩规则，未向镜头模型发送拉片报告正文或参考帧` }
+    const visualQc = await visualExportQuality.inspect({ artifacts: [{ path: outputPath, role: 'style-recut', expectedDimensions: { width: 1280, height: 720 }, expectedAspect: '16:9' }], profile: 'b4-style-recut', signal })
+    if (!visualQc.passed) { fs.rmSync(outputPath, { force: true }); throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((item) => item.code).join('、')}`) }
+    const result = { success: true, outputPath, outputs: [outputPath], shots, styleShots, clips: clipPaths.length, styleBlueprint: blueprint, styleReuseReceipt, visualQc, summary: `已按抽象风格蓝图生成 ${clipPaths.length} 个原创镜头；仅复用节奏/景别/运镜/光线/色彩规则，未向镜头模型发送拉片报告正文或参考帧` }
     checkpoint({ stage: 'artifact-written', result, shots, styleShots, styleReuseReceipt, clipPaths, clipJobs })
     return result
   }

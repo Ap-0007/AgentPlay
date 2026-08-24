@@ -57,11 +57,11 @@ test('0.9.0 reports strict closure separately from implementation coverage again
   assert.match(content, /轻量时间线回执、预览、撤销/)
 })
 
-test('0.9.1 records completed semantic editing and the first two professional visual slices without overstating later work', () => {
+test('0.9.1 records completed semantic and professional visual groups without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*36%（9\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 9)
-  assert.equal(checkboxCount(content, false), 16)
+  assert.match(content, /功能交付完成率：\*\*40%（10\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 10)
+  assert.equal(checkboxCount(content, false), 15)
   assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
@@ -131,7 +131,7 @@ test('0.9.1 records completed semantic editing and the first two professional vi
   assert.match(content, /minimumExportQuality100/)
   assert.match(content, /855 tests、854 pass、0 fail、1项外部Archive网络条件skip/)
   assert.match(content, /A组5\/5闭环，0\.9\.1更新为5\/25=20%/)
-  assert.match(content, /#### B\. 专业画面编辑（4\/5）/)
+  assert.match(content, /#### B\. 专业画面编辑（5\/5）/)
   assert.match(content, /第十四个纵向切片（B1闭环并正式勾选）/)
   assert.match(content, /安装态一句话同时执行8类效果/)
   assert.match(content, /865 tests、865 pass、0 fail、0 skip/)
@@ -151,6 +151,11 @@ test('0.9.1 records completed semantic editing and the first two professional vi
   assert.match(content, /rawReportSentToShotModel=false/)
   assert.match(content, /887 tests、886 pass、0 fail、1项外部网络条件skip/)
   assert.match(content, /B组更新为4\/5，0\.9\.1更新为9\/25=36%/)
+  assert.match(content, /第十八个纵向切片（B5闭环并正式勾选）/)
+  assert.match(content, /unified-visual-export-qc-v1/)
+  assert.match(content, /UNEXPECTED_BLACK_BARS/)
+  assert.match(content, /890 tests、888 pass、0 fail、2项Archive外部网络条件skip/)
+  assert.match(content, /B组5\/5闭环，0\.9\.1更新为10\/25=40%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {
