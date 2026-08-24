@@ -8,6 +8,7 @@ const HARD_FAILURES = new Set([
   'RESULT_FAILED', 'ARTIFACT_MISSING', 'ARTIFACT_EMPTY', 'INVALID_FORMAT', 'SUBTITLE_EMPTY',
   'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE', 'PROJECT_CAPSULE_MISSING',
   'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH',
+  'EFFECT_RECEIPT_MISMATCH', 'EFFECT_CHANGE_MISSING', 'DIMENSION_MISMATCH',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
@@ -203,6 +204,22 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('bundle-completeness', '成果包完整性', bundleComplete ? 1 : 0, 10, reason('BUNDLE_INCOMPLETE', '成果包存在未完成格式，不能按完整交付处理', true))
     add('bundle-consistency', '成果包共用冻结事实底稿', bundleConsistent ? 1 : 0, 10, reason('BUNDLE_INCONSISTENT', '成果包没有通过共享事实底稿一致性校验', true))
     add('project-capsule', '项目胶囊与当前版本', projectOk ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '成果没有进入统一项目胶囊或缺少当前版本', true))
+  } else if (taskType === 'media.edit-visual-effects') {
+    const receipt = result.effectReceipt
+    const expectedKinds = spec.decision?.verification?.expectedEffectKinds || []
+    const kindsMatch = Array.isArray(receipt?.effectKinds) && expectedKinds.length > 0 && JSON.stringify(receipt.effectKinds) === JSON.stringify(expectedKinds)
+    const durationOk = Number(result.durationSeconds) > 0 && Number(result.expectedDurationSeconds) > 0 && Math.abs(Number(result.durationSeconds) - Number(result.expectedDurationSeconds)) <= Math.max(0.1, Number(spec.decision?.verification?.toleranceSeconds) || 0.35)
+    const dimensionsOk = receipt?.dimensionMatch === true && Number(receipt?.outputDimensions?.width) > 0 && Number(receipt?.outputDimensions?.height) > 0
+    const changed = receipt?.changed === true && Number(receipt?.representativeSample?.meanAbsDiff) > 0.2
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '视觉效果任务返回失败状态', false))
+    add('artifact', '成片文件', artifactRatio, 20, artifactFailure)
+    add('effects', '冻结效果清单', kindsMatch ? 1 : 0, 20, reason('EFFECT_RECEIPT_MISMATCH', '成片回执与冻结视觉效果清单不一致', true))
+    add('duration', '成片时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', '视觉效果成片时长不符合冻结决策', true))
+    add('dimensions', '分辨率与裁切', dimensionsOk ? 1 : 0, 15, reason('DIMENSION_MISMATCH', '视觉效果成片分辨率与冻结决策不一致', true))
+    add('pixel-change', '代表帧变化', changed ? 1 : 0, 10, reason('EFFECT_CHANGE_MISSING', '代表帧没有检测到视觉效果变化', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '视觉效果成果没有进入可撤销项目', true))
   } else if (taskType === 'media.edit-music') {
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)

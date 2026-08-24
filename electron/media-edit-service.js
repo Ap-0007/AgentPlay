@@ -1484,7 +1484,137 @@ class MediaEditService {
     }
   }
 
+  async visualEffects({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const output = path.resolve(String(outputPath || ''))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.visual-effects' || !Array.isArray(decision.effects) || !decision.effects.length) throw new Error('视觉效果决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== source || source === output) throw new Error('视觉效果决策与源文件不一致或试图覆盖原片')
+    if (!this.fs.existsSync(source) || this.fs.existsSync(output) || !this.frames.availability().available) throw new Error(this.fs.existsSync(output) ? '成果文件已存在，为避免覆盖已停止' : '源视频或ffmpeg不可用')
+    const sourceDuration = await this.frames.probeDuration(source, { signal })
+    const dimensions = await this.frames.probeDimensions(source, { signal })
+    if (!(sourceDuration > 0) || !(Number(dimensions?.width) > 0) || !(Number(dimensions?.height) > 0)) throw new Error('无法读取源视频时长或分辨率')
+    const sourceBefore = this.fs.statSync(source)
+    const even = (value) => Math.max(2, Math.floor(Number(value) / 2) * 2)
+    let width = even(dimensions.width); let height = even(dimensions.height)
+    const filters = []
+    const crop = decision.effects.find((item) => item.type === 'crop')
+    if (crop) {
+      const [left, right] = String(crop.aspect).split(':').map(Number); const ratio = left / right
+      if (width / height > ratio) width = even(height * ratio)
+      else height = even(width / ratio)
+      filters.push(`crop=${width}:${height}:(iw-${width})/2:(ih-${height})/2`)
+    }
+    const scale = decision.effects.find((item) => item.type === 'scale')
+    if (scale) {
+      const factor = Number(scale.factor)
+      const scaledWidth = even(width * factor); const scaledHeight = even(height * factor)
+      filters.push(`scale=${scaledWidth}:${scaledHeight}`)
+      filters.push(factor >= 1 ? `crop=${width}:${height}:(iw-${width})/2:(ih-${height})/2` : `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`)
+    }
+    const motion = decision.effects.find((item) => item.type === 'motion')
+    if (motion) {
+      const amount = Math.max(0.05, Math.min(0.5, Number(motion.amount) || 0.15))
+      if (motion.kind === 'pan-left-right' || motion.kind === 'pan-right-left') {
+        const motionWidth = even(width * (1 + amount)); const motionHeight = even(height * (1 + amount))
+        const progress = `min(max(t/${sourceDuration.toFixed(3)},0),1)`
+        const x = motion.kind === 'pan-right-left' ? `(in_w-out_w)*(1-${progress})` : `(in_w-out_w)*${progress}`
+        filters.push(`scale=${motionWidth}:${motionHeight}`, `crop=${width}:${height}:x='${x}':y='(in_h-out_h)/2'`)
+      } else {
+        const framesCount = Math.max(1, Math.round(sourceDuration * 30)); const maximum = 1 + amount
+        const z = motion.kind === 'zoom-out' ? `max(1,${maximum.toFixed(3)}-on*${(amount / framesCount).toFixed(8)})` : `min(${maximum.toFixed(3)},1+on*${(amount / framesCount).toFixed(8)})`
+        filters.push(`fps=30`, `zoompan=z='${z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=30`)
+      }
+    }
+    const color = decision.effects.find((item) => item.type === 'color')
+    if (color) {
+      filters.push(`eq=brightness=${Number(color.brightness).toFixed(3)}:contrast=${Number(color.contrast).toFixed(3)}:saturation=${Number(color.saturation).toFixed(3)}`)
+      if (Number(color.temperature)) filters.push(Number(color.temperature) > 0 ? `colorbalance=rs=.15:bs=-.15` : `colorbalance=rs=-.15:bs=.15`)
+    }
+    const blur = decision.effects.find((item) => item.type === 'blur')
+    if (blur) {
+      const enable = blur.timeRange ? `:enable='between(t,${Number(blur.timeRange.startSeconds).toFixed(3)},${Number(blur.timeRange.endSeconds).toFixed(3)})'` : ''
+      filters.push(`gblur=sigma=${Number(blur.strength).toFixed(2)}${enable}`)
+    }
+    const mask = decision.effects.find((item) => item.type === 'mask')
+    if (mask) {
+      const boxWidth = even(width * Number(mask.width)); const boxHeight = even(height * Number(mask.height)); const margin = Math.max(4, even(Math.min(width, height) * 0.03))
+      const positions = { 'top-left': [margin, margin], 'top-right': [width - boxWidth - margin, margin], 'bottom-left': [margin, height - boxHeight - margin], 'bottom-right': [width - boxWidth - margin, height - boxHeight - margin], center: [(width - boxWidth) / 2, (height - boxHeight) / 2] }
+      const [x, y] = positions[mask.position] || positions['top-right']; const enable = mask.timeRange ? `:enable='between(t,${Number(mask.timeRange.startSeconds).toFixed(3)},${Number(mask.timeRange.endSeconds).toFixed(3)})'` : ''
+      filters.push(`drawbox=x=${Math.round(x)}:y=${Math.round(y)}:w=${boxWidth}:h=${boxHeight}:color=black@${Number(mask.opacity).toFixed(2)}:t=fill${enable}`)
+    }
+    const args = ['-hide_banner', '-nostdin', '-i', source]
+    const pipEffects = decision.effects.filter((item) => item.type === 'pip')
+    for (const pip of pipEffects) { if (!this.fs.existsSync(pip.path)) throw new Error(`画中画素材不存在：${path.basename(pip.path)}`); args.push('-i', path.resolve(pip.path)) }
+    const graph = [`[0:v]${filters.length ? filters.join(',') : 'null'}[base]`]
+    let current = 'base'
+    pipEffects.forEach((pip, index) => {
+      const pipWidth = even(width * Number(pip.scale)); const margin = Math.max(4, even(Math.min(width, height) * 0.03)); const positions = { 'top-left': [margin, margin], 'top-right': [`W-w-${margin}`, margin], 'bottom-left': [margin, `H-h-${margin}`], 'bottom-right': [`W-w-${margin}`, `H-h-${margin}`], center: ['(W-w)/2', '(H-h)/2'] }; const [x, y] = positions[pip.position] || positions['top-right']
+      graph.push(`[${index + 1}:v]setpts=PTS-STARTPTS,scale=${pipWidth}:-2[pip${index}]`)
+      const enable = pip.timeRange ? `:enable='between(t,${Number(pip.timeRange.startSeconds).toFixed(3)},${Number(pip.timeRange.endSeconds).toFixed(3)})'` : ''
+      graph.push(`[${current}][pip${index}]overlay=x=${x}:y=${y}:eof_action=pass:shortest=0${enable}[composite${index}]`); current = `composite${index}`
+    })
+    const transition = decision.effects.find((item) => item.type === 'transition')
+    const hasAudio = await this.frames.probeHasAudio(source, { signal })
+    let expectedDuration = sourceDuration
+    if (transition) {
+      const at = Number(transition.atSeconds); const duration = Number(transition.durationSeconds)
+      if (!(at > duration && at < sourceDuration - 0.1)) throw new Error('转场时间点超出可处理范围')
+      graph.push(`[${current}]split=2[transition-a][transition-b]`, `[transition-a]trim=0:${at.toFixed(3)},setpts=PTS-STARTPTS[pre]`, `[transition-b]trim=start=${at.toFixed(3)},setpts=PTS-STARTPTS[post]`, `[pre][post]xfade=transition=fade:duration=${duration.toFixed(3)}:offset=${(at - duration).toFixed(3)}[vout]`)
+      if (hasAudio) graph.push(`[0:a]asplit=2[a0][a1]`, `[a0]atrim=0:${at.toFixed(3)},asetpts=PTS-STARTPTS[apre]`, `[a1]atrim=start=${at.toFixed(3)},asetpts=PTS-STARTPTS[apost]`, `[apre][apost]acrossfade=d=${duration.toFixed(3)}[aout]`)
+      expectedDuration -= duration
+    } else graph.push(`[${current}]null[vout]`)
+    const parsed = path.parse(output); const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-effects-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    try {
+      await this.frames.run([...args, '-filter_complex', graph.join(';'), '-map', '[vout]', ...(hasAudio ? transition ? ['-map', '[aout]'] : ['-map', '0:a:0'] : ['-an']), '-map_metadata', '0', '-map_chapters', '-1', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', ...(hasAudio ? ['-c:a', 'aac', '-b:a', '160k'] : []), '-movflags', '+faststart', '-y', tempPath], { timeoutMs: 60 * 60 * 1000, signal })
+      this.assertSourceUnchanged(sourceBefore, source)
+      const receipt = await this.verifyVisualEffects({ source, output: tempPath, decision, sourceDuration, expectedDuration, expectedDimensions: { width, height }, signal })
+      this.fs.renameSync(tempPath, output)
+      return { ...receipt, outputPath: output, outputs: [output], outputBytes: this.fs.statSync(output).size }
+    } catch (error) { if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true }); throw error }
+  }
+
+  async verifyVisualEffects({ source, output, decision, sourceDuration = 0, expectedDuration = 0, expectedDimensions = null, signal } = {}) {
+    if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 1024) throw new Error('视觉效果成果不存在或不完整')
+    const inputDuration = sourceDuration || await this.frames.probeDuration(source, { signal })
+    const transition = decision.effects.find((item) => item.type === 'transition')
+    const wantedDuration = expectedDuration || inputDuration - Number(transition?.durationSeconds || 0)
+    const actualDuration = await this.frames.probeDuration(output, { signal }); const tolerance = Math.max(0.1, Number(decision.verification?.toleranceSeconds) || 0.35)
+    if (!(actualDuration > 0) || Math.abs(actualDuration - wantedDuration) > tolerance) throw new Error(`视觉效果成果时长不一致：期望${wantedDuration.toFixed(3)}，实际${actualDuration.toFixed(3)}`)
+    const outputDimensions = await this.frames.probeDimensions(output, { signal })
+    let dimensions = expectedDimensions
+    if (!dimensions) {
+      const sourceDimensions = await this.frames.probeDimensions(source, { signal })
+      const even = (value) => Math.max(2, Math.floor(Number(value) / 2) * 2)
+      let width = even(sourceDimensions?.width); let height = even(sourceDimensions?.height)
+      const crop = decision.effects.find((item) => item.type === 'crop')
+      if (crop) {
+        const [left, right] = String(crop.aspect).split(':').map(Number); const ratio = left / right
+        if (width / height > ratio) width = even(height * ratio)
+        else height = even(width / ratio)
+      }
+      dimensions = { width, height }
+    }
+    const dimensionMatch = Number(outputDimensions?.width) === Number(dimensions?.width) && Number(outputDimensions?.height) === Number(dimensions?.height)
+    if (!dimensionMatch) throw new Error('视觉效果成果分辨率与冻结决策不一致')
+    const ranged = decision.effects.find((item) => item.timeRange)?.timeRange
+    const sampleSource = ranged ? (Number(ranged.startSeconds) + Number(ranged.endSeconds)) / 2 : Math.min(inputDuration - 0.2, Math.max(0.2, inputDuration / 2))
+    const sampleOutput = transition && sampleSource > Number(transition.atSeconds) ? sampleSource - Number(transition.durationSeconds) : Math.min(actualDuration - 0.1, sampleSource)
+    const [sourceFrame, outputFrame] = await Promise.all([this.frames.readGrayFrame(source, sampleSource, { signal }), this.frames.readGrayFrame(output, sampleOutput, { signal })])
+    if (!sourceFrame || !outputFrame) throw new Error('视觉效果代表帧证明不可用')
+    const representativeDiff = Number(meanAbsDiff(sourceFrame, outputFrame).toFixed(3))
+    const effectReceipt = { effectKinds: decision.effects.map((item) => item.type), inputDurationSeconds: Number(inputDuration.toFixed(3)), outputDurationSeconds: Number(actualDuration.toFixed(3)), outputDimensions: { width: Number(outputDimensions.width), height: Number(outputDimensions.height) }, dimensionMatch, representativeSample: { sourceSeconds: Number(sampleSource.toFixed(3)), outputSeconds: Number(sampleOutput.toFixed(3)), meanAbsDiff: representativeDiff }, changed: representativeDiff > 0.2 }
+    if (!effectReceipt.changed) throw new Error('视觉效果代表帧没有产生可验证变化')
+    return { success: true, durationSeconds: actualDuration, expectedDurationSeconds: wantedDuration, effectReceipt, summary: `已应用 ${effectReceipt.effectKinds.length} 类视觉效果（${effectReceipt.effectKinds.join('、')}），分辨率 ${outputDimensions.width}×${outputDimensions.height}，原文件未改动` }
+  }
+
   async verify({ sourcePath, outputPath, decision, signal } = {}) {
+    if (decision?.kind === 'media.visual-effects') {
+      const source = path.resolve(String(sourcePath || '')); const output = path.resolve(String(outputPath || ''))
+      const sourceDuration = await this.frames.probeDuration(source, { signal })
+      const transition = decision.effects.find((item) => item.type === 'transition')
+      const receipt = await this.verifyVisualEffects({ source, output, decision, sourceDuration, expectedDuration: sourceDuration - Number(transition?.durationSeconds || 0), signal })
+      return { ...receipt, outputPath: output, outputs: [output], outputBytes: this.fs.statSync(output).size }
+    }
     if (decision?.kind === 'media.shift-subtitles') return this.verifyShiftSubtitles({ sourcePath, outputPath, decision, signal })
     if (decision?.kind === 'media.translate-subtitles') return this.verifyTranslateSubtitles({ sourcePath, outputPath, decision, signal })
     if (decision?.kind === 'media.edit-subtitle-cues') return this.verifyCueEdit({ sourcePath, outputPath, decision, signal })

@@ -98,6 +98,20 @@ test('media trim quality requires a verified timeline and duration receipt', () 
   }
 })
 
+test('visual effect quality requires the frozen effect list, dimensions, duration, changed pixels and undo project', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-effects-'))
+  try {
+    const output = path.join(dir, 'effects.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const spec = { decision: { verification: { toleranceSeconds: 0.35, expectedEffectKinds: ['crop', 'color'] } } }
+    const base = { success: true, outputs: [output], durationSeconds: 5, expectedDurationSeconds: 5, effectReceipt: { effectKinds: ['crop', 'color'], dimensionMatch: true, outputDimensions: { width: 100, height: 180 }, changed: true, representativeSample: { meanAbsDiff: 12 } }, projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, canUndo: true } }
+    assert.equal(evaluateTaskResult('media.edit-visual-effects', base, spec).passed, true)
+    const unchanged = evaluateTaskResult('media.edit-visual-effects', { ...base, effectReceipt: { ...base.effectReceipt, changed: false, representativeSample: { meanAbsDiff: 0 } } }, spec)
+    assert.equal(unchanged.passed, false)
+    assert.ok(unchanged.reasons.some((item) => item.code === 'EFFECT_CHANGE_MISSING'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('music edit quality requires decoded audio proof instead of trusting an audio stream flag', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-music-'))
   try {
