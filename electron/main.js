@@ -88,6 +88,7 @@ const { reviewSemanticTranscript, reviewTopicSelection } = require('./semantic-t
 const { assertLongVideoVersionPlan, freezeLongVideoVersionPlan, planLongVideoVersions } = require('./long-video-version-service')
 const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require('./visual-effect-decision')
+const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -681,6 +682,7 @@ const videoFrames = new VideoFrameService({
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames })
+const smartReframePlanner = new SmartReframePlanner({ frames: videoFrames })
 const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
 const semanticEditService = new SemanticEditService({
   frames: videoFrames,
@@ -1219,6 +1221,12 @@ app.whenReady().then(async () => {
       const actualOutput = actualValue ? path.resolve(actualValue) : ''
       if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
       action = '清理不合格的任务自产物并重新压缩'
+    } else if (type === 'media.smart-reframe') {
+      for (const outputValue of task.spec?.plannedOutputs || []) {
+        const outputPath = path.resolve(String(outputValue || ''))
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).isFile()) fs.rmSync(outputPath, { force: true })
+      }
+      action = '清理不合格的三比例构图成果并从冻结主体轨迹重新执行'
     } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
@@ -1345,6 +1353,19 @@ app.whenReady().then(async () => {
       readFrame: (filePath, seconds, options) => videoFrames.readJpegFrame(filePath, seconds, options),
       completeVisionMulti: (input) => llmCompleteVisionMulti({ ...input, modelConfig: config, taskKind: 'semantic-edit-vision' })
     })
+  })
+  smartReframePlanner.setSubjectAnalyzer(async ({ subject, images, prompt, signal }) => {
+    const candidates = modelConfigStore.resolvedCandidates('chat')
+    const planned = candidates.length ? selectModelForTaskPlan({ taskKind: 'smart-reframe-vision', requirements: { vision: true }, candidates }) : null
+    const config = planned?.selected
+    if (!config) return { available: false, reason: '没有可用的视觉工作模型，不能可靠识别主体位置' }
+    const local = isLocalModelConfig(config)
+    if (!local) {
+      const approved = await ensureCloudConsent(`将当前视频的5张均匀关键帧发送给视觉模型，用于定位并跟踪“${subject}”；不会上传整段视频或音频。`)
+      if (!approved) return { available: false, reason: '你没有允许发送5张主体关键帧到视觉模型' }
+    }
+    const result = await llmCompleteVisionMulti({ systemPrompt: '你是视频智能构图的主体定位器。只依据带标签关键帧返回目标对象框，不能猜测或改换对象。', prompt, images, signal, timeoutMs: 180000, maxTokens: 1800, modelConfig: config, taskKind: 'smart-reframe-vision' })
+    return { available: true, text: result.text, model: { providerId: config.providerId, providerName: config.providerName, model: config.model, local } }
   })
   const textEvidence = (source, text) => {
     const value = String(text || '').trim()
@@ -2373,6 +2394,24 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.smart-reframe', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.smart-reframe') throw new Error('冻结的智能构图决策无效')
+    assertEditDecisionList(decision)
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('智能构图决策与源视频不一致')
+    const outputPaths = (task.spec.plannedOutputs || []).map((item, index) => validatePlannedMediaOutput(item, sourcePath, decision.reframe.outputs[index]?.suffix, '.mp4', task.id, index))
+    if (outputPaths.length !== 3) throw new Error('智能构图必须冻结三个成果位置')
+    status(`正在围绕“${decision.reframe.subject.description}”生成16:9、9:16和1:1三个版本`)
+    const result = await mediaEditService.smartReframe({ sourcePath, outputPaths, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath: outputPaths[0], relatedOutputPaths: outputPaths.slice(1), decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    outputPaths.forEach((item) => userAuthorizedPaths.add(path.resolve(item)))
+    return completed
+  }, { autoResume: true })
+
   const buildVersionEditDecision = ({ sourcePath, plan, entry }) => {
     const rawSegments = entry.segments || [{ sourceStartSeconds: entry.sourceStartSeconds, sourceEndSeconds: entry.sourceEndSeconds, durationSeconds: entry.durationSeconds }]
     const segments = rawSegments.map((item) => ({ sourceStartSeconds: Number(item.sourceStartSeconds), sourceEndSeconds: Number(item.sourceEndSeconds), durationSeconds: Number(item.sourceEndSeconds) - Number(item.sourceStartSeconds) }))
@@ -2670,7 +2709,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:edit-plan', async (event, input = {}) => {
     assertTrustedSender(event)
     try {
-      const sourcePath = assertAllowedPath(input.sourcePath)
+      let sourcePath = assertAllowedPath(input.sourcePath)
+      if (matchesSmartReframeInstruction(input.instruction)) {
+        let previousDecision = null
+        if (/改为|改成|换成|重新/.test(String(input.instruction || ''))) {
+          const context = mediaEditProjects.smartReframeContext(sourcePath)
+          if (!context) return { matched: true, review: { kind: 'smart-reframe-correction-missing', summary: '当前视频不是刚生成的智能构图版本；请先对原片说“生成横屏、竖屏和方形版本，跟踪主要人物”。', candidates: [] } }
+          sourcePath = context.sourcePath
+          previousDecision = context.previousDecision
+          userAuthorizedPaths.add(path.resolve(sourcePath))
+        }
+        const reframe = await smartReframePlanner.plan({ instruction: input.instruction, sourcePath, previousDecision })
+        return reframe.decision ? { ...reframe, decision: attachEditDecisionList(reframe.decision) } : reframe
+      }
       if (matchesVisualEffectInstruction(input.instruction)) {
         const visual = compileVisualEffectDecision({ instruction: input.instruction, sourcePath })
         return visual.decision ? { ...visual, decision: attachEditDecisionList(visual.decision) } : visual
@@ -2763,6 +2814,8 @@ app.whenReady().then(async () => {
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-sources'
         ? 'media.edit-concat-sources'
+        : decision.kind === 'media.smart-reframe'
+          ? 'media.smart-reframe'
         : decision.kind === 'media.visual-effects'
           ? 'media.edit-visual-effects'
         : decision.kind === 'media.concat-segments'
@@ -2826,6 +2879,7 @@ app.whenReady().then(async () => {
           decision,
           sources: snapshotMediaSources(allSourcePaths),
           outputPath: plannedMediaOutput(outputAnchor, decision.output.suffix, outputExtension, requestId),
+          ...(decision.kind === 'media.smart-reframe' ? { plannedOutputs: decision.reframe.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.mp4', requestId, index)) } : {}),
           ...(engineChoice ? { engineChoice } : {}),
           ...(modelRoute ? { modelRoute } : {})
         }

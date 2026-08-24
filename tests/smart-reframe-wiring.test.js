@@ -1,0 +1,32 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const read = (name) => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
+
+test('main process owns vision planning, correction context, three-output persistence and quality repair', () => {
+  const main = read('electron/main.js'); const service = read('electron/media-edit-service.js'); const project = read('electron/media-edit-project-store.js'); const quality = read('electron/task-result-quality.js')
+  assert.match(main, /new SmartReframePlanner/)
+  assert.match(main, /smartReframePlanner\.setSubjectAnalyzer/)
+  assert.match(main, /ensureCloudConsent\(`将当前视频的5张均匀关键帧/)
+  assert.match(main, /mediaEditProjects\.smartReframeContext/)
+  assert.match(main, /persistentTaskRuntime\.register\('media\.smart-reframe'/)
+  assert.match(main, /plannedOutputs: decision\.reframe\.outputs\.map/)
+  assert.match(service, /async smartReframe\(/)
+  assert.match(service, /smartReframeCropExpressions/)
+  assert.match(project, /smartReframeContext\(currentPath\)/)
+  assert.match(quality, /taskType === 'media\.smart-reframe'/)
+  assert.match(quality, /SUBJECT_COVERAGE_LOW/)
+})
+
+test('renderer and types surface all three outputs and restore the original source for corrections', () => {
+  const hook = read('src/components/agent-panel/useMediaCreativeTasks.ts'); const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts'); const types = read('src/types/global.d.ts')
+  assert.match(hook, /media\.smart-reframe/)
+  assert.match(hook, /decision\.source\?\.path/)
+  assert.match(hook, /completedOutputs\.join/)
+  assert.match(runtime, /media\.smart-reframe/)
+  assert.match(runtime, /三比例主体跟踪/)
+  assert.match(types, /'media\.smart-reframe'/)
+  assert.match(types, /trackingReceipt\?:/)
+})

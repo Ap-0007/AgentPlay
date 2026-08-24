@@ -190,6 +190,21 @@ test('a reordered concat result is persisted as its own undoable edit version', 
   }
 })
 
+test('a smart reframe output resolves its original source and frozen subject for one-sentence correction', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-edit-project-reframe-'))
+  try {
+    const source = path.join(dir, 'source.mp4'); const output = path.join(dir, 'landscape.mp4'); const vertical = path.join(dir, 'vertical.mp4'); const square = path.join(dir, 'square.mp4')
+    fs.writeFileSync(source, Buffer.alloc(4096, 1)); fs.writeFileSync(output, Buffer.alloc(4096, 2)); fs.writeFileSync(vertical, Buffer.alloc(4096, 3)); fs.writeFileSync(square, Buffer.alloc(4096, 4))
+    const store = new MediaEditProjectStore({ rootDir: path.join(dir, 'state'), idFactory: (() => { let id = 0; return () => String(++id) })() })
+    const decision = { schemaVersion: 1, kind: 'media.smart-reframe', source: { path: source, name: 'source.mp4' }, reframe: { subject: { description: '中间人物' }, outputs: [] } }
+    store.recordEdit({ taskId: 'reframe-1', sourcePath: source, outputPath: output, relatedOutputPaths: [vertical, square], decision })
+    const context = store.smartReframeContext(square)
+    assert.equal(context.sourcePath, fs.realpathSync(source))
+    assert.equal(context.previousDecision.reframe.subject.description, '中间人物')
+    assert.equal(store.smartReframeContext(source), null)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('a repeated task validates its recorded artifact and only an explicit quality repair may refresh it', () => {
   const { root, sourcePath, outputPath } = fixture()
   try {

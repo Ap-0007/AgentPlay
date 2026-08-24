@@ -196,6 +196,18 @@ function buildEditDecisionList(decision) {
       operations, output, quality: { ...quality, effects: JSON.parse(JSON.stringify(effects)) }
     }
   }
+  if (decision.kind === 'media.smart-reframe') {
+    const video = material('material-video-1', 'video', decision.source)
+    const reframe = decision.reframe
+    if (!reframe || !Array.isArray(reframe.tracking?.frames) || reframe.tracking.frames.length !== 5 || !Array.isArray(reframe.outputs) || reframe.outputs.length !== 3) throw new Error('EDL 智能构图证据无效')
+    return {
+      schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
+      materials: [video],
+      tracks: [{ id: 'track-video-1', type: 'video', materialId: video.id }, { id: 'track-audio-1', type: 'audio', materialId: video.id, optional: true }],
+      operations: [{ id: 'operation-1', type: 'smart-reframe', materialId: video.id, trackIds: ['track-video-1', 'track-audio-1'], parameters: JSON.parse(JSON.stringify(reframe)) }],
+      output, quality: { ...quality, expectedAspects: reframe.outputs.map((item) => item.aspect), subject: reframe.subject?.description || '', trackingStrategy: reframe.strategy }
+    }
+  }
   const subtitleOperations = {
     'media.mux-subtitles': ['mux-subtitles', {}],
     'media.shift-subtitles': ['shift-subtitles', decision.shift],

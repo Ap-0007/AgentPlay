@@ -112,6 +112,21 @@ test('visual effect quality requires the frozen effect list, dimensions, duratio
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('smart reframe quality requires three exact aspect outputs, frozen tracking evidence and undo project', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-reframe-'))
+  try {
+    const outputs = ['16x9.mp4', '9x16.mp4', '1x1.mp4'].map((name) => path.join(dir, name))
+    outputs.forEach((output) => fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)])))
+    const expected = [{ aspect: '16:9', width: 640, height: 360 }, { aspect: '9:16', width: 202, height: 360 }, { aspect: '1:1', width: 360, height: 360 }]
+    const spec = { decision: { reframe: { durationSeconds: 6, subject: { description: '红衣人物' }, outputs: expected }, verification: { toleranceSeconds: 0.35, minimumSubjectCoverage: 0.75 } } }
+    const base = { success: true, outputs, versions: expected.map((item, index) => ({ ...item, outputPath: outputs[index], dimensions: { width: item.width, height: item.height }, durationSeconds: 6 })), trackingReceipt: { strategy: 'vision-keyframes-linear-follow-v1', subject: { description: '红衣人物' }, frameCount: 5, minimumConfidence: 0.94, minimumSubjectCoverage: 0.98 }, projectCapsule: { schemaVersion: 1, projectId: 'edit-1', currentPath: outputs[0], canUndo: true } }
+    assert.equal(evaluateTaskResult('media.smart-reframe', base, spec).passed, true)
+    const wrongSubject = evaluateTaskResult('media.smart-reframe', { ...base, trackingReceipt: { ...base.trackingReceipt, subject: { description: '另一个人' } } }, spec)
+    assert.equal(wrongSubject.passed, false)
+    assert.ok(wrongSubject.reasons.some((item) => item.code === 'TRACKING_EVIDENCE_MISSING'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('music edit quality requires decoded audio proof instead of trusting an audio stream flag', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-music-'))
   try {

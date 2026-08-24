@@ -26,6 +26,7 @@ function editVersionKind(decision) {
   if (decision?.kind === 'media.translate-subtitles') return 'translate-subtitles'
   if (decision?.kind === 'media.edit-subtitle-cues') return 'edit-subtitle-cues'
   if (decision?.kind === 'media.shift-subtitles') return 'shift-subtitles'
+  if (decision?.kind === 'media.smart-reframe') return 'smart-reframe'
   return 'trim'
 }
 
@@ -101,7 +102,7 @@ class MediaEditProjectStore {
     }
   }
 
-  recordEdit({ taskId, sourcePath, outputPath, decision, repairing = false } = {}) {
+  recordEdit({ taskId, sourcePath, outputPath, decision, repairing = false, relatedOutputPaths = [] } = {}) {
     this.assertReady()
     const taskKey = String(taskId || '').trim()
     if (!taskKey) throw new Error('剪辑任务标识不能为空')
@@ -114,13 +115,20 @@ class MediaEditProjectStore {
       if (!previousVersion || path.resolve(previousVersion.artifact.path) !== path.resolve(source.path)) throw new Error('同一剪辑任务的源版本发生冲突')
       this.validate(previousVersion.artifact)
       const output = this.snapshot(outputPath)
+      const relatedArtifacts = (Array.isArray(relatedOutputPaths) ? relatedOutputPaths : []).map((item) => this.snapshot(item))
       if (path.resolve(version.artifact.path) !== path.resolve(output.path)) throw new Error('同一剪辑任务的输出位置发生冲突')
       if (JSON.stringify(version.decision) !== JSON.stringify(decision || null)) throw new Error('同一剪辑任务的冻结决策发生冲突')
       if (!repairing) this.validate(version.artifact)
       else {
         version.artifact = output
+        version.relatedArtifacts = relatedArtifacts
         version.kind = editVersionKind(decision)
         version.decision = JSON.parse(JSON.stringify(decision || null))
+      }
+      if (!repairing) {
+        const frozenRelated = Array.isArray(version.relatedArtifacts) ? version.relatedArtifacts : []
+        if (frozenRelated.length !== relatedArtifacts.length || frozenRelated.some((item, index) => path.resolve(item.path) !== path.resolve(relatedArtifacts[index].path))) throw new Error('同一剪辑任务的关联成果发生冲突')
+        frozenRelated.forEach((item) => this.validate(item))
       }
       existingTask.cursor = versionIndex
       existingTask.updatedAt = this.now()
@@ -152,6 +160,7 @@ class MediaEditProjectStore {
       taskId: taskKey,
       kind: editVersionKind(decision),
       artifact: output,
+      relatedArtifacts: (Array.isArray(relatedOutputPaths) ? relatedOutputPaths : []).map((item) => this.snapshot(item)),
       decision: JSON.parse(JSON.stringify(decision || null)),
       createdAt: now
     })
@@ -164,6 +173,22 @@ class MediaEditProjectStore {
 
   recordTrim(input = {}) {
     return this.recordEdit(input)
+  }
+
+  smartReframeContext(currentPath) {
+    this.assertReady()
+    const resolved = path.resolve(String(currentPath || ''))
+    for (const project of this.state.projects) {
+      const index = project.versions.findIndex((version) => path.resolve(version.artifact.path) === resolved || (version.relatedArtifacts || []).some((item) => path.resolve(item.path) === resolved))
+      if (index <= 0) continue
+      const version = project.versions[index]
+      if (version.decision?.kind !== 'media.smart-reframe') return null
+      const sourcePath = this.validate(project.versions[index - 1].artifact)
+      this.validate(version.artifact)
+      for (const artifact of version.relatedArtifacts || []) this.validate(artifact)
+      return { sourcePath, currentPath: version.artifact.path, previousDecision: JSON.parse(JSON.stringify(version.decision)), projectId: project.id }
+    }
+    return null
   }
 
   navigate({ currentPath, direction } = {}) {

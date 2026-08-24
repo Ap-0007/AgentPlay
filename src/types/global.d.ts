@@ -173,7 +173,7 @@ interface EditDecisionListV1 {
 
 interface MediaEditDecisionV1 {
   schemaVersion: 1
-  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.visual-effects' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'
+  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.visual-effects' | 'media.smart-reframe' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'
   instruction: string
   edl: EditDecisionListV1
   source?: { path: string; name: string }
@@ -189,6 +189,16 @@ interface MediaEditDecisionV1 {
     | { type: 'blur'; strength: number; timeRange?: { startSeconds: number; endSeconds: number } }
     | { type: 'color'; brightness: number; contrast: number; saturation: number; temperature: number }
   >
+  reframe?: {
+    strategy: 'vision-keyframes-linear-follow-v1'
+    subject: { description: string; observed: string }
+    sourceDimensions: { width: number; height: number }
+    durationSeconds: number
+    tracking: { strategy: 'sampled-subject-boxes-v1'; minimumConfidence: number; frames: Array<{ label: string; seconds: number; box: { x: number; y: number; width: number; height: number }; confidence: number }> }
+    outputs: Array<{ aspect: '16:9' | '9:16' | '1:1'; suffix: string; width: number; height: number }>
+    model: { providerId: string; providerName: string; model: string; local: boolean }
+    correctionOf?: { subject: string; model: { providerId: string; providerName: string; model: string; local: boolean } | null }
+  }
   subtitle?: { path: string; name: string }
   shift?: { direction: 'earlier' | 'later'; offsetSeconds: number }
   translate?: { targetLang: '英文' | '中文' | 'auto'; mode: 'translated' | 'bilingual' }
@@ -791,7 +801,7 @@ interface AiPlayerAPI {
     planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; review?: { kind: string; summary: string; candidates: Array<{ cueIndex: number; startSeconds: number; endSeconds: number; text: string; reason: string; matches: string[] }> }; decision?: MediaEditDecisionV1; versionPlan?: LongVideoVersionPlanV1; error?: string }>
     planHistory: (input: { instruction: string; currentPath: string }) => Promise<{ matched: boolean; action?: { action: 'undo' | 'redo'; instruction: string }; error?: string }>
     navigateHistory: (input: { instruction: string; currentPath: string }) => Promise<{ success: boolean; matched?: boolean; action?: 'undo' | 'redo'; currentPath?: string; projectId?: string; versionId?: string; cursor?: number; versionCount?: number; canUndo?: boolean; canRedo?: boolean; summary?: string; error?: string }>
-    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; effectReceipt?: { effectKinds: string[]; inputDurationSeconds: number; outputDurationSeconds: number; outputDimensions: { width: number; height: number }; dimensionMatch: boolean; representativeSample: { sourceSeconds: number; outputSeconds: number; meanAbsDiff: number }; changed: boolean }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; semanticSelect?: MediaEditDecisionV1['semanticSelect']; autoInspection?: MediaEditDecisionV1['autoInspection']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
+    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; versions?: Array<{ aspect: string; outputPath: string; durationSeconds: number; dimensions: { width: number; height: number } }>; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; effectReceipt?: { effectKinds: string[]; inputDurationSeconds: number; outputDurationSeconds: number; outputDimensions: { width: number; height: number }; dimensionMatch: boolean; representativeSample: { sourceSeconds: number; outputSeconds: number; meanAbsDiff: number }; changed: boolean }; trackingReceipt?: { strategy: string; subject: { description: string; observed: string }; frameCount: number; minimumConfidence: number; minimumSubjectCoverage: number; model: { providerId: string; providerName: string; model: string; local: boolean } }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; semanticSelect?: MediaEditDecisionV1['semanticSelect']; autoInspection?: MediaEditDecisionV1['autoInspection']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
     runVersionBundle: (input: { sourcePath: string; plan: LongVideoVersionPlanV1; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputs?: string[]; versions?: Array<{ id: string; label: string; outputPath: string; durationSeconds: number; targetSeconds?: number }>; summary?: string; error?: string }>
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
     cancel: (requestId: string) => Promise<boolean>

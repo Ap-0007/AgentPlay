@@ -22,6 +22,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isCompress = runtimeTask.type === 'media.compress'
       const isVersionBundle = runtimeTask.type === 'media.version-bundle'
       const isVisualEffects = runtimeTask.type === 'media.edit-visual-effects'
+      const isSmartReframe = runtimeTask.type === 'media.smart-reframe'
       const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music' || runtimeTask.type === 'media.edit-concat-sources' || runtimeTask.type === 'media.edit-burn-subtitles' || runtimeTask.type === 'media.edit-mux-subtitles'
       const isSubtitleShift = runtimeTask.type === 'media.shift-subtitles'
       const isSubtitleTranslate = runtimeTask.type === 'media.translate-subtitles'
@@ -115,6 +116,9 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       } else if (isVisualEffects) {
         kind = 'media'; label = '专业画面效果'; instruction = String(runtimeTask.spec?.instruction || '应用视觉效果'); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
+      } else if (isSmartReframe) {
+        kind = 'media'; label = '三比例主体跟踪'; instruction = String(runtimeTask.spec?.instruction || '生成横屏、竖屏和方形版本'); source = firstSourcePath
+        retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isTimelineEdit) {
         const start = Number(trimDecision?.timeline?.startSeconds) || 0
         const end = Number(trimDecision?.timeline?.endSeconds) || 0
@@ -150,6 +154,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
               : isCreative ? '创作任务完成（已从检查点恢复）'
                 : isBatch ? `批量${batchKind === 'transcribe' ? '转写' : '压缩'}完成（已从检查点恢复）`
                   : isVersionBundle ? '长视频多版本完成（已从共享证据检查点恢复）'
+                  : isSmartReframe ? '三比例主体跟踪完成（已从冻结关键帧恢复）'
                   : isVisualEffects ? '专业画面效果完成（已从冻结效果决策恢复）'
                   : isTimelineEdit ? '视频剪辑完成（已从冻结时间线恢复）'
                     : isSubtitleShift ? '字幕调时完成（已从冻结决策恢复）'
@@ -161,7 +166,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
           phase: 'completed', status: '', error: '', outputs: outputPaths, summary: String(runtimeTask.result?.summary || fallbackSummary),
           evidence: deliveryEvidence, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
         })
-        if ((isDownload || isCreative || isTimelineEdit || isVersionBundle || isVisualEffects) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
+        if ((isDownload || isCreative || isTimelineEdit || isVersionBundle || isVisualEffects || isSmartReframe) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
           surfacedOutputs.add(runtimeTask.id)
           window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: outputPaths[0] }))
         }

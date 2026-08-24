@@ -1573,6 +1573,72 @@ class MediaEditService {
     } catch (error) { if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true }); throw error }
   }
 
+  async smartReframe({ sourcePath, outputPaths, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || ''))
+    const outputs = (Array.isArray(outputPaths) ? outputPaths : []).map((item) => path.resolve(String(item || '')))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.smart-reframe' || decision.reframe?.tracking?.frames?.length !== 5) throw new Error('智能构图决策无效')
+    if (path.resolve(String(decision.source?.path || '')) !== source || outputs.length !== 3 || new Set(outputs).size !== 3 || outputs.includes(source)) throw new Error('智能构图源文件或成果列表无效')
+    if (!this.fs.existsSync(source) || !this.frames.availability().available) throw new Error('源视频或ffmpeg不可用')
+    const sourceBefore = this.fs.statSync(source); const duration = await this.frames.probeDuration(source, { signal }); const dimensions = await this.frames.probeDimensions(source, { signal }); const hasAudio = await this.frames.probeHasAudio(source, { signal })
+    if (!(duration > 0) || Number(dimensions?.width) !== Number(decision.reframe.sourceDimensions?.width) || Number(dimensions?.height) !== Number(decision.reframe.sourceDimensions?.height)) throw new Error('源视频尺寸或时长与冻结智能构图不一致')
+    const versions = []
+    try {
+      for (let index = 0; index < decision.reframe.outputs.length; index += 1) {
+        const spec = decision.reframe.outputs[index]; const output = outputs[index]; const parsed = path.parse(output); const temp = path.join(parsed.dir, `.${parsed.name}.agentplay-reframe-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+        try {
+          if (this.fs.existsSync(output)) {
+            const receipt = await this.verifySmartReframeOutput({ output, spec, expectedDuration: duration, tolerance: Number(decision.verification?.toleranceSeconds) || 0.35, signal })
+            versions.push({ aspect: spec.aspect, outputPath: output, durationSeconds: receipt.durationSeconds, dimensions: receipt.dimensions })
+            continue
+          }
+          const { x, y } = this.smartReframeCropExpressions(decision.reframe.tracking.frames, dimensions, spec)
+          await this.frames.run(['-hide_banner', '-nostdin', '-i', source, '-vf', `crop=${spec.width}:${spec.height}:x='${x}':y='${y}',setsar=1`, '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0'] : ['-an']), '-map_metadata', '0', '-map_chapters', '-1', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', ...(hasAudio ? ['-c:a', 'aac', '-b:a', '160k'] : []), '-movflags', '+faststart', '-y', temp], { timeoutMs: 60 * 60 * 1000, signal })
+          const receipt = await this.verifySmartReframeOutput({ output: temp, spec, expectedDuration: duration, tolerance: Number(decision.verification?.toleranceSeconds) || 0.35, signal })
+          this.assertSourceUnchanged(sourceBefore, source); this.fs.renameSync(temp, output)
+          versions.push({ aspect: spec.aspect, outputPath: output, durationSeconds: receipt.durationSeconds, dimensions: receipt.dimensions })
+        } catch (error) { if (this.fs.existsSync(temp)) this.fs.rmSync(temp, { force: true }); throw error }
+      }
+      const minimumSubjectCoverage = this.minimumSmartReframeCoverage(decision.reframe.tracking.frames, decision.reframe.outputs, dimensions)
+      if (minimumSubjectCoverage + 0.0001 < Number(decision.verification?.minimumSubjectCoverage || 0.75)) throw new Error('冻结主体在目标画幅中的覆盖率不足')
+      this.assertSourceUnchanged(sourceBefore, source)
+      return { success: true, outputPath: outputs[0], outputs, versions, durationSeconds: duration, trackingReceipt: { strategy: decision.reframe.strategy, subject: decision.reframe.subject, frameCount: decision.reframe.tracking.frames.length, minimumConfidence: decision.reframe.tracking.minimumConfidence, minimumSubjectCoverage, model: decision.reframe.model }, summary: `已围绕“${decision.reframe.subject.description}”生成16:9、9:16和1:1三个跟踪构图版本；原文件未改动` }
+    } catch (error) { this.assertSourceUnchanged(sourceBefore, source); throw error }
+  }
+
+  smartReframeCropExpressions(frames, sourceDimensions, outputSpec) {
+    const centerExpression = (axis) => {
+      const values = frames.map((item) => Number(item.box[axis]) + Number(item.box[axis === 'x' ? 'width' : 'height']) / 2)
+      let expression = values.at(-1).toFixed(6)
+      for (let index = frames.length - 2; index >= 0; index -= 1) {
+        const start = Number(frames[index].seconds); const end = Number(frames[index + 1].seconds); const delta = end - start; const value = `${values[index].toFixed(6)}+(${(values[index + 1] - values[index]).toFixed(6)})*(t-${start.toFixed(3)})/${delta.toFixed(3)}`
+        expression = `if(lte(t,${end.toFixed(3)}),${value},${expression})`
+      }
+      return expression
+    }
+    const maxX = Number(sourceDimensions.width) - Number(outputSpec.width); const maxY = Number(sourceDimensions.height) - Number(outputSpec.height)
+    return { x: `clip((${centerExpression('x')})*iw-${Number(outputSpec.width) / 2},0,${Math.max(0, maxX)})`, y: `clip((${centerExpression('y')})*ih-${Number(outputSpec.height) / 2},0,${Math.max(0, maxY)})` }
+  }
+
+  minimumSmartReframeCoverage(frames, outputs, sourceDimensions) {
+    let minimum = 1
+    for (const frame of frames) for (const output of outputs) {
+      const cropWidth = Number(output.width) / Number(sourceDimensions.width); const cropHeight = Number(output.height) / Number(sourceDimensions.height)
+      const centerX = Number(frame.box.x) + Number(frame.box.width) / 2; const centerY = Number(frame.box.y) + Number(frame.box.height) / 2
+      const cropX = Math.max(0, Math.min(1 - cropWidth, centerX - cropWidth / 2)); const cropY = Math.max(0, Math.min(1 - cropHeight, centerY - cropHeight / 2))
+      const intersectionWidth = Math.max(0, Math.min(cropX + cropWidth, frame.box.x + frame.box.width) - Math.max(cropX, frame.box.x)); const intersectionHeight = Math.max(0, Math.min(cropY + cropHeight, frame.box.y + frame.box.height) - Math.max(cropY, frame.box.y))
+      minimum = Math.min(minimum, intersectionWidth * intersectionHeight / (Number(frame.box.width) * Number(frame.box.height)))
+    }
+    return Number(minimum.toFixed(3))
+  }
+
+  async verifySmartReframeOutput({ output, spec, expectedDuration, tolerance, signal } = {}) {
+    if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 1024) throw new Error(`智能构图${spec.aspect}成果不存在或不完整`)
+    const durationSeconds = await this.frames.probeDuration(output, { signal }); const dimensions = await this.frames.probeDimensions(output, { signal })
+    if (Math.abs(durationSeconds - expectedDuration) > tolerance) throw new Error(`智能构图${spec.aspect}成果时长不一致`)
+    if (Number(dimensions?.width) !== Number(spec.width) || Number(dimensions?.height) !== Number(spec.height)) throw new Error(`智能构图${spec.aspect}成果尺寸不一致`)
+    return { durationSeconds, dimensions: { width: Number(dimensions.width), height: Number(dimensions.height) } }
+  }
+
   async verifyVisualEffects({ source, output, decision, sourceDuration = 0, expectedDuration = 0, expectedDimensions = null, signal } = {}) {
     if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 1024) throw new Error('视觉效果成果不存在或不完整')
     const inputDuration = sourceDuration || await this.frames.probeDuration(source, { signal })

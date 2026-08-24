@@ -9,6 +9,7 @@ const HARD_FAILURES = new Set([
   'TARGET_LANGUAGE_MISSING', 'PARTIAL_BATCH', 'NO_BATCH_RESULTS', 'DURATION_MISMATCH', 'SEGMENT_RECEIPT_INCOMPLETE', 'PROJECT_CAPSULE_MISSING',
   'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH',
   'EFFECT_RECEIPT_MISMATCH', 'EFFECT_CHANGE_MISSING', 'DIMENSION_MISMATCH',
+  'REFRAME_OUTPUT_MISMATCH', 'TRACKING_EVIDENCE_MISSING', 'SUBJECT_COVERAGE_LOW',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
@@ -204,6 +205,26 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('bundle-completeness', '成果包完整性', bundleComplete ? 1 : 0, 10, reason('BUNDLE_INCOMPLETE', '成果包存在未完成格式，不能按完整交付处理', true))
     add('bundle-consistency', '成果包共用冻结事实底稿', bundleConsistent ? 1 : 0, 10, reason('BUNDLE_INCONSISTENT', '成果包没有通过共享事实底稿一致性校验', true))
     add('project-capsule', '项目胶囊与当前版本', projectOk ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '成果没有进入统一项目胶囊或缺少当前版本', true))
+  } else if (taskType === 'media.smart-reframe') {
+    const expected = spec.decision?.reframe?.outputs || []
+    const versions = Array.isArray(result.versions) ? result.versions : []
+    const versionsMatch = expected.length === 3 && versions.length === 3 && expected.every((item, index) => item.aspect === versions[index]?.aspect && Number(item.width) === Number(versions[index]?.dimensions?.width) && Number(item.height) === Number(versions[index]?.dimensions?.height))
+    const tolerance = Math.max(0.1, Number(spec.decision?.verification?.toleranceSeconds) || 0.35)
+    const duration = Number(spec.decision?.reframe?.durationSeconds)
+    const durationsMatch = duration > 0 && versions.length === 3 && versions.every((item) => Math.abs(Number(item.durationSeconds) - duration) <= tolerance)
+    const tracking = result.trackingReceipt
+    const evidenceOk = tracking?.strategy === 'vision-keyframes-linear-follow-v1' && tracking?.frameCount === 5 && Number(tracking?.minimumConfidence) >= 0.75 && String(tracking?.subject?.description || '') === String(spec.decision?.reframe?.subject?.description || '')
+    const coverageOk = Number(tracking?.minimumSubjectCoverage) >= Number(spec.decision?.verification?.minimumSubjectCoverage || 0.75)
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '智能构图任务返回失败状态', false))
+    add('artifacts', '三个构图成果', outputs.length === 3 ? artifactRatio : 0, 20, artifactFailure || reason('REFRAME_OUTPUT_MISMATCH', '智能构图没有交付三个成果', true))
+    add('formats', '视频文件结构', outputs.length === 3 ? formatRatio : 0, 10, formatFailure || reason('INVALID_FORMAT', '智能构图成果格式无效', true))
+    add('aspects', '三比例尺寸', versionsMatch ? 1 : 0, 20, reason('REFRAME_OUTPUT_MISMATCH', '16:9、9:16或1:1成果尺寸与冻结决策不一致', true))
+    add('duration', '三版时长一致', durationsMatch ? 1 : 0, 10, reason('DURATION_MISMATCH', '智能构图成果时长与原片不一致', true))
+    add('tracking', '冻结主体轨迹', evidenceOk ? 1 : 0, 15, reason('TRACKING_EVIDENCE_MISSING', '主体关键帧、置信度或目标对象与冻结决策不一致', true))
+    add('coverage', '主体画幅覆盖', coverageOk ? 1 : 0, 10, reason('SUBJECT_COVERAGE_LOW', '主体在至少一个目标画幅中覆盖不足', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '智能构图首个成果没有进入可撤销项目', true))
   } else if (taskType === 'media.edit-visual-effects') {
     const receipt = result.effectReceipt
     const expectedKinds = spec.decision?.verification?.expectedEffectKinds || []
