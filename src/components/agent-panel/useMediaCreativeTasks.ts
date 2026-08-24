@@ -18,7 +18,7 @@ type TrimInput = {
   sourcePath: string
   startSeconds: number
   endSeconds: number
-  operation?: 'trim' | 'remove' | 'concat' | 'music' | 'effects' | 'reframe' | 'subtitle' | 'shift' | 'mux' | 'translate' | 'cue-edit'
+  operation?: 'trim' | 'remove' | 'concat' | 'music' | 'effects' | 'reframe' | 'repair' | 'subtitle' | 'shift' | 'mux' | 'translate' | 'cue-edit'
   segments?: Array<{ startSeconds: number; endSeconds: number }>
   decision?: MediaEditDecisionV1
 }
@@ -292,7 +292,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       pendingSemanticReviewRef.current = null
       addMessage('user', text)
       setInputText('')
-      addMessage('agent', '当前视频已经切换，刚才待确认的语义剪辑方案已取消；请对当前视频重新说明。')
+      addMessage('agent', `当前视频已经切换，刚才待确认的${pendingSemanticReview.decision.kind === 'media.visual-repair' ? '画面修复' : '语义剪辑'}方案已取消；请对当前视频重新说明。`)
       return true
     }
     if (pendingSemanticReview) {
@@ -300,11 +300,11 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       setInputText('')
       if (/^(?:算了|取消|不执行|先不剪了)[吧。！!]*$/.test(text.trim())) {
         pendingSemanticReviewRef.current = null
-        addMessage('agent', '好的，已取消这份语义剪辑方案，没有创建任务，也没有改动文件。')
+        addMessage('agent', `好的，已取消这份${pendingSemanticReview.decision.kind === 'media.visual-repair' ? '画面修复' : '语义剪辑'}方案，没有创建任务，也没有改动文件。`)
         return true
       }
       if (!/^(?:确认(?:执行)?|执行|就按这个(?:方案)?|按这个方案执行)[吧。！!]*$/.test(text.trim())) {
-        addMessage('agent', '这份语义剪辑方案尚未执行。请回复“确认执行”或“取消”。')
+        addMessage('agent', `这份${pendingSemanticReview.decision.kind === 'media.visual-repair' ? '画面修复' : '语义剪辑'}方案尚未执行。请回复“确认执行”或“取消”。`)
         return true
       }
       pendingSemanticReviewRef.current = null
@@ -315,7 +315,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         sourcePath: pendingSemanticReview.sourcePath,
         startSeconds: Number(reviewDecision.timeline?.startSeconds || reviewSegments[0]?.sourceStartSeconds || 0),
         endSeconds: Number(reviewDecision.timeline?.endSeconds || reviewSegments.at(-1)?.sourceEndSeconds || 0),
-        operation: reviewDecision.kind === 'media.concat-segments' ? 'concat' : 'trim',
+        operation: reviewDecision.kind === 'media.visual-repair' ? 'repair' : reviewDecision.kind === 'media.concat-segments' ? 'concat' : 'trim',
         segments: reviewSegments.map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds })),
         decision: reviewDecision
       })
@@ -332,7 +332,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     if (!sourcePath || /^(https?|blob):/i.test(sourcePath) || !window.aiPlayer?.mediaTools?.planEdit) return false
     let startSeconds = override?.startSeconds || 0
     let endSeconds = override?.endSeconds || 0
-    let operation: 'trim' | 'remove' | 'concat' | 'music' | 'effects' | 'reframe' | 'subtitle' | 'shift' | 'mux' | 'translate' | 'cue-edit' = override?.operation || 'trim'
+    let operation: 'trim' | 'remove' | 'concat' | 'music' | 'effects' | 'reframe' | 'repair' | 'subtitle' | 'shift' | 'mux' | 'translate' | 'cue-edit' = override?.operation || 'trim'
     let segments = override?.segments || []
     let sourceCount = 0
     let semanticCut: MediaEditDecisionV1['semanticCut'] | undefined = override?.decision?.semanticCut
@@ -341,6 +341,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     let autoInspection: MediaEditDecisionV1['autoInspection'] | undefined = override?.decision?.autoInspection
     let visualEffects: MediaEditDecisionV1['effects'] | undefined = override?.decision?.effects
     let smartReframe: MediaEditDecisionV1['reframe'] | undefined = override?.decision?.reframe
+    let visualRepair: MediaEditDecisionV1['repair'] | undefined = override?.decision?.repair
     let frozenDecision: MediaEditDecisionV1 | undefined = override?.decision
     let executionInstruction = text
     if (!override) {
@@ -384,7 +385,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           return true
         }
         const decision = plan?.decision
-        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music', 'media.visual-effects', 'media.smart-reframe', 'media.concat-sources', 'media.burn-subtitles', 'media.shift-subtitles', 'media.mux-subtitles', 'media.translate-subtitles', 'media.edit-subtitle-cues'].includes(decision.kind)) {
+        if (!plan?.matched || !decision || !['media.trim', 'media.remove-segment', 'media.concat-segments', 'media.add-music', 'media.visual-effects', 'media.smart-reframe', 'media.visual-repair', 'media.concat-sources', 'media.burn-subtitles', 'media.shift-subtitles', 'media.mux-subtitles', 'media.translate-subtitles', 'media.edit-subtitle-cues'].includes(decision.kind)) {
           pendingEditClarificationRef.current = null
           return false
         }
@@ -396,7 +397,18 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         autoInspection = decision.autoInspection
         visualEffects = decision.effects
         smartReframe = decision.reframe
+        visualRepair = decision.repair
         if (decision.kind === 'media.smart-reframe' && decision.source?.path) sourcePath = decision.source.path
+        if (visualRepair?.confirmationRequired) {
+          pendingSemanticReviewRef.current = { sourcePath, decision }
+          pendingEditClarificationRef.current = null
+          addMessage('user', text)
+          setInputText('')
+          const actions = [visualRepair.stabilize ? '防抖' : '', visualRepair.rotationDegrees ? `旋转 ${visualRepair.rotationDegrees}°` : '', visualRepair.autoColor ? '自动曝光/偏色校正' : ''].filter(Boolean).join('、')
+          const findings = visualRepair.lowQualityFindings.map((item, index) => `${index + 1}. ${Number(item.startSeconds).toFixed(2)}–${Number(item.endSeconds).toFixed(2)}秒：${item.reason}`).join('\n')
+          addMessage('agent', `画面修复方案已完成，尚未执行：\n修复动作：${actions}\n将另存修复版和处理前后对比版，原片不覆盖。${findings ? `\n低质量片段仅提示、不自动删除：\n${findings}` : '\n没有发现需要额外提示的低质量片段。'}\n请回复“确认执行”或“取消”。`)
+          return true
+        }
         if (autoInspection?.confirmationRequired) {
           pendingSemanticReviewRef.current = { sourcePath, decision }
           pendingEditClarificationRef.current = null
@@ -433,7 +445,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
           return true
         }
         executionInstruction = decision.instruction || text
-        operation = decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.smart-reframe' ? 'reframe' : decision.kind === 'media.visual-effects' ? 'effects' : decision.kind === 'media.burn-subtitles' ? 'subtitle' : decision.kind === 'media.mux-subtitles' ? 'mux' : decision.kind === 'media.translate-subtitles' ? 'translate' : decision.kind === 'media.edit-subtitle-cues' ? 'cue-edit' : decision.kind === 'media.shift-subtitles' ? 'shift' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' || decision.kind === 'media.concat-sources' ? 'concat' : 'trim'
+        operation = decision.kind === 'media.add-music' ? 'music' : decision.kind === 'media.visual-repair' ? 'repair' : decision.kind === 'media.smart-reframe' ? 'reframe' : decision.kind === 'media.visual-effects' ? 'effects' : decision.kind === 'media.burn-subtitles' ? 'subtitle' : decision.kind === 'media.mux-subtitles' ? 'mux' : decision.kind === 'media.translate-subtitles' ? 'translate' : decision.kind === 'media.edit-subtitle-cues' ? 'cue-edit' : decision.kind === 'media.shift-subtitles' ? 'shift' : decision.kind === 'media.remove-segment' ? 'remove' : decision.kind === 'media.concat-segments' || decision.kind === 'media.concat-sources' ? 'concat' : 'trim'
         startSeconds = Number(decision.timeline?.startSeconds || decision.timeline?.segments?.[0]?.sourceStartSeconds || 0)
         endSeconds = Number(decision.timeline?.endSeconds || decision.timeline?.segments?.at(-1)?.sourceEndSeconds || 0)
         segments = (decision.timeline?.segments || []).map((segment) => ({ startSeconds: segment.sourceStartSeconds, endSeconds: segment.sourceEndSeconds }))
@@ -450,12 +462,13 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       addMessage('user', text)
       setInputText('')
     }
-    const actionLabel = smartReframe ? `生成三比例跟踪版 · ${smartReframe.subject.description}` : visualEffects ? `应用视觉效果 ${visualEffects.length} 类` : autoInspection ? `执行自动体检方案 ${autoInspection.safeRemovals.length} 处` : semanticSelect ? `保留主题“${semanticSelect.topic}”` : semanticLocate ? `从原话“${semanticLocate.query}”开始` : semanticCut ? (semanticCut.target === 'long-pauses' ? `删除长停顿 ${semanticCut.removed.length} 处` : semanticCut.target === 'near-duplicate-and-offtopic' ? `删除语义重复/跑题 ${semanticCut.removed.length} 条` : `删除口头禅/重复句 ${semanticCut.removed.length} 条`) : operation === 'music' ? '配乐（对白闪避）' : operation === 'effects' ? '应用专业画面效果' : operation === 'subtitle' ? '烧录硬字幕' : operation === 'mux' ? '封装软字幕' : operation === 'translate' ? '翻译字幕' : operation === 'cue-edit' ? '字幕校对' : operation === 'shift' ? '字幕时间调移' : operation === 'concat' ? (sourceCount > 0 ? `按顺序合并 ${sourceCount} 个素材` : `按顺序拼接 ${segments.length} 个片段`) : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
+    const actionLabel = visualRepair ? '画面防抖与质量修复' : smartReframe ? `生成三比例跟踪版 · ${smartReframe.subject.description}` : visualEffects ? `应用视觉效果 ${visualEffects.length} 类` : autoInspection ? `执行自动体检方案 ${autoInspection.safeRemovals.length} 处` : semanticSelect ? `保留主题“${semanticSelect.topic}”` : semanticLocate ? `从原话“${semanticLocate.query}”开始` : semanticCut ? (semanticCut.target === 'long-pauses' ? `删除长停顿 ${semanticCut.removed.length} 处` : semanticCut.target === 'near-duplicate-and-offtopic' ? `删除语义重复/跑题 ${semanticCut.removed.length} 条` : `删除口头禅/重复句 ${semanticCut.removed.length} 条`) : operation === 'music' ? '配乐（对白闪避）' : operation === 'effects' ? '应用专业画面效果' : operation === 'subtitle' ? '烧录硬字幕' : operation === 'mux' ? '封装软字幕' : operation === 'translate' ? '翻译字幕' : operation === 'cue-edit' ? '字幕校对' : operation === 'shift' ? '字幕时间调移' : operation === 'concat' ? (sourceCount > 0 ? `按顺序合并 ${sourceCount} 个素材` : `按顺序拼接 ${segments.length} 个片段`) : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
       kind: 'media', label: actionLabel, phase: 'running',
       status: smartReframe ? `正在按5张冻结关键帧跟踪“${smartReframe.subject.description}”，依次生成16:9、9:16和1:1…` : visualEffects ? `正在渲染 ${visualEffects.map((item) => item.type).join('、')} 并做尺寸/时长/像素变化核验…` : autoInspection ? `正在按确认方案批量处理 ${autoInspection.safeRemovals.length} 个安全区间，并保留审阅项…` : semanticSelect ? `正在按字幕引用保留主题“${semanticSelect.topic}”并核验成片…` : semanticLocate ? `正在按${semanticLocate.wordTimingEvidence ? 'Whisper DTW逐词' : '字幕'}定位从第 ${semanticLocate.cueIndex} 条原话开始剪辑并核验成片…` : semanticCut ? (semanticCut.target === 'long-pauses' ? `正在按真实音轨证据删除 ${semanticCut.removed.length} 处长停顿并核验成片…` : semanticCut.target === 'near-duplicate-and-offtopic' ? `正在按你确认的模型引用证据删除 ${semanticCut.removed.length} 条语义重复或跑题内容并核验成片…` : `正在按真实字幕证据删除 ${semanticCut.removed.length} 条口头禅或重复句并核验成片…`) : operation === 'music' ? '正在按音乐选段与循环策略混音，并做两遍响度归一和编码后复测…' : operation === 'subtitle' ? '正在把字幕逐条烧录进画面并核验成品时长与音轨…' : operation === 'mux' ? '正在把字幕封装成可开关的软字幕轨（不重编码）并核验…' : operation === 'translate' ? '正在逐句翻译字幕并核对译文与条目数…' : operation === 'cue-edit' ? '正在按条目校订字幕并逐条复核…' : operation === 'shift' ? '正在按秒数平移整条字幕时间轴并逐条复核…' : operation === 'concat' ? (sourceCount > 0 ? '正在统一分辨率与音轨、按顺序拼接多个素材并核验成品…' : '正在按口述顺序重排片段、拼接连续音画并核验成品…') : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成片…' : '正在按原画面比例精确剪辑，并核验成片…', instruction: executionInstruction, source: sourcePath,
       retry: { kind: 'trim', instruction: executionInstruction, sourcePath }
     })
+    if (visualRepair) setTaskStatus('正在执行防抖/旋转/曝光偏色修复，并生成原版与修复版并排对比…')
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     pendingTaskRef.current = 'trim'
     bindCancelableRequest(requestId)

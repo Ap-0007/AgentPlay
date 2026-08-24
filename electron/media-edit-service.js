@@ -3,6 +3,7 @@ const path = require('path')
 
 const { buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, parseSrt, translateEntries } = require('./subtitle-bilingual-service')
 const { burnForceStyle } = require('./media-edit-decision')
+const { parseSignalStatsLog, shakeScoreFromTransforms } = require('./visual-repair-service')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'])
@@ -1603,6 +1604,100 @@ class MediaEditService {
       this.assertSourceUnchanged(sourceBefore, source)
       return { success: true, outputPath: outputs[0], outputs, versions, durationSeconds: duration, trackingReceipt: { strategy: decision.reframe.strategy, subject: decision.reframe.subject, frameCount: decision.reframe.tracking.frames.length, minimumConfidence: decision.reframe.tracking.minimumConfidence, minimumSubjectCoverage, model: decision.reframe.model }, summary: `已围绕“${decision.reframe.subject.description}”生成16:9、9:16和1:1三个跟踪构图版本；原文件未改动` }
     } catch (error) { this.assertSourceUnchanged(sourceBefore, source); throw error }
+  }
+
+  async visualRepair({ sourcePath, outputPaths, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || '')); const outputs = (Array.isArray(outputPaths) ? outputPaths : []).map((item) => path.resolve(String(item || '')))
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.visual-repair' || outputs.length !== 2 || path.resolve(String(decision.source?.path || '')) !== source || outputs.includes(source)) throw new Error('画面修复决策或成果位置无效')
+    if (!this.fs.existsSync(source) || !this.frames.availability().available) throw new Error('源视频或ffmpeg不可用')
+    const sourceBefore = this.fs.statSync(source); const duration = await this.frames.probeDuration(source, { signal }); const sourceDimensions = await this.frames.probeDimensions(source, { signal }); const hasAudio = await this.frames.probeHasAudio(source, { signal })
+    if (Math.abs(duration - Number(decision.repair.durationSeconds)) > 0.1 || Number(sourceDimensions?.width) !== Number(decision.repair.sourceDimensions?.width) || Number(sourceDimensions?.height) !== Number(decision.repair.sourceDimensions?.height)) throw new Error('源视频与冻结画面修复决策不一致')
+    const [repairedPath, comparisonPath] = outputs; const parsed = path.parse(repairedPath); const tempRepaired = path.join(parsed.dir, `.${parsed.name}.agentplay-repair-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    const transformPath = path.join(parsed.dir, `.${parsed.name}.agentplay-vidstab-${process.pid}-${Date.now()}.trf`)
+    let initialTransformText = ''
+    try {
+      if (!this.fs.existsSync(repairedPath)) {
+        const filters = []
+        if (decision.repair.stabilize) {
+          initialTransformText = await this.detectShakeTransforms(source, transformPath, signal)
+          filters.push(`vidstabtransform=input='${this.escapeFilterPath(transformPath)}':smoothing=12:optzoom=1:zoom=0`)
+        }
+        if (decision.repair.rotationDegrees === 90) filters.push('transpose=clock')
+        else if (decision.repair.rotationDegrees === -90) filters.push('transpose=cclock')
+        else if (Math.abs(decision.repair.rotationDegrees) === 180) filters.push('hflip', 'vflip')
+        if (decision.repair.autoColor && decision.repair.correction) {
+          const correction = decision.repair.correction
+          filters.push(`eq=brightness=${Number(correction.brightness).toFixed(3)}:contrast=${Number(correction.contrast).toFixed(3)}:saturation=${Number(correction.saturation).toFixed(3)}`)
+          if (Number(correction.redShift) || Number(correction.blueShift)) filters.push(`colorbalance=rs=${Number(correction.redShift).toFixed(3)}:bs=${Number(correction.blueShift).toFixed(3)}`)
+        }
+        await this.frames.run(['-hide_banner', '-nostdin', '-i', source, ...(filters.length ? ['-vf', filters.join(',')] : []), '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0'] : ['-an']), '-map_metadata', '0', '-map_chapters', '-1', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', ...(hasAudio ? ['-c:a', 'aac', '-b:a', '160k'] : []), '-movflags', '+faststart', '-y', tempRepaired], { timeoutMs: 60 * 60 * 1000, signal })
+        await this.verifyVisualRepairOutput({ output: tempRepaired, expectedDuration: duration, expectedDimensions: decision.repair.expectedDimensions, tolerance: Number(decision.verification?.toleranceSeconds) || 0.35, signal })
+        this.assertSourceUnchanged(sourceBefore, source); this.fs.renameSync(tempRepaired, repairedPath)
+      }
+      const repaired = await this.verifyVisualRepairOutput({ output: repairedPath, expectedDuration: duration, expectedDimensions: decision.repair.expectedDimensions, tolerance: Number(decision.verification?.toleranceSeconds) || 0.35, signal })
+      if (!this.fs.existsSync(comparisonPath)) await this.buildVisualComparison({ source, repaired: repairedPath, output: comparisonPath, duration, sourceDimensions, repairedDimensions: repaired.dimensions, hasAudio, signal })
+      const comparisonDimensions = await this.frames.probeDimensions(comparisonPath, { signal }); const comparisonDuration = await this.frames.probeDuration(comparisonPath, { signal })
+      if (!(comparisonDuration > 0) || Math.abs(comparisonDuration - duration) > 0.35 || !(Number(comparisonDimensions?.width) > 0) || !(Number(comparisonDimensions?.height) > 0)) throw new Error('前后对比视频校验失败')
+      const stabilization = decision.repair.stabilize ? await this.stabilizationProof({ source, repaired: repairedPath, initialTransformText, tempDir: parsed.dir, signal }) : { requested: false, verdict: 'not-requested' }
+      const color = decision.repair.autoColor ? await this.colorRepairProof({ source, repaired: repairedPath, duration, signal }) : { requested: false, verdict: 'not-requested' }
+      if (stabilization.verdict === 'failed') throw new Error('防抖后实测运动幅度没有改善，已拒绝交付')
+      if (color.verdict === 'failed') throw new Error('曝光/偏色修复后统计没有改善，已拒绝交付')
+      this.assertSourceUnchanged(sourceBefore, source)
+      return { success: true, outputPath: repairedPath, outputs, durationSeconds: repaired.durationSeconds, repairReceipt: { strategy: decision.repair.strategy, stabilization, rotation: { degrees: decision.repair.rotationDegrees, dimensions: repaired.dimensions, matched: true }, color, lowQualityFindings: decision.repair.lowQualityFindings, comparison: { path: comparisonPath, dimensions: { width: Number(comparisonDimensions.width), height: Number(comparisonDimensions.height) }, durationSeconds: comparisonDuration }, sourceUnchanged: true }, summary: `已生成画面修复版和处理前后对比版；${decision.repair.lowQualityFindings.length}个低质量片段仅提示未自动删除，原文件未改动` }
+    } catch (error) {
+      if (this.fs.existsSync(tempRepaired)) this.fs.rmSync(tempRepaired, { force: true })
+      for (const output of outputs) if (this.fs.existsSync(output)) this.fs.rmSync(output, { force: true })
+      this.assertSourceUnchanged(sourceBefore, source)
+      throw error
+    } finally { if (this.fs.existsSync(transformPath)) this.fs.rmSync(transformPath, { force: true }) }
+  }
+
+  escapeFilterPath(filePath) { return String(filePath || '').replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''") }
+
+  async detectShakeTransforms(source, transformPath, signal) {
+    if (this.fs.existsSync(transformPath)) this.fs.rmSync(transformPath, { force: true })
+    await this.frames.run(['-hide_banner', '-nostdin', '-i', source, '-vf', `vidstabdetect=shakiness=8:accuracy=9:fileformat=ascii:result='${this.escapeFilterPath(transformPath)}'`, '-an', '-f', 'null', '-'], { timeoutMs: 60 * 60 * 1000, signal })
+    if (!this.fs.existsSync(transformPath)) throw new Error('防抖第一遍没有生成运动变换文件')
+    return this.fs.readFileSync(transformPath, 'utf8')
+  }
+
+  async stabilizationProof({ source, repaired, initialTransformText, tempDir, signal } = {}) {
+    const beforePath = path.join(tempDir, `.agentplay-shake-before-${process.pid}-${Date.now()}.trf`); const afterPath = path.join(tempDir, `.agentplay-shake-after-${process.pid}-${Date.now()}.trf`)
+    try {
+      const beforeText = initialTransformText || await this.detectShakeTransforms(source, beforePath, signal); const afterText = await this.detectShakeTransforms(repaired, afterPath, signal)
+      const before = shakeScoreFromTransforms(beforeText); const after = shakeScoreFromTransforms(afterText)
+      const verdict = before.frameCount < 2 || before.averageMagnitude < 2 ? 'not-needed' : after.averageMagnitude <= before.averageMagnitude * 0.9 ? 'improved' : 'failed'
+      return { requested: true, method: 'vidstab-ascii-median-motion-v1', before, after, improvementRatio: before.averageMagnitude > 0 ? Number((1 - after.averageMagnitude / before.averageMagnitude).toFixed(3)) : 0, verdict }
+    } finally { for (const item of [beforePath, afterPath]) if (this.fs.existsSync(item)) this.fs.rmSync(item, { force: true }) }
+  }
+
+  async measureSignalStats(source, duration, signal) {
+    const fps = Math.max(0.2, Math.min(2, 60 / Number(duration)))
+    const result = await this.frames.run(['-hide_banner', '-nostats', '-i', source, '-vf', `fps=${fps.toFixed(4)},signalstats,metadata=print:key=lavfi.signalstats.YAVG,metadata=print:key=lavfi.signalstats.UAVG,metadata=print:key=lavfi.signalstats.VAVG,metadata=print:key=lavfi.signalstats.SATAVG`, '-an', '-f', 'null', '-'], { timeoutMs: Math.max(120000, Math.min(10 * 60 * 1000, Number(duration) * 800)), signal })
+    return parseSignalStatsLog(result.stderr)
+  }
+
+  async colorRepairProof({ source, repaired, duration, signal } = {}) {
+    const [before, after] = await Promise.all([this.measureSignalStats(source, duration, signal), this.measureSignalStats(repaired, duration, signal)])
+    const distance = (stats) => Math.abs(Number(stats.yAvg) - 118) + 0.35 * (Math.abs(Number(stats.uAvg) - 128) + Math.abs(Number(stats.vAvg) - 128))
+    const beforeDistance = distance(before); const afterDistance = distance(after)
+    return { requested: true, method: 'signalstats-neutral-distance-v1', before, after, beforeDistance: Number(beforeDistance.toFixed(3)), afterDistance: Number(afterDistance.toFixed(3)), verdict: afterDistance <= beforeDistance * 0.95 ? 'improved' : 'failed' }
+  }
+
+  async buildVisualComparison({ source, repaired, output, duration, sourceDimensions, repairedDimensions, hasAudio, signal } = {}) {
+    const canvasWidth = Math.max(Number(sourceDimensions.width), Number(repairedDimensions.width)); const canvasHeight = Math.max(Number(sourceDimensions.height), Number(repairedDimensions.height)); const parsed = path.parse(output); const temp = path.join(parsed.dir, `.${parsed.name}.agentplay-comparison-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    const filter = `[0:v]scale=${canvasWidth}:${canvasHeight}:force_original_aspect_ratio=decrease,pad=${canvasWidth}:${canvasHeight}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[before];[1:v]scale=${canvasWidth}:${canvasHeight}:force_original_aspect_ratio=decrease,pad=${canvasWidth}:${canvasHeight}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[after];[before][after]hstack=inputs=2[vout]`
+    try {
+      await this.frames.run(['-hide_banner', '-nostdin', '-i', source, '-i', repaired, '-filter_complex', filter, '-map', '[vout]', ...(hasAudio ? ['-map', '1:a:0'] : ['-an']), '-t', Number(duration).toFixed(3), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', ...(hasAudio ? ['-c:a', 'aac', '-b:a', '160k'] : []), '-movflags', '+faststart', '-y', temp], { timeoutMs: 60 * 60 * 1000, signal })
+      this.fs.renameSync(temp, output)
+    } catch (error) { if (this.fs.existsSync(temp)) this.fs.rmSync(temp, { force: true }); throw error }
+  }
+
+  async verifyVisualRepairOutput({ output, expectedDuration, expectedDimensions, tolerance, signal } = {}) {
+    if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 1024) throw new Error('画面修复成果不存在或不完整')
+    const durationSeconds = await this.frames.probeDuration(output, { signal }); const dimensions = await this.frames.probeDimensions(output, { signal })
+    if (Math.abs(durationSeconds - expectedDuration) > tolerance || Number(dimensions?.width) !== Number(expectedDimensions?.width) || Number(dimensions?.height) !== Number(expectedDimensions?.height)) throw new Error('画面修复成果时长或尺寸不一致')
+    return { durationSeconds, dimensions: { width: Number(dimensions.width), height: Number(dimensions.height) } }
   }
 
   smartReframeCropExpressions(frames, sourceDimensions, outputSpec) {

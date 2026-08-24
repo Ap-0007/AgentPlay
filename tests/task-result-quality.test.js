@@ -127,6 +127,21 @@ test('smart reframe quality requires three exact aspect outputs, frozen tracking
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('visual repair quality requires measurable stabilization/color improvement and a comparison artifact', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-visual-repair-'))
+  try {
+    const outputs = ['repaired.mp4', 'comparison.mp4'].map((name) => path.join(dir, name))
+    outputs.forEach((output) => fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)])))
+    const finding = { type: 'blur', startSeconds: 2, endSeconds: 3, reason: '仅提示', action: 'review-only' }
+    const spec = { decision: { repair: { durationSeconds: 5, stabilize: true, rotationDegrees: 90, expectedDimensions: { width: 240, height: 360 }, autoColor: true, lowQualityFindings: [finding] }, verification: { toleranceSeconds: 0.35 } } }
+    const base = { success: true, outputs, durationSeconds: 5, repairReceipt: { stabilization: { requested: true, verdict: 'improved', before: { frameCount: 20, averageMagnitude: 10 }, after: { frameCount: 20, averageMagnitude: 3 } }, rotation: { degrees: 90, dimensions: { width: 240, height: 360 }, matched: true }, color: { requested: true, verdict: 'improved', beforeDistance: 70, afterDistance: 20 }, lowQualityFindings: [finding], comparison: { path: outputs[1], dimensions: { width: 720, height: 360 } } }, projectCapsule: { schemaVersion: 1, projectId: 'edit-1', currentPath: outputs[0], canUndo: true } }
+    assert.equal(evaluateTaskResult('media.visual-repair', base, spec).passed, true)
+    const failed = evaluateTaskResult('media.visual-repair', { ...base, repairReceipt: { ...base.repairReceipt, stabilization: { ...base.repairReceipt.stabilization, verdict: 'failed' } } }, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'STABILIZATION_NOT_IMPROVED'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('music edit quality requires decoded audio proof instead of trusting an audio stream flag', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-music-'))
   try {

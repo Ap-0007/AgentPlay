@@ -59,9 +59,9 @@ test('0.9.0 reports strict closure separately from implementation coverage again
 
 test('0.9.1 records completed semantic editing and the first two professional visual slices without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*28%（7\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 7)
-  assert.equal(checkboxCount(content, false), 18)
+  assert.match(content, /功能交付完成率：\*\*32%（8\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 8)
+  assert.equal(checkboxCount(content, false), 17)
   assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
@@ -131,7 +131,7 @@ test('0.9.1 records completed semantic editing and the first two professional vi
   assert.match(content, /minimumExportQuality100/)
   assert.match(content, /855 tests、854 pass、0 fail、1项外部Archive网络条件skip/)
   assert.match(content, /A组5\/5闭环，0\.9\.1更新为5\/25=20%/)
-  assert.match(content, /#### B\. 专业画面编辑（2\/5）/)
+  assert.match(content, /#### B\. 专业画面编辑（3\/5）/)
   assert.match(content, /第十四个纵向切片（B1闭环并正式勾选）/)
   assert.match(content, /安装态一句话同时执行8类效果/)
   assert.match(content, /865 tests、865 pass、0 fail、0 skip/)
@@ -141,6 +141,11 @@ test('0.9.1 records completed semantic editing and the first two professional vi
   assert.match(content, /红\/蓝目标像素质心分别为x=50\/101与x=50\/101/)
   assert.match(content, /873 tests、871 pass、0 fail、2项Archive外部网络条件skip/)
   assert.match(content, /B组更新为2\/5，0\.9\.1更新为7\/25=28%/)
+  assert.match(content, /第十六个纵向切片（B3闭环并正式勾选）/)
+  assert.match(content, /media\.visual-repair/)
+  assert.match(content, /运动幅度11\.561→6\.466/)
+  assert.match(content, /881 tests、878 pass、0 fail、3项外部网络条件skip/)
+  assert.match(content, /B组更新为3\/5，0\.9\.1更新为8\/25=32%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

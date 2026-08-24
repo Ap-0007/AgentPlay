@@ -173,7 +173,7 @@ interface EditDecisionListV1 {
 
 interface MediaEditDecisionV1 {
   schemaVersion: 1
-  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.visual-effects' | 'media.smart-reframe' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'
+  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.visual-effects' | 'media.smart-reframe' | 'media.visual-repair' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'
   instruction: string
   edl: EditDecisionListV1
   source?: { path: string; name: string }
@@ -198,6 +198,20 @@ interface MediaEditDecisionV1 {
     outputs: Array<{ aspect: '16:9' | '9:16' | '1:1'; suffix: string; width: number; height: number }>
     model: { providerId: string; providerName: string; model: string; local: boolean }
     correctionOf?: { subject: string; model: { providerId: string; providerName: string; model: string; local: boolean } | null }
+  }
+  repair?: {
+    strategy: 'ffmpeg-visual-repair-v1'
+    confirmationRequired: true
+    sourceDimensions: { width: number; height: number }
+    expectedDimensions: { width: number; height: number }
+    durationSeconds: number
+    stabilize: boolean
+    rotationDegrees: number
+    autoColor: boolean
+    correction: { brightness: number; contrast: number; saturation: number; redShift: number; blueShift: number } | null
+    signalStats: { sampleCount: number; yAvg: number; uAvg: number; vAvg: number; satAvg: number } | null
+    lowQualityFindings: Array<{ type: 'black' | 'blur' | 'duplicate'; startSeconds: number; endSeconds: number; reason: string; action: 'review-only' }>
+    comparison: { enabled: true; layout: 'side-by-side'; originalLabel: string; repairedLabel: string }
   }
   subtitle?: { path: string; name: string }
   shift?: { direction: 'earlier' | 'later'; offsetSeconds: number }

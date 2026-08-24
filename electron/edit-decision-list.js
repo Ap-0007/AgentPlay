@@ -208,6 +208,18 @@ function buildEditDecisionList(decision) {
       output, quality: { ...quality, expectedAspects: reframe.outputs.map((item) => item.aspect), subject: reframe.subject?.description || '', trackingStrategy: reframe.strategy }
     }
   }
+  if (decision.kind === 'media.visual-repair') {
+    const video = material('material-video-1', 'video', decision.source)
+    const repair = decision.repair
+    if (!repair || repair.strategy !== 'ffmpeg-visual-repair-v1' || !repair.comparison?.enabled) throw new Error('EDL 画面修复合同无效')
+    return {
+      schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
+      materials: [video],
+      tracks: [{ id: 'track-video-1', type: 'video', materialId: video.id }, { id: 'track-audio-1', type: 'audio', materialId: video.id, optional: true }],
+      operations: [{ id: 'operation-1', type: 'visual-repair', materialId: video.id, trackIds: ['track-video-1', 'track-audio-1'], parameters: JSON.parse(JSON.stringify(repair)) }],
+      output, quality: { ...quality, repair: JSON.parse(JSON.stringify(repair)), expectedOutputs: ['repaired', 'comparison'] }
+    }
+  }
   const subtitleOperations = {
     'media.mux-subtitles': ['mux-subtitles', {}],
     'media.shift-subtitles': ['shift-subtitles', decision.shift],

@@ -89,6 +89,7 @@ const { assertLongVideoVersionPlan, freezeLongVideoVersionPlan, planLongVideoVer
 const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require('./visual-effect-decision')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
+const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
 
 process.on('uncaughtException', (error) => log.error('主进程未捕获异常', error))
@@ -684,6 +685,7 @@ const videoFrames = new VideoFrameService({
 const mediaEditService = new MediaEditService({ frames: videoFrames })
 const smartReframePlanner = new SmartReframePlanner({ frames: videoFrames })
 const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
+const visualRepairPlanner = new VisualRepairPlanner({ frames: videoFrames, inspectMedia: (input) => mediaAutoInspection.inspect(input) })
 const semanticEditService = new SemanticEditService({
   frames: videoFrames,
   loadTranscript: (sourcePath) => {
@@ -1221,12 +1223,12 @@ app.whenReady().then(async () => {
       const actualOutput = actualValue ? path.resolve(actualValue) : ''
       if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
       action = '清理不合格的任务自产物并重新压缩'
-    } else if (type === 'media.smart-reframe') {
+    } else if (type === 'media.smart-reframe' || type === 'media.visual-repair') {
       for (const outputValue of task.spec?.plannedOutputs || []) {
         const outputPath = path.resolve(String(outputValue || ''))
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).isFile()) fs.rmSync(outputPath, { force: true })
       }
-      action = '清理不合格的三比例构图成果并从冻结主体轨迹重新执行'
+      action = type === 'media.smart-reframe' ? '清理不合格的三比例构图成果并从冻结主体轨迹重新执行' : '清理不合格的修复/对比成果并从冻结画面修复决策重新执行'
     } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
@@ -2412,6 +2414,25 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.visual-repair', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.visual-repair') throw new Error('冻结的画面修复决策无效')
+    assertEditDecisionList(decision)
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('画面修复决策与源视频不一致')
+    const labels = ['画面修复版', '修复前后对比']
+    const outputPaths = (task.spec.plannedOutputs || []).map((item, index) => validatePlannedMediaOutput(item, sourcePath, labels[index], '.mp4', task.id, index))
+    if (outputPaths.length !== 2) throw new Error('画面修复必须冻结修复版和前后对比版')
+    status(`正在执行${decision.repair.stabilize ? '防抖、' : ''}${decision.repair.rotationDegrees ? `旋转${decision.repair.rotationDegrees}度、` : ''}${decision.repair.autoColor ? '曝光/偏色校正、' : ''}并生成前后对比`)
+    const result = await mediaEditService.visualRepair({ sourcePath, outputPaths, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath: outputPaths[0], relatedOutputPaths: outputPaths.slice(1), decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    outputPaths.forEach((item) => userAuthorizedPaths.add(path.resolve(item)))
+    return completed
+  }, { autoResume: true })
+
   const buildVersionEditDecision = ({ sourcePath, plan, entry }) => {
     const rawSegments = entry.segments || [{ sourceStartSeconds: entry.sourceStartSeconds, sourceEndSeconds: entry.sourceEndSeconds, durationSeconds: entry.durationSeconds }]
     const segments = rawSegments.map((item) => ({ sourceStartSeconds: Number(item.sourceStartSeconds), sourceEndSeconds: Number(item.sourceEndSeconds), durationSeconds: Number(item.sourceEndSeconds) - Number(item.sourceStartSeconds) }))
@@ -2710,6 +2731,10 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       let sourcePath = assertAllowedPath(input.sourcePath)
+      if (matchesVisualRepairInstruction(input.instruction)) {
+        const repair = await visualRepairPlanner.plan({ instruction: input.instruction, sourcePath })
+        return repair.decision ? { ...repair, decision: attachEditDecisionList(repair.decision) } : repair
+      }
       if (matchesSmartReframeInstruction(input.instruction)) {
         let previousDecision = null
         if (/改为|改成|换成|重新/.test(String(input.instruction || ''))) {
@@ -2814,6 +2839,8 @@ app.whenReady().then(async () => {
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-sources'
         ? 'media.edit-concat-sources'
+        : decision.kind === 'media.visual-repair'
+          ? 'media.visual-repair'
         : decision.kind === 'media.smart-reframe'
           ? 'media.smart-reframe'
         : decision.kind === 'media.visual-effects'
@@ -2879,7 +2906,11 @@ app.whenReady().then(async () => {
           decision,
           sources: snapshotMediaSources(allSourcePaths),
           outputPath: plannedMediaOutput(outputAnchor, decision.output.suffix, outputExtension, requestId),
-          ...(decision.kind === 'media.smart-reframe' ? { plannedOutputs: decision.reframe.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.mp4', requestId, index)) } : {}),
+          ...(decision.kind === 'media.smart-reframe'
+            ? { plannedOutputs: decision.reframe.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.mp4', requestId, index)) }
+            : decision.kind === 'media.visual-repair'
+              ? { plannedOutputs: [plannedMediaOutput(outputAnchor, '画面修复版', '.mp4', requestId, 0), plannedMediaOutput(outputAnchor, '修复前后对比', '.mp4', requestId, 1)] }
+              : {}),
           ...(engineChoice ? { engineChoice } : {}),
           ...(modelRoute ? { modelRoute } : {})
         }

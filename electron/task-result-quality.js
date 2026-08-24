@@ -10,6 +10,7 @@ const HARD_FAILURES = new Set([
   'FRAME_PROOF_MISSING', 'FRAME_PROOF_UNAVAILABLE', 'FRAME_PROOF_INCOMPLETE', 'FRAME_BOUNDARY_MISMATCH',
   'EFFECT_RECEIPT_MISMATCH', 'EFFECT_CHANGE_MISSING', 'DIMENSION_MISMATCH',
   'REFRAME_OUTPUT_MISMATCH', 'TRACKING_EVIDENCE_MISSING', 'SUBJECT_COVERAGE_LOW',
+  'VISUAL_REPAIR_PROOF_MISSING', 'STABILIZATION_NOT_IMPROVED', 'COLOR_REPAIR_NOT_IMPROVED', 'COMPARISON_MISSING',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
@@ -205,6 +206,28 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('bundle-completeness', '成果包完整性', bundleComplete ? 1 : 0, 10, reason('BUNDLE_INCOMPLETE', '成果包存在未完成格式，不能按完整交付处理', true))
     add('bundle-consistency', '成果包共用冻结事实底稿', bundleConsistent ? 1 : 0, 10, reason('BUNDLE_INCONSISTENT', '成果包没有通过共享事实底稿一致性校验', true))
     add('project-capsule', '项目胶囊与当前版本', projectOk ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '成果没有进入统一项目胶囊或缺少当前版本', true))
+  } else if (taskType === 'media.visual-repair') {
+    const receipt = result.repairReceipt
+    const expectedDuration = Number(spec.decision?.repair?.durationSeconds); const tolerance = Math.max(0.1, Number(spec.decision?.verification?.toleranceSeconds) || 0.35)
+    const durationOk = expectedDuration > 0 && Number(result.durationSeconds) > 0 && Math.abs(Number(result.durationSeconds) - expectedDuration) <= tolerance
+    const stabilizationOk = spec.decision?.repair?.stabilize ? ['improved', 'not-needed'].includes(receipt?.stabilization?.verdict) && Number(receipt?.stabilization?.before?.frameCount) >= 0 : receipt?.stabilization?.requested === false
+    const rotationOk = receipt?.rotation?.matched === true && Number(receipt.rotation.degrees) === Number(spec.decision?.repair?.rotationDegrees) && Number(receipt.rotation.dimensions?.width) === Number(spec.decision?.repair?.expectedDimensions?.width) && Number(receipt.rotation.dimensions?.height) === Number(spec.decision?.repair?.expectedDimensions?.height)
+    const colorOk = spec.decision?.repair?.autoColor ? receipt?.color?.verdict === 'improved' && Number(receipt?.color?.afterDistance) < Number(receipt?.color?.beforeDistance) : receipt?.color?.requested === false
+    const comparisonOk = outputs.length === 2 && path.resolve(String(receipt?.comparison?.path || '')) === path.resolve(outputs[1]) && Number(receipt?.comparison?.dimensions?.width) > 0 && Number(receipt?.comparison?.dimensions?.height) > 0
+    const findings = Array.isArray(receipt?.lowQualityFindings) ? receipt.lowQualityFindings : []
+    const reviewOnlyOk = JSON.stringify(findings) === JSON.stringify(spec.decision?.repair?.lowQualityFindings || []) && findings.every((item) => item.action === 'review-only')
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && path.resolve(String(projectCapsule.currentPath || '')) === path.resolve(outputs[0] || '')
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '画面修复任务返回失败状态', false))
+    add('artifacts', '修复版与对比版', outputs.length === 2 ? artifactRatio : 0, 15, artifactFailure || reason('COMPARISON_MISSING', '缺少修复版或前后对比版', true))
+    add('formats', '视频文件结构', outputs.length === 2 ? formatRatio : 0, 10, formatFailure || reason('INVALID_FORMAT', '画面修复成果格式无效', true))
+    add('duration', '时长保持', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', '画面修复成果时长与原片不一致', true))
+    add('stabilization', '防抖运动证明', stabilizationOk ? 1 : 0, 15, reason(stabilizationOk ? 'VISUAL_REPAIR_PROOF_MISSING' : 'STABILIZATION_NOT_IMPROVED', '防抖后运动幅度没有可验证改善', true))
+    add('rotation', '旋转与尺寸', rotationOk ? 1 : 0, 10, reason('DIMENSION_MISMATCH', '旋转角度或成果尺寸与冻结决策不一致', true))
+    add('color', '曝光与偏色改善', colorOk ? 1 : 0, 10, reason('COLOR_REPAIR_NOT_IMPROVED', '曝光/偏色统计没有改善', true))
+    add('comparison', '处理前后对比', comparisonOk ? 1 : 0, 10, reason('COMPARISON_MISSING', '前后对比视频缺失或无效', true))
+    add('review-only', '低质量片段仅提示', reviewOnlyOk ? 1 : 0, 5, reason('VISUAL_REPAIR_PROOF_MISSING', '低质量片段提示与冻结方案不一致', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '画面修复成果没有进入可撤销项目', true))
   } else if (taskType === 'media.smart-reframe') {
     const expected = spec.decision?.reframe?.outputs || []
     const versions = Array.isArray(result.versions) ? result.versions : []

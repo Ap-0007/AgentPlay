@@ -27,6 +27,7 @@ function editVersionKind(decision) {
   if (decision?.kind === 'media.edit-subtitle-cues') return 'edit-subtitle-cues'
   if (decision?.kind === 'media.shift-subtitles') return 'shift-subtitles'
   if (decision?.kind === 'media.smart-reframe') return 'smart-reframe'
+  if (decision?.kind === 'media.visual-repair') return 'visual-repair'
   return 'trim'
 }
 
