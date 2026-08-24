@@ -279,6 +279,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     let segments = override?.segments || []
     let sourceCount = 0
     let semanticCut: MediaEditDecisionV1['semanticCut'] | undefined = override?.decision?.semanticCut
+    let semanticLocate: MediaEditDecisionV1['semanticLocate'] | undefined = override?.decision?.semanticLocate
     let frozenDecision: MediaEditDecisionV1 | undefined = override?.decision
     let executionInstruction = text
     if (!override) {
@@ -320,6 +321,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         pendingEditClarificationRef.current = null
         frozenDecision = decision
         semanticCut = decision.semanticCut
+        semanticLocate = decision.semanticLocate
         if (semanticCut?.confirmationRequired) {
           pendingSemanticReviewRef.current = { sourcePath, decision }
           pendingEditClarificationRef.current = null
@@ -353,10 +355,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       addMessage('user', text)
       setInputText('')
     }
-    const actionLabel = semanticCut ? (semanticCut.target === 'long-pauses' ? `删除长停顿 ${semanticCut.removed.length} 处` : semanticCut.target === 'near-duplicate-and-offtopic' ? `删除语义重复/跑题 ${semanticCut.removed.length} 条` : `删除口头禅/重复句 ${semanticCut.removed.length} 条`) : operation === 'music' ? '配乐（对白闪避）' : operation === 'subtitle' ? '烧录硬字幕' : operation === 'mux' ? '封装软字幕' : operation === 'translate' ? '翻译字幕' : operation === 'cue-edit' ? '字幕校对' : operation === 'shift' ? '字幕时间调移' : operation === 'concat' ? (sourceCount > 0 ? `按顺序合并 ${sourceCount} 个素材` : `按顺序拼接 ${segments.length} 个片段`) : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
+    const actionLabel = semanticLocate ? `从原话“${semanticLocate.query}”开始` : semanticCut ? (semanticCut.target === 'long-pauses' ? `删除长停顿 ${semanticCut.removed.length} 处` : semanticCut.target === 'near-duplicate-and-offtopic' ? `删除语义重复/跑题 ${semanticCut.removed.length} 条` : `删除口头禅/重复句 ${semanticCut.removed.length} 条`) : operation === 'music' ? '配乐（对白闪避）' : operation === 'subtitle' ? '烧录硬字幕' : operation === 'mux' ? '封装软字幕' : operation === 'translate' ? '翻译字幕' : operation === 'cue-edit' ? '字幕校对' : operation === 'shift' ? '字幕时间调移' : operation === 'concat' ? (sourceCount > 0 ? `按顺序合并 ${sourceCount} 个素材` : `按顺序拼接 ${segments.length} 个片段`) : operation === 'remove' ? `删除 ${startSeconds}–${endSeconds} 秒` : `保留 ${startSeconds}–${endSeconds} 秒`
     executionTaskIdRef.current = startTask({
       kind: 'media', label: actionLabel, phase: 'running',
-      status: semanticCut ? (semanticCut.target === 'long-pauses' ? `正在按真实音轨证据删除 ${semanticCut.removed.length} 处长停顿并核验成片…` : semanticCut.target === 'near-duplicate-and-offtopic' ? `正在按你确认的模型引用证据删除 ${semanticCut.removed.length} 条语义重复或跑题内容并核验成片…` : `正在按真实字幕证据删除 ${semanticCut.removed.length} 条口头禅或重复句并核验成片…`) : operation === 'music' ? '正在按音乐选段与循环策略混音，并做两遍响度归一和编码后复测…' : operation === 'subtitle' ? '正在把字幕逐条烧录进画面并核验成品时长与音轨…' : operation === 'mux' ? '正在把字幕封装成可开关的软字幕轨（不重编码）并核验…' : operation === 'translate' ? '正在逐句翻译字幕并核对译文与条目数…' : operation === 'cue-edit' ? '正在按条目校订字幕并逐条复核…' : operation === 'shift' ? '正在按秒数平移整条字幕时间轴并逐条复核…' : operation === 'concat' ? (sourceCount > 0 ? '正在统一分辨率与音轨、按顺序拼接多个素材并核验成品…' : '正在按口述顺序重排片段、拼接连续音画并核验成品…') : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成品…' : '正在按原画面比例精确剪辑，并核验成品时长…', instruction: executionInstruction, source: sourcePath,
+      status: semanticLocate ? `正在按字幕定位从第 ${semanticLocate.cueIndex} 条原话开始剪辑并核验成片…` : semanticCut ? (semanticCut.target === 'long-pauses' ? `正在按真实音轨证据删除 ${semanticCut.removed.length} 处长停顿并核验成片…` : semanticCut.target === 'near-duplicate-and-offtopic' ? `正在按你确认的模型引用证据删除 ${semanticCut.removed.length} 条语义重复或跑题内容并核验成片…` : `正在按真实字幕证据删除 ${semanticCut.removed.length} 条口头禅或重复句并核验成片…`) : operation === 'music' ? '正在按音乐选段与循环策略混音，并做两遍响度归一和编码后复测…' : operation === 'subtitle' ? '正在把字幕逐条烧录进画面并核验成品时长与音轨…' : operation === 'mux' ? '正在把字幕封装成可开关的软字幕轨（不重编码）并核验…' : operation === 'translate' ? '正在逐句翻译字幕并核对译文与条目数…' : operation === 'cue-edit' ? '正在按条目校订字幕并逐条复核…' : operation === 'shift' ? '正在按秒数平移整条字幕时间轴并逐条复核…' : operation === 'concat' ? (sourceCount > 0 ? '正在统一分辨率与音轨、按顺序拼接多个素材并核验成品…' : '正在按口述顺序重排片段、拼接连续音画并核验成品…') : operation === 'remove' ? '正在删除片段、重建连续音画时间线并核验成片…' : '正在按原画面比例精确剪辑，并核验成片…', instruction: executionInstruction, source: sourcePath,
       retry: { kind: 'trim', instruction: executionInstruction, sourcePath }
     })
     const requestId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`

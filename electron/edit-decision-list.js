@@ -65,7 +65,7 @@ function buildEditDecisionList(decision) {
         targetRangeSeconds: { start: 0, end: duration }
       }],
       output,
-      quality
+      quality: { ...quality, ...(decision.semanticLocate ? { semanticLocate: JSON.parse(JSON.stringify(decision.semanticLocate)) } : {}) }
     }
   }
   if (decision.kind === 'media.remove-segment') {

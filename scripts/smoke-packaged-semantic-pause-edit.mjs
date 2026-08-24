@@ -105,7 +105,17 @@ try {
     if (!document.body.innerText.includes('字幕时间轴') || !document.body.innerText.includes('仅标记未删除')) throw new Error('对话没有显示字幕语义清理证据与未删边界')
     setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
     const cleanupUndo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 ? { duration: video.duration, src: video.currentSrc } : null }, '字幕语义清理撤销回原片', 30000)
-    return { task, preview, undo, cleanupTask, cleanupPreview, cleanupUndo, body: document.body.innerText }
+    const quoteInstruction = '从他说到“就是，先说一个完全不同的例子”开始'
+    const quotePlan = await window.aiPlayer.mediaTools.planEdit({ instruction: quoteInstruction, sourcePath: ${JSON.stringify(sourcePath)} })
+    if (!quotePlan.matched || quotePlan.decision?.kind !== 'media.trim' || quotePlan.decision?.semanticLocate?.strategy !== 'subtitle-exact-quote-v1' || quotePlan.decision.semanticLocate.cueIndex !== 6 || quotePlan.decision.edl?.quality?.semanticLocate?.cueIndex !== 6) throw new Error('安装态按原话定位方案或冻结EDL不合格')
+    setter.call(input, quoteInstruction); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: quoteInstruction })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    const quoteTask = await waitFor(async () => { const items = await window.aiPlayer.taskRuntime.list(); const found = [...items].reverse().find((item) => item.type === 'media.edit-trim' && item.spec?.decision?.semanticLocate?.strategy === 'subtitle-exact-quote-v1'); return found && ['completed','failed','cancelled'].includes(found.state) ? found : null }, '按原话定位剪辑任务完成', 180000)
+    if (quoteTask.state !== 'completed' || quoteTask.quality?.passed !== true || quoteTask.result?.semanticLocate?.cueIndex !== 6) throw new Error(quoteTask.error || '安装态按原话定位剪辑质量门失败')
+    const quotePreview = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - quoteTask.spec.decision.timeline.durationSeconds) <= 0.25 ? { duration: video.duration, src: video.currentSrc } : null }, '自动预览按原话剪辑成片', 30000)
+    if (!document.body.innerText.includes('已从字幕第 6 条原话') || !document.body.innerText.includes('原文件未改动')) throw new Error('对话没有显示按原话定位回执')
+    setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    const quoteUndo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 ? { duration: video.duration, src: video.currentSrc } : null }, '按原话剪辑撤销回原片', 30000)
+    return { task, preview, undo, cleanupTask, cleanupPreview, cleanupUndo, quoteTask, quotePreview, quoteUndo, body: document.body.innerText }
   })()`)
   const task = pageResult.task
   const outputPath = task.result.outputPath
@@ -115,11 +125,12 @@ try {
     decision: task.spec.decision,
     result: { outputPath, durationSeconds: probeDuration(outputPath), quality: task.quality, frameProof: task.result.frameProof },
     cleanup: { decision: pageResult.cleanupTask.spec.decision, outputPath: pageResult.cleanupTask.result.outputPath, durationSeconds: probeDuration(pageResult.cleanupTask.result.outputPath), quality: pageResult.cleanupTask.quality, frameProof: pageResult.cleanupTask.result.frameProof },
-    ui: { semanticReceiptVisible: pageResult.body.includes('真实音轨证据'), cleanupReceiptVisible: pageResult.body.includes('字幕时间轴'), confirmationVisible: pageResult.body.includes('先给你核对方案，尚未执行'), reviewOnlyVisible: pageResult.body.includes('仅标记未删除'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration, cleanupPreviewDuration: pageResult.cleanupPreview.duration, cleanupUndoDuration: pageResult.cleanupUndo.duration }
+    quote: { decision: pageResult.quoteTask.spec.decision, outputPath: pageResult.quoteTask.result.outputPath, durationSeconds: probeDuration(pageResult.quoteTask.result.outputPath), quality: pageResult.quoteTask.quality, frameProof: pageResult.quoteTask.result.frameProof },
+    ui: { semanticReceiptVisible: pageResult.body.includes('真实音轨证据'), cleanupReceiptVisible: pageResult.body.includes('字幕时间轴'), quoteReceiptVisible: pageResult.body.includes('已从字幕第 6 条原话'), confirmationVisible: pageResult.body.includes('先给你核对方案，尚未执行'), reviewOnlyVisible: pageResult.body.includes('仅标记未删除'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration, cleanupPreviewDuration: pageResult.cleanupPreview.duration, cleanupUndoDuration: pageResult.cleanupUndo.duration, quotePreviewDuration: pageResult.quotePreview.duration, quoteUndoDuration: pageResult.quoteUndo.duration }
   }
   if (!receipt.source.unchanged || !fs.existsSync(outputPath)) throw new Error('安装态成果或原件保护失败')
   fs.mkdirSync(path.dirname(receiptPath), { recursive: true }); fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ receiptPath, removed: receipt.decision.semanticCut.removed.length, quality: receipt.result.quality.score, frameProof: receipt.result.frameProof.verdict, outputDuration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, cleanupRemoved: receipt.cleanup.decision.semanticCut.removed.length, cleanupQuality: receipt.cleanup.quality.score, cleanupDuration: receipt.cleanup.durationSeconds, cleanupUndoDuration: receipt.ui.cleanupUndoDuration, sourceUnchanged: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ receiptPath, removed: receipt.decision.semanticCut.removed.length, quality: receipt.result.quality.score, frameProof: receipt.result.frameProof.verdict, outputDuration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, cleanupRemoved: receipt.cleanup.decision.semanticCut.removed.length, cleanupQuality: receipt.cleanup.quality.score, cleanupDuration: receipt.cleanup.durationSeconds, cleanupUndoDuration: receipt.ui.cleanupUndoDuration, quoteCueIndex: receipt.quote.decision.semanticLocate.cueIndex, quoteQuality: receipt.quote.quality.score, quoteDuration: receipt.quote.durationSeconds, quoteUndoDuration: receipt.ui.quoteUndoDuration, sourceUnchanged: true })}\n`)
   await Promise.race([command('Browser.close'), delay(1000)]).catch(() => {})
 } finally {
   if (!(await waitForExit(child))) { child.kill(); await waitForExit(child) }

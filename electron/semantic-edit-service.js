@@ -3,6 +3,8 @@ const path = require('path')
 const PAUSE_EDIT_PATTERN = /(?:删除|删掉|剪掉|去掉|移除|自动剪掉)[^，。；]{0,12}(?:长)?(?:停顿|静音)|(?:长)?(?:停顿|静音)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const TEXT_CLEANUP_PATTERN = /(?:删除|删掉|剪掉|去掉|移除)[^，。；]{0,12}(?:口头禅|废话|重复(?:的话|内容|句子)?)|(?:口头禅|废话|重复(?:的话|内容|句子)?)[^，。；]{0,12}(?:删除|删掉|剪掉|去掉|移除)/
 const SEMANTIC_REVIEW_PATTERN = /(?:跑题|偏题|离题)|(?:(?:意思|语义)[^，。；]{0,6}(?:重复|相似|差不多))|(?:(?:重复|相似)[^，。；]{0,6}(?:意思|语义))|(?:内容[^，。；]{0,6}(?:相似|雷同))|(?:(?:相似|雷同)[^，。；]{0,6}内容)/
+const EXACT_QUOTE_START_PATTERN = /(?:从|由)(?:他|她|视频里|字幕里)?(?:说到|讲到|提到)?\s*[“”"'‘’]?(.{2,80}?)[“”"'‘’]?\s*(?:这句话|那句话|的位置|的地方)?(?:开始|起)(?:保留|剪|截|播放)?/
+const CONSULTATION_PATTERN = /能不能|可不可以|可以吗|是否|怎么|如何/
 const FILLER_ONLY_PATTERN = /^(?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧)$/i
 const EMBEDDED_FILLER_PATTERN = /(?:^|[\s，,、。！？!?；;：:])((?:嗯+|呃+|额+|啊+|那个|这个|就是|然后|怎么说|你知道吧|对吧|是吧))(?=$|[\s，,、。！？!?；;：:])/gi
 const DEFAULT_MIN_SILENCE_SECONDS = 0.9
@@ -24,6 +26,18 @@ function matchesTextCleanupInstruction(instruction) {
 function matchesSemanticReviewInstruction(instruction) {
   const text = String(instruction || '')
   return SEMANTIC_REVIEW_PATTERN.test(text) && /删除|删掉|剪掉|去掉|移除|找出|检查|审阅|分析/.test(text)
+}
+
+function extractExactQuoteStart(instruction) {
+  const text = String(instruction || '').trim()
+  if (!text || CONSULTATION_PATTERN.test(text)) return ''
+  const quoted = /(?:从|由)(?:他|她|视频里|字幕里)?(?:说到|讲到|提到)?\s*[“"'‘]([^”"'’]{2,80})[”"'’]\s*(?:这句话|那句话|的位置|的地方)?(?:开始|起)/.exec(text)
+  const raw = quoted?.[1] || EXACT_QUOTE_START_PATTERN.exec(text)?.[1] || ''
+  return String(raw).trim().replace(/^[，。！？!?、；;：:\s]+|[，。！？!?、；;：:\s]+$/g, '')
+}
+
+function matchesExactQuoteStartInstruction(instruction) {
+  return extractExactQuoteStart(instruction).length >= 2
 }
 
 function normalizedCueText(text) {
@@ -181,6 +195,56 @@ function analyzeTextCleanupCues(cues, durationSeconds) {
   return { normalized, detected, reviewOnly }
 }
 
+function exactQuoteMatches(cues, durationSeconds, query) {
+  const normalizedQuery = normalizedCueText(query)
+  if (!normalizedQuery) return []
+  return analyzeTextCleanupCues(cues, durationSeconds).normalized.flatMap((cue) => {
+    const text = normalizedCueText(cue.text)
+    const offset = text.indexOf(normalizedQuery)
+    return offset < 0 ? [] : [{ ...cue, atStart: offset === 0 }]
+  })
+}
+
+function buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues } = {}) {
+  const duration = Number(durationSeconds)
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能按原话定位')
+  const query = extractExactQuoteStart(instruction)
+  if (!query) throw new Error('没有识别到要定位的完整原话')
+  const matches = exactQuoteMatches(cues, duration, query)
+  if (matches.length !== 1 || !matches[0].atStart) throw new Error('原话没有形成唯一且位于字幕条起点的安全定位')
+  const cue = matches[0]
+  const startSeconds = Number(cue.startSeconds.toFixed(3))
+  const endSeconds = Number(duration.toFixed(3))
+  return {
+    schemaVersion: 1,
+    kind: 'media.trim',
+    instruction: String(instruction || '').trim(),
+    source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
+    timeline: { startSeconds, endSeconds, durationSeconds: Number((endSeconds - startSeconds).toFixed(3)) },
+    semanticLocate: {
+      schemaVersion: 1, strategy: 'subtitle-exact-quote-v1', target: 'start-at-quote',
+      subtitlePath: String(subtitlePath || ''), query, cueIndex: cue.cueIndex,
+      cueStartSeconds: cue.startSeconds, cueEndSeconds: cue.endSeconds, text: cue.text
+    },
+    output: { container: 'mp4', overwrite: false, suffix: '从原话开始版' },
+    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: 'subtitle-exact-quote-v1', query, cueIndex: cue.cueIndex, cueStartSeconds: cue.startSeconds } }
+  }
+}
+
+function exactQuoteReview(query, matches) {
+  const candidates = matches.map((item) => ({
+    cueIndex: item.cueIndex, startSeconds: item.startSeconds, endSeconds: item.endSeconds, text: item.text,
+    reason: item.atStart ? '原话位于字幕条起点' : '原话位于字幕条中间', matches: [query]
+  }))
+  if (!matches.length) return { kind: 'semantic-quote-locate', summary: `字幕中没有找到原话“${query}”，没有创建剪辑任务。请换用字幕里的完整句子。`, candidates }
+  if (matches.length > 1) {
+    const locations = matches.map((item) => `第${item.cueIndex}条（${item.startSeconds.toFixed(2)}秒）“${item.text}”`).join('\n')
+    return { kind: 'semantic-quote-locate', summary: `找到${matches.length}处原话“${query}”：\n${locations}\n请补充前后文或明确字幕序号，AgentPlay 不会猜。`, candidates }
+  }
+  const item = matches[0]
+  return { kind: 'semantic-quote-locate', summary: `原话“${query}”位于第${item.cueIndex}条字幕中间；现有字幕只有整条起止时间，不会把字幕条起点冒充原话起点。请先生成逐词字幕，或改用该字幕开头的完整原话。`, candidates }
+}
+
 function textCleanupReviewSummary(reviewOnly) {
   const lines = reviewOnly.slice(0, 8).map((item) => `第${item.cueIndex}条（${item.startSeconds.toFixed(2)}–${item.endSeconds.toFixed(2)}秒）“${item.text}”：${item.reason}“${item.matches.join('、')}”`)
   return `已定位 ${reviewOnly.length} 条需要人工核对的字幕：\n${lines.join('\n')}\n这些字幕没有逐词时间戳，AgentPlay 不会删除整句；请先生成逐词字幕或给出明确时间段。`
@@ -294,11 +358,20 @@ class SemanticEditService {
   setSemanticAnalyzer(analyzeSemanticCues) { this.analyzeSemanticCues = analyzeSemanticCues }
   setVisualAnalyzer(analyzeVisualCandidates) { this.analyzeVisualCandidates = analyzeVisualCandidates }
 
-  matches(instruction) { return matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
+  matches(instruction) { return matchesExactQuoteStartInstruction(instruction) || matchesPauseEditInstruction(instruction) || matchesTextCleanupInstruction(instruction) || matchesSemanticReviewInstruction(instruction) }
 
   async plan({ instruction, sourcePath, signal } = {}) {
     if (!this.matches(instruction)) return { matched: false }
     if (!this.frames?.availability?.().available) throw new Error('缺少 ffmpeg 组件，无法分析音轨停顿')
+    if (matchesExactQuoteStartInstruction(instruction)) {
+      const transcript = await this.loadTranscript?.(sourcePath)
+      if (!transcript?.path || !Array.isArray(transcript.cues) || !transcript.cues.length) throw new Error('没有找到带时间轴的现成字幕，请先生成字幕后再按原话定位')
+      const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
+      const query = extractExactQuoteStart(instruction)
+      const matches = exactQuoteMatches(transcript.cues, durationSeconds, query)
+      if (matches.length !== 1 || !matches[0].atStart) return { matched: true, review: exactQuoteReview(query, matches) }
+      return { matched: true, decision: buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues }) }
+    }
     if (matchesSemanticReviewInstruction(instruction)) {
       const transcript = await this.loadTranscript?.(sourcePath)
       if (!transcript?.path || !Array.isArray(transcript.cues) || transcript.cues.length < 2) throw new Error('没有找到足够的带时间轴字幕，请先生成字幕后再检查语义重复或跑题')
@@ -353,7 +426,7 @@ class SemanticEditService {
 }
 
 module.exports = {
-  SemanticEditService, analyzeTextCleanupCues, buildPauseRemovalDecision, buildSemanticModelDecision, buildTextCleanupDecision, embeddedFillers,
-  matchesPauseEditInstruction, matchesSemanticReviewInstruction, matchesTextCleanupInstruction, normalizedCueText,
+  SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildSemanticModelDecision, buildTextCleanupDecision, embeddedFillers,
+  extractExactQuoteStart, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesSemanticReviewInstruction, matchesTextCleanupInstruction, normalizedCueText,
   parseSilenceEvents, requestedMinimumSilence, standaloneFiller
 }

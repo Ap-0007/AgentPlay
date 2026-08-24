@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { SemanticEditService, analyzeTextCleanupCues, buildPauseRemovalDecision, buildTextCleanupDecision, matchesPauseEditInstruction, matchesTextCleanupInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
+const { SemanticEditService, analyzeTextCleanupCues, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildTextCleanupDecision, extractExactQuoteStart, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesTextCleanupInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
 const { attachEditDecisionList, assertEditDecisionList } = require('../electron/edit-decision-list')
 
 test('semantic pause intent is narrow and the requested threshold is bounded', () => {
@@ -223,4 +223,35 @@ test('semantic review degrades to a non-executing explanation when no capable mo
   assert.equal(result.decision, undefined)
   assert.match(result.review.summary, /当前只有0\.5B轻量模型/)
   assert.match(result.review.summary, /没有创建剪辑任务/)
+})
+
+test('a unique quote at cue start freezes an exact trim decision and locator evidence', async () => {
+  assert.equal(extractExactQuoteStart('从他说到“模型权重则要等到下周”开始'), '模型权重则要等到下周')
+  assert.equal(matchesExactQuoteStartInstruction('能不能从“模型权重则要等到下周”开始？'), false)
+  const decision = buildExactQuoteStartDecision({
+    instruction: '从他说到“模型权重则要等到下周”开始', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 8,
+    cues: [{ start: 0, end: 2, text: '开场介绍' }, { start: 2, end: 4, text: '模型权重则要等到下周。今天先用API。' }, { start: 4, end: 8, text: '后续说明' }]
+  })
+  assert.equal(decision.kind, 'media.trim')
+  assert.deepEqual(decision.timeline, { startSeconds: 2, endSeconds: 8, durationSeconds: 6 })
+  assert.deepEqual(decision.semanticLocate, { schemaVersion: 1, strategy: 'subtitle-exact-quote-v1', target: 'start-at-quote', subtitlePath: 'D:\\video\\talk.srt', query: '模型权重则要等到下周', cueIndex: 2, cueStartSeconds: 2, cueEndSeconds: 4, text: '模型权重则要等到下周。今天先用API。' })
+  const frozen = attachEditDecisionList(decision)
+  assert.doesNotThrow(() => assertEditDecisionList(frozen))
+  frozen.semanticLocate.cueStartSeconds = 2.5
+  assert.throws(() => assertEditDecisionList(frozen), /EDL 与冻结决策不一致/)
+})
+
+test('multiple or mid-cue quote matches stay non-executing and list exact locations', async () => {
+  const frames = { availability: () => ({ available: true }), probeDuration: async () => 10 }
+  const multiple = new SemanticEditService({ frames, loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 2, text: '开场' }, { start: 2, end: 4, text: '模型权重下周开放' }, { start: 4, end: 6, text: '过渡' }, { start: 6, end: 8, text: '模型权重下周开放，重复说明' }, { start: 8, end: 10, text: '结尾' }] }) })
+  const result = await multiple.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /找到2处/)
+  assert.match(result.review.summary, /第2条.*2\.00秒/)
+  assert.match(result.review.summary, /第4条.*6\.00秒/)
+  const middle = new SemanticEditService({ frames, loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 3, text: '先说背景，然后模型权重下周开放' }, { start: 3, end: 10, text: '后续' }] }) })
+  const midResult = await middle.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(midResult.decision, undefined)
+  assert.match(midResult.review.summary, /位于第1条字幕中间/)
+  assert.match(midResult.review.summary, /不会把字幕条起点冒充原话起点/)
 })

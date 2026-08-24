@@ -2197,13 +2197,22 @@ app.whenReady().then(async () => {
     assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(`正在剪辑 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒`)
+    status(decision.semanticLocate
+      ? `正在按字幕定位从第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”开始剪辑`
+      : `正在剪辑 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision: task.spec.decision, signal })
       : await mediaEditService.trim({ sourcePath, outputPath, decision: task.spec.decision, signal })
     validateMediaSources(task.spec.sources)
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision: task.spec.decision, repairing: task.checkpoint?.stage === 'quality-repair' })
-    const completed = { ...result, projectCapsule }
+    const completed = {
+      ...result,
+      ...(decision.semanticLocate ? {
+        semanticLocate: decision.semanticLocate,
+        summary: `已从字幕第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”（${decision.semanticLocate.cueStartSeconds.toFixed(2)} 秒）开始保留；原文件未改动`
+      } : {}),
+      projectCapsule
+    }
     checkpoint({ stage: 'artifact-written', result: completed })
     userAuthorizedPaths.add(path.resolve(outputPath))
     return completed

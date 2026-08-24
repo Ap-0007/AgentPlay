@@ -184,6 +184,17 @@ interface MediaEditDecisionV1 {
   cueEdit?: { operation: 'delete'; startIndex: number; endIndex: number } | { operation: 'replace'; index: number; text: string }
   audio?: { path: string; volume: number; fadeInSeconds: number; fadeOutSeconds: number; duck: boolean; loop: boolean; selection?: { startSeconds: number; endSeconds: number; durationSeconds: number }; loudness?: { enabled: boolean; targetLufs: number; targetTruePeakDbtp: number; maxTruePeakDbtp: number; lra: number; toleranceLufs: number } }
   timeline?: ({ startSeconds: number; endSeconds: number; durationSeconds?: number; removedDurationSeconds?: number; segments?: never } | { segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; targetStartSeconds: number; targetEndSeconds: number }>; durationSeconds: number; startSeconds?: never; endSeconds?: never; removedDurationSeconds?: never })
+  semanticLocate?: {
+    schemaVersion: 1
+    strategy: 'subtitle-exact-quote-v1'
+    target: 'start-at-quote'
+    subtitlePath: string
+    query: string
+    cueIndex: number
+    cueStartSeconds: number
+    cueEndSeconds: number
+    text: string
+  }
   semanticCut?: {
     schemaVersion: 1
     strategy: 'audio-silencedetect-v1' | 'subtitle-cue-cleanup-v1' | 'model-semantic-review-v1'
@@ -717,7 +728,7 @@ interface AiPlayerAPI {
     planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; review?: { kind: string; summary: string; candidates: Array<{ cueIndex: number; startSeconds: number; endSeconds: number; text: string; reason: string; matches: string[] }> }; decision?: MediaEditDecisionV1; error?: string }>
     planHistory: (input: { instruction: string; currentPath: string }) => Promise<{ matched: boolean; action?: { action: 'undo' | 'redo'; instruction: string }; error?: string }>
     navigateHistory: (input: { instruction: string; currentPath: string }) => Promise<{ success: boolean; matched?: boolean; action?: 'undo' | 'redo'; currentPath?: string; projectId?: string; versionId?: string; cursor?: number; versionCount?: number; canUndo?: boolean; canRedo?: boolean; summary?: string; error?: string }>
-    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; semanticCut?: MediaEditDecisionV1['semanticCut']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
+    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
     cancel: (requestId: string) => Promise<boolean>
   }
