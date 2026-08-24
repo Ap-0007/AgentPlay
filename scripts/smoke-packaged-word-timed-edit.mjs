@@ -4,7 +4,11 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+
+const require = createRequire(import.meta.url)
+const { findPhraseWordTiming, parseWhisperWordJson } = require('../electron/word-timing-service')
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const executable = path.join(root, 'release', 'win-unpacked', 'AgentPlay.exe')
@@ -22,6 +26,7 @@ const ffprobePath = path.join(ffmpegRoot, 'bin', 'ffprobe.exe')
 const whisperCli = path.join(whisperRoot, 'engine', 'whisper-cli.exe')
 const speechText = '欢迎大家。就是，今天我们介绍产品。接下来介绍功能。谢谢大家。'
 const instruction = '删掉口头禅和重复的话'
+const phraseInstruction = '从他说到“今天我们介绍产品”开始'
 if (![executable, ffmpegPath, ffprobePath, whisperCli, path.join(whisperRoot, 'ggml-tiny.bin')].every(fs.existsSync)) throw new Error('缺少安装态逐词剪辑验收组件')
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -51,14 +56,18 @@ if (sourceBuild.status !== 0 || !fs.existsSync(sourcePath)) throw new Error(sour
 const expectedBase = path.join(mediaDir, 'expected-words')
 const wordRun = spawnSync(whisperCli, ['-m', 'ggml-tiny.bin', '-l', 'zh', '-f', wavPath, '-nt', '-np', '-sow', '-ojf', '-dtw', 'tiny', '-nfa', '-of', expectedBase], { cwd: whisperRoot, encoding: 'utf8', windowsHide: true, timeout: 120000 })
 if (wordRun.status !== 0 || !fs.existsSync(`${expectedBase}.json`)) throw new Error(wordRun.stderr || '独立逐词证据生成失败')
-const tokens = JSON.parse(fs.readFileSync(`${expectedBase}.json`, 'utf8')).transcription.flatMap((segment) => segment.tokens || []).filter((token) => Number(token.t_dtw) >= 0 && !/^\[?_.*_\]?$/.test(String(token.text || '').trim()))
+const wordPayload = JSON.parse(fs.readFileSync(`${expectedBase}.json`, 'utf8'))
+const tokens = wordPayload.transcription.flatMap((segment) => segment.tokens || []).filter((token) => Number(token.t_dtw) >= 0 && !/^\[?_.*_\]?$/.test(String(token.text || '').trim()))
 const groups = []
 for (const token of tokens) { const text = String(token.text || '').trim(); const last = groups.at(-1); if (last?.dtw === token.t_dtw) last.text += text; else groups.push({ text, dtw: Number(token.t_dtw) }) }
 const fillerIndex = groups.findIndex((item) => item.text === '就是')
 if (fillerIndex < 0 || !groups[fillerIndex + 1] || groups[fillerIndex + 1].dtw <= groups[fillerIndex].dtw) throw new Error('SAPI夹具没有形成“就是”的独立DTW词界')
 const expectedWord = { startSeconds: groups[fillerIndex].dtw / 100, endSeconds: groups[fillerIndex + 1].dtw / 100 }
+const phrase = '今天我们介绍产品'
+const expectedPhrase = findPhraseWordTiming(parseWhisperWordJson(wordPayload), phrase)
+if (!expectedPhrase) throw new Error('SAPI夹具没有形成唯一、完整且起于真实词界的目标短语')
 const cueStart = Math.max(0.1, expectedWord.startSeconds - 0.18)
-const cueEnd = Math.min(duration - 0.1, expectedWord.endSeconds + 1.8)
+const cueEnd = Math.min(duration - 0.1, Math.max(expectedWord.endSeconds + 1.8, expectedPhrase.endSeconds + 0.18))
 fs.writeFileSync(subtitlePath, `1\n${srtTime(0)} --> ${srtTime(cueStart)}\n欢迎大家\n\n2\n${srtTime(cueStart)} --> ${srtTime(cueEnd)}\n就是，今天我们介绍产品\n\n3\n${srtTime(cueEnd)} --> ${srtTime(duration)}\n接下来介绍功能，谢谢大家\n`, 'utf8')
 const sourceHash = sha256(sourcePath)
 
@@ -92,15 +101,27 @@ try {
     const preview = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - task.spec.decision.timeline.durationSeconds) <= 0.25 ? { duration: video.duration } : null }, '自动预览逐词剪辑成片', 30000)
     setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
     const undo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 ? { duration: video.duration } : null }, '逐词剪辑撤销回原片', 30000)
-    return { initial, plan, task, preview, undo, body: document.body.innerText }
+    const phrasePlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(phraseInstruction)}, sourcePath: ${JSON.stringify(sourcePath)} })
+    const phraseEvidence = phrasePlan.decision?.semanticLocate?.wordTimingEvidence
+    if (!phrasePlan.matched || phrasePlan.decision?.kind !== 'media.trim' || phrasePlan.decision?.semanticLocate?.strategy !== 'whisper-dtw-phrase-start-v1' || !phraseEvidence) throw new Error('安装态句中原话逐词定位方案不合格：' + JSON.stringify(phrasePlan))
+    setter.call(input, ${JSON.stringify(phraseInstruction)}); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(phraseInstruction)} })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    const phraseTask = await waitFor(async () => { const items = await window.aiPlayer.taskRuntime.list(); const found = [...items].reverse().find((item) => item.type === 'media.edit-trim' && item.spec?.decision?.semanticLocate?.strategy === 'whisper-dtw-phrase-start-v1'); return found && ['completed','failed','cancelled'].includes(found.state) ? found : null }, '句中原话逐词剪辑任务完成', 180000)
+    if (phraseTask.state !== 'completed' || phraseTask.quality?.passed !== true || !phraseTask.result?.semanticLocate?.wordTimingEvidence) throw new Error(phraseTask.error || '句中原话逐词剪辑质量门失败')
+    const phrasePreview = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - phraseTask.spec.decision.timeline.durationSeconds) <= 0.25 ? { duration: video.duration } : null }, '自动预览句中原话成片', 30000)
+    if (!document.body.innerText.includes('Whisper DTW逐词定位')) throw new Error('对话没有显示句中原话逐词证据')
+    setter.call(input, '撤销刚才的剪辑'); input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '撤销刚才的剪辑' })); await wait(100); document.querySelector('button[aria-label="发送"]')?.click()
+    const phraseUndo = await waitFor(() => { const video = document.querySelector('video[data-ai-player-video="true"]'); return video && Math.abs(video.duration - initial.duration) <= 0.25 ? { duration: video.duration } : null }, '句中原话剪辑撤销回原片', 30000)
+    return { initial, plan, task, preview, undo, phrasePlan, phraseTask, phrasePreview, phraseUndo, body: document.body.innerText }
   })()`)
   const evidence = pageResult.plan.decision.semanticCut.wordTimingEvidence[0]
   if (Math.abs(evidence.startSeconds - expectedWord.startSeconds) > 0.8 || Math.abs(evidence.endSeconds - expectedWord.endSeconds) > 0.8) throw new Error('安装态逐词边界与独立DTW证据偏差过大')
+  const phraseEvidence = pageResult.phrasePlan.decision.semanticLocate.wordTimingEvidence
+  if (Math.abs(phraseEvidence.phraseStartSeconds - expectedPhrase.startSeconds) > 0.8 || Math.abs(phraseEvidence.phraseEndSeconds - expectedPhrase.endSeconds) > 0.8) throw new Error('安装态句中原话边界与独立DTW证据偏差过大')
   const outputPath = pageResult.task.result.outputPath
-  const receipt = { acceptedAt: new Date().toISOString(), executable, source: { path: sourcePath, durationSeconds: probeDuration(sourcePath), sha256: sourceHash, unchanged: sha256(sourcePath) === sourceHash }, expectedWord, decision: pageResult.plan.decision, result: { outputPath, durationSeconds: probeDuration(outputPath), quality: pageResult.task.quality }, ui: { confirmationVisible: pageResult.body.includes('请回复“确认执行”或“取消”'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration } }
-  if (!receipt.source.unchanged || !fs.existsSync(outputPath)) throw new Error('安装态逐词成果或原件保护失败')
+  const receipt = { acceptedAt: new Date().toISOString(), executable, source: { path: sourcePath, durationSeconds: probeDuration(sourcePath), sha256: sourceHash, unchanged: sha256(sourcePath) === sourceHash }, expectedWord, expectedPhrase, decision: pageResult.plan.decision, result: { outputPath, durationSeconds: probeDuration(outputPath), quality: pageResult.task.quality }, phrase: { decision: pageResult.phrasePlan.decision, outputPath: pageResult.phraseTask.result.outputPath, durationSeconds: probeDuration(pageResult.phraseTask.result.outputPath), quality: pageResult.phraseTask.quality }, ui: { confirmationVisible: pageResult.body.includes('请回复“确认执行”或“取消”'), phraseEvidenceVisible: pageResult.body.includes('Whisper DTW逐词定位'), previewDuration: pageResult.preview.duration, undoDuration: pageResult.undo.duration, phrasePreviewDuration: pageResult.phrasePreview.duration, phraseUndoDuration: pageResult.phraseUndo.duration } }
+  if (!receipt.source.unchanged || !fs.existsSync(outputPath) || !fs.existsSync(receipt.phrase.outputPath)) throw new Error('安装态逐词成果或原件保护失败')
   fs.mkdirSync(path.dirname(receiptPath), { recursive: true }); fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ receiptPath, expectedWord, actualWord: evidence, quality: receipt.result.quality.score, outputDuration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, sourceUnchanged: true })}\n`)
+  process.stdout.write(`${JSON.stringify({ receiptPath, expectedWord, actualWord: evidence, quality: receipt.result.quality.score, outputDuration: receipt.result.durationSeconds, undoDuration: receipt.ui.undoDuration, expectedPhrase, actualPhrase: phraseEvidence, phraseQuality: receipt.phrase.quality.score, phraseDuration: receipt.phrase.durationSeconds, phraseUndoDuration: receipt.ui.phraseUndoDuration, sourceUnchanged: true })}\n`)
   await Promise.race([command('Browser.close'), delay(1000)]).catch(() => {})
 } finally {
   if (!(await waitForExit(child))) { child.kill(); await waitForExit(child) }

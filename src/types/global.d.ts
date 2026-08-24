@@ -186,7 +186,7 @@ interface MediaEditDecisionV1 {
   timeline?: ({ startSeconds: number; endSeconds: number; durationSeconds?: number; removedDurationSeconds?: number; segments?: never } | { segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; targetStartSeconds: number; targetEndSeconds: number }>; durationSeconds: number; startSeconds?: never; endSeconds?: never; removedDurationSeconds?: never })
   semanticLocate?: {
     schemaVersion: 1
-    strategy: 'subtitle-exact-quote-v1'
+    strategy: 'subtitle-exact-quote-v1' | 'whisper-dtw-phrase-start-v1'
     target: 'start-at-quote'
     subtitlePath: string
     query: string
@@ -194,6 +194,7 @@ interface MediaEditDecisionV1 {
     cueStartSeconds: number
     cueEndSeconds: number
     text: string
+    wordTimingEvidence?: { phraseStartSeconds: number; phraseEndSeconds: number; confidence: number; method: string; model: string; wordCount: number }
   }
   semanticSelect?: {
     schemaVersion: 1

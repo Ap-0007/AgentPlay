@@ -57,12 +57,12 @@ test('0.9.0 reports strict closure separately from implementation coverage again
   assert.match(content, /轻量时间线回执、预览、撤销/)
 })
 
-test('0.9.1 records the first completed semantic-editing item without overstating later work', () => {
+test('0.9.1 records two completed semantic-editing items without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*4%（1\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 1)
-  assert.equal(checkboxCount(content, false), 24)
-  assert.match(content, /#### A\. 语义剪辑（1\/5）/)
+  assert.match(content, /功能交付完成率：\*\*8%（2\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 2)
+  assert.equal(checkboxCount(content, false), 23)
+  assert.match(content, /#### A\. 语义剪辑（2\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
   assert.match(content, /个人编辑 Skill/)
@@ -111,7 +111,12 @@ test('0.9.1 records the first completed semantic-editing item without overstatin
   assert.match(content, /第九个纵向切片（A2第二段/)
   assert.match(content, /model-topic-selection-v1/)
   assert.match(content, /831 tests、831 pass、0 fail、0 skip/)
-  assert.match(content, /A2现在只剩“原话位于一条字幕中间”/)
+  assert.match(content, /第十个纵向切片（A2闭环并正式勾选）/)
+  assert.match(content, /whisper-dtw-phrase-start-v1/)
+  assert.match(content, /独立DTW证据得到目标短语3\.50–6\.32秒/)
+  assert.match(content, /837 tests、836 pass、0 fail、1项外部网络条件skip/)
+  assert.match(content, /默认文件并发固定为2/)
+  assert.match(content, /A组更新为2\/5，0\.9\.1更新为2\/25=8%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

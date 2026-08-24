@@ -2216,7 +2216,7 @@ app.whenReady().then(async () => {
     status(decision.semanticSelect
       ? `正在按字幕主题“${decision.semanticSelect.topic}”保留 ${decision.semanticSelect.selectedCueIndexes.length} 条证据并剪辑`
       : decision.semanticLocate
-      ? `正在按字幕定位从第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”开始剪辑`
+      ? `正在按${decision.semanticLocate.wordTimingEvidence ? '逐词DTW' : '字幕'}定位从第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”开始剪辑`
       : `正在剪辑 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision: task.spec.decision, signal })
@@ -2227,7 +2227,7 @@ app.whenReady().then(async () => {
       ...result,
       ...(decision.semanticLocate ? {
         semanticLocate: decision.semanticLocate,
-        summary: `已从字幕第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”（${decision.semanticLocate.cueStartSeconds.toFixed(2)} 秒）开始保留；原文件未改动`
+        summary: `已从字幕第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”（${Number(decision.semanticLocate.wordTimingEvidence?.phraseStartSeconds ?? decision.semanticLocate.cueStartSeconds).toFixed(2)} 秒${decision.semanticLocate.wordTimingEvidence ? '，Whisper DTW逐词定位' : ''}）开始保留；原文件未改动`
       } : {}),
       ...(decision.semanticSelect ? {
         semanticSelect: decision.semanticSelect,

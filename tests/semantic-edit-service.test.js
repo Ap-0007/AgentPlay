@@ -256,6 +256,38 @@ test('multiple or mid-cue quote matches stay non-executing and list exact locati
   assert.match(midResult.review.summary, /不会把字幕条起点冒充原话起点/)
 })
 
+test('a unique mid-cue quote uses real DTW phrase timing and freezes the word evidence', async () => {
+  const frames = { availability: () => ({ available: true }), probeDuration: async () => 10 }
+  const service = new SemanticEditService({
+    frames,
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 3, text: '先说背景，然后模型权重下周开放' }, { start: 3, end: 10, text: '后续' }] }),
+    loadWordTimings: async (_sourcePath, candidates) => {
+      assert.equal(candidates[0].phrase, '模型权重下周开放')
+      return { resolved: [{ ...candidates[0], phraseStartSeconds: 1.72, phraseEndSeconds: 2.84, timingConfidence: 0.91, timingMethod: 'whisper.cpp-dtw-v1', model: 'ggml-tiny.bin', wordCount: 4 }], unresolved: [] }
+    }
+  })
+  const result = await service.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.kind, 'media.trim')
+  assert.deepEqual(result.decision.timeline, { startSeconds: 1.72, endSeconds: 10, durationSeconds: 8.28 })
+  assert.equal(result.decision.semanticLocate.strategy, 'whisper-dtw-phrase-start-v1')
+  assert.deepEqual(result.decision.semanticLocate.wordTimingEvidence, { phraseStartSeconds: 1.72, phraseEndSeconds: 2.84, confidence: 0.91, method: 'whisper.cpp-dtw-v1', model: 'ggml-tiny.bin', wordCount: 4 })
+  const frozen = attachEditDecisionList(result.decision)
+  frozen.semanticLocate.wordTimingEvidence.phraseStartSeconds += 0.2
+  assert.throws(() => assertEditDecisionList(frozen), /EDL 与冻结决策不一致/)
+})
+
+test('an unresolved mid-cue quote remains non-executing and explains the real timing failure', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 3, text: '先说背景，然后模型权重下周开放' }, { start: 3, end: 5, text: '后续' }] }),
+    loadWordTimings: async (_sourcePath, candidates) => ({ resolved: [], unresolved: [{ ...candidates[0], unresolvedReason: '短语起点落在一个聚合token中' }] })
+  })
+  const result = await service.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /短语起点落在一个聚合token中/)
+  assert.match(result.review.summary, /没有创建剪辑任务/)
+})
+
 test('topic keep intent is narrow and compiles cited adjacent cues into a confirm-only trim', () => {
   assert.equal(extractTopicSelection('保留讲产品价格的部分'), '产品价格')
   assert.equal(matchesTopicSelectionInstruction('只保留关于收费标准的内容'), true)

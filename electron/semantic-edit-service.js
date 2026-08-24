@@ -212,21 +212,37 @@ function exactQuoteMatches(cues, durationSeconds, query) {
   if (!normalizedQuery) return []
   return analyzeTextCleanupCues(cues, durationSeconds).normalized.flatMap((cue) => {
     const text = normalizedCueText(cue.text)
-    const offset = text.indexOf(normalizedQuery)
-    return offset < 0 ? [] : [{ ...cue, atStart: offset === 0 }]
+    const matches = []
+    let offset = text.indexOf(normalizedQuery)
+    while (offset >= 0) {
+      matches.push({ ...cue, atStart: offset === 0, normalizedOffset: offset })
+      offset = text.indexOf(normalizedQuery, offset + 1)
+    }
+    return matches
   })
 }
 
-function buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues } = {}) {
+function buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds, subtitlePath, cues, wordTimingEvidence = null } = {}) {
   const duration = Number(durationSeconds)
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取视频时长，不能按原话定位')
   const query = extractExactQuoteStart(instruction)
   if (!query) throw new Error('没有识别到要定位的完整原话')
   const matches = exactQuoteMatches(cues, duration, query)
-  if (matches.length !== 1 || !matches[0].atStart) throw new Error('原话没有形成唯一且位于字幕条起点的安全定位')
+  if (matches.length !== 1) throw new Error('原话没有形成唯一的安全定位')
   const cue = matches[0]
-  const startSeconds = Number(cue.startSeconds.toFixed(3))
+  const hasWordTiming = !cue.atStart && wordTimingEvidence && Number(wordTimingEvidence.cueIndex) === cue.cueIndex && String(wordTimingEvidence.phrase || '') === query
+  if (!cue.atStart && !hasWordTiming) throw new Error('句中原话缺少可信逐词起点')
+  const phraseStartSeconds = Number(wordTimingEvidence?.phraseStartSeconds)
+  const phraseEndSeconds = Number(wordTimingEvidence?.phraseEndSeconds)
+  const timingConfidence = Number(wordTimingEvidence?.timingConfidence)
+  if (hasWordTiming && (!Number.isFinite(phraseStartSeconds) || !Number.isFinite(phraseEndSeconds) || phraseStartSeconds < cue.startSeconds - 0.35 || phraseStartSeconds >= cue.endSeconds || phraseEndSeconds <= phraseStartSeconds || phraseEndSeconds > cue.endSeconds + 0.35 || !Number.isFinite(timingConfidence) || timingConfidence < 0.15)) throw new Error('句中原话逐词证据越界或置信度不足')
+  const startSeconds = Number((hasWordTiming ? phraseStartSeconds : cue.startSeconds).toFixed(3))
   const endSeconds = Number(duration.toFixed(3))
+  const strategy = hasWordTiming ? 'whisper-dtw-phrase-start-v1' : 'subtitle-exact-quote-v1'
+  const frozenWordTiming = hasWordTiming ? {
+    phraseStartSeconds, phraseEndSeconds, confidence: timingConfidence,
+    method: String(wordTimingEvidence.timingMethod || ''), model: String(wordTimingEvidence.model || ''), wordCount: Number(wordTimingEvidence.wordCount)
+  } : null
   return {
     schemaVersion: 1,
     kind: 'media.trim',
@@ -234,12 +250,13 @@ function buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds
     source: { path: String(sourcePath || '').trim(), name: portableBasename(sourcePath) },
     timeline: { startSeconds, endSeconds, durationSeconds: Number((endSeconds - startSeconds).toFixed(3)) },
     semanticLocate: {
-      schemaVersion: 1, strategy: 'subtitle-exact-quote-v1', target: 'start-at-quote',
+      schemaVersion: 1, strategy, target: 'start-at-quote',
       subtitlePath: String(subtitlePath || ''), query, cueIndex: cue.cueIndex,
-      cueStartSeconds: cue.startSeconds, cueEndSeconds: cue.endSeconds, text: cue.text
+      cueStartSeconds: cue.startSeconds, cueEndSeconds: cue.endSeconds, text: cue.text,
+      ...(frozenWordTiming ? { wordTimingEvidence: frozenWordTiming } : {})
     },
     output: { container: 'mp4', overwrite: false, suffix: '从原话开始版' },
-    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy: 'subtitle-exact-quote-v1', query, cueIndex: cue.cueIndex, cueStartSeconds: cue.startSeconds } }
+    verification: { toleranceSeconds: 0.25, semanticEvidence: { strategy, query, cueIndex: cue.cueIndex, cueStartSeconds: cue.startSeconds, ...(frozenWordTiming ? { wordTimingEvidence: frozenWordTiming } : {}) } }
   }
 }
 
@@ -434,7 +451,17 @@ class SemanticEditService {
       const durationSeconds = await this.frames.probeDuration(sourcePath, { signal })
       const query = extractExactQuoteStart(instruction)
       const matches = exactQuoteMatches(transcript.cues, durationSeconds, query)
-      if (matches.length !== 1 || !matches[0].atStart) return { matched: true, review: exactQuoteReview(query, matches) }
+      if (matches.length !== 1) return { matched: true, review: exactQuoteReview(query, matches) }
+      if (!matches[0].atStart) {
+        if (!this.loadWordTimings) return { matched: true, review: exactQuoteReview(query, matches) }
+        const wordTiming = await this.loadWordTimings(sourcePath, [{ ...matches[0], phrase: query }], { signal })
+        const evidence = wordTiming?.resolved?.find((item) => item.cueIndex === matches[0].cueIndex && item.phrase === query)
+        if (!evidence) {
+          const reason = wordTiming?.unresolved?.[0]?.unresolvedReason || wordTiming?.reason || '逐词转写没有形成可信的短语起点'
+          return { matched: true, review: { kind: 'semantic-quote-locate', summary: `原话“${query}”位于第${matches[0].cueIndex}条字幕中间，但${reason}；没有创建剪辑任务，也不会用字符比例猜时间。`, candidates: [{ ...matches[0], reason, matches: [query] }] } }
+        }
+        return { matched: true, decision: buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues, wordTimingEvidence: evidence }) }
+      }
       return { matched: true, decision: buildExactQuoteStartDecision({ instruction, sourcePath, durationSeconds, subtitlePath: transcript.path, cues: transcript.cues }) }
     }
     if (matchesTopicSelectionInstruction(instruction)) {

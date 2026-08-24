@@ -5,6 +5,13 @@ import { fileURLToPath } from 'node:url'
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(scriptDirectory, '..')
+const DEFAULT_TEST_CONCURRENCY = 2
+
+export function testRunnerArgs(testFiles, value = process.env.AGENTPLAY_TEST_CONCURRENCY) {
+  const requested = Number(value)
+  const concurrency = Number.isInteger(requested) ? Math.max(1, Math.min(4, requested)) : DEFAULT_TEST_CONCURRENCY
+  return ['--test', `--test-concurrency=${concurrency}`, ...testFiles]
+}
 
 export async function discoverTestFiles(testsDirectory = path.join(projectRoot, 'tests')) {
   const entries = await readdir(testsDirectory, { withFileTypes: true })
@@ -18,7 +25,7 @@ export async function main() {
   const testFiles = await discoverTestFiles()
   if (testFiles.length === 0) throw new Error('No test files found in tests/')
 
-  const child = spawn(process.execPath, ['--test', ...testFiles], {
+  const child = spawn(process.execPath, testRunnerArgs(testFiles), {
     cwd: projectRoot,
     stdio: 'inherit',
     windowsHide: true

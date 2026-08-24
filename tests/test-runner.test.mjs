@@ -5,7 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
-import { discoverTestFiles, isInvokedAsMain } from '../scripts/run-tests.mjs'
+import { discoverTestFiles, isInvokedAsMain, testRunnerArgs } from '../scripts/run-tests.mjs'
 
 test('test runner discovers JavaScript tests cross-platform without shell globs', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'agentplay-test-runner-'))
@@ -37,4 +37,10 @@ test('test runner starts when the script is invoked through a directory junction
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('test runner bounds file concurrency so real ffmpeg suites cannot starve each other', () => {
+  assert.deepEqual(testRunnerArgs(['a.test.js', 'b.test.js']), ['--test', '--test-concurrency=2', 'a.test.js', 'b.test.js'])
+  assert.deepEqual(testRunnerArgs(['a.test.js'], '99'), ['--test', '--test-concurrency=4', 'a.test.js'])
+  assert.deepEqual(testRunnerArgs(['a.test.js'], '1'), ['--test', '--test-concurrency=1', 'a.test.js'])
 })
