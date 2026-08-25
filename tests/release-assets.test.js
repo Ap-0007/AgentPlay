@@ -20,6 +20,7 @@ function createFixture({ absoluteVerificationPath = false } = {}) {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-release-assets-'))
   const version = '9.8.7'
   const installerPath = path.join(rootDir, 'candidate.exe')
+  const portablePath = path.join(rootDir, 'portable.zip')
   const verificationPath = path.join(rootDir, 'verification.json')
   const securityScanPath = path.join(rootDir, 'security.json')
   const sbomPath = path.join(rootDir, 'sbom.json')
@@ -27,12 +28,32 @@ function createFixture({ absoluteVerificationPath = false } = {}) {
 
   writeJson(path.join(rootDir, 'package.json'), { name: 'fixture', version })
   fs.writeFileSync(installerPath, Buffer.from('agentplay-release-fixture'))
+  fs.writeFileSync(portablePath, Buffer.from('agentplay-portable-fixture'))
+  writeJson(path.join(rootDir, 'release-public-policy.json'), {
+    schemaVersion: 2,
+    channels: {
+      preview: { allowed: true, prerelease: true, allowUnsigned: true, unsignedNotice: 'unsigned preview' },
+      beta: { allowed: true, prerelease: true, allowUnsigned: true, unsignedNotice: 'unsigned beta' },
+      stable: { allowed: true, prerelease: false, allowUnsigned: false, signedNotice: 'signed stable' }
+    }
+  })
+  fs.mkdirSync(path.join(rootDir, 'scripts'))
+  fs.writeFileSync(path.join(rootDir, 'scripts', 'install-agentplay.ps1'), 'Write-Output AgentPlay\n')
   writeJson(verificationPath, {
     version,
     standard: {
       path: absoluteVerificationPath ? 'C:\\Users\\Maintainer\\candidate.exe' : 'release/candidate.exe',
       bytes: fs.statSync(installerPath).size,
       sha256: hash(installerPath)
+    },
+    portable: {
+      path: 'release/portable.zip',
+      bytes: fs.statSync(portablePath).size,
+      sha256: hash(portablePath)
+    },
+    signing: {
+      installer: { status: 'NotSigned' },
+      application: { status: 'NotSigned' }
     },
     closure: { legalDocsIncluded: true }
   })
@@ -52,7 +73,18 @@ function createFixture({ absoluteVerificationPath = false } = {}) {
     }
   })
 
-  return { rootDir, version, installerPath, verificationPath, securityScanPath, sbomPath, outputDir }
+  return {
+    rootDir,
+    version,
+    installerPath,
+    portablePath,
+    verificationPath,
+    securityScanPath,
+    sbomPath,
+    outputDir,
+    channel: 'preview',
+    acknowledgeUnsigned: true
+  }
 }
 
 test('prepareReleaseAssets emits public-safe assets and matching checksums', async () => {
@@ -62,9 +94,12 @@ test('prepareReleaseAssets emits public-safe assets and matching checksums', asy
     const result = prepareReleaseAssets(fixture)
     assert.deepEqual(result.assets, [
       'AgentPlay-9.8.7-Windows-x64-Standard.exe',
+      'AgentPlay-9.8.7-Windows-x64-Portable.zip',
       'AgentPlay-9.8.7-release-verification.json',
       'AgentPlay-9.8.7-security-release-scan.json',
       'AgentPlay-9.8.7.spdx.json',
+      'AgentPlay-9.8.7-release-manifest.json',
+      'Install-AgentPlay.ps1',
       'AgentPlay-9.8.7-SHA256SUMS.txt'
     ])
 
@@ -72,13 +107,24 @@ test('prepareReleaseAssets emits public-safe assets and matching checksums', asy
       fs.readFileSync(path.join(fixture.outputDir, 'AgentPlay-9.8.7-release-verification.json'), 'utf8')
     )
     assert.equal(publicVerification.standard.path, 'AgentPlay-9.8.7-Windows-x64-Standard.exe')
+    assert.equal(publicVerification.portable.path, 'AgentPlay-9.8.7-Windows-x64-Portable.zip')
+    assert.equal(publicVerification.releaseChannel.channel, 'preview')
+    assert.equal(publicVerification.releaseChannel.signed, false)
     assert.equal(path.win32.isAbsolute(publicVerification.standard.path), false)
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(fixture.outputDir, 'AgentPlay-9.8.7-release-manifest.json'), 'utf8')
+    )
+    assert.equal(manifest.channel, 'preview')
+    assert.equal(manifest.prerelease, true)
+    assert.equal(manifest.signed, false)
+    assert.equal(manifest.terminalInstaller, 'Install-AgentPlay.ps1')
 
     const checksumLines = fs
       .readFileSync(path.join(fixture.outputDir, 'AgentPlay-9.8.7-SHA256SUMS.txt'), 'utf8')
       .trim()
       .split(/\r?\n/)
-    assert.equal(checksumLines.length, 4)
+    assert.equal(checksumLines.length, 7)
     for (const line of checksumLines) {
       const match = /^([A-F0-9]{64})  (.+)$/.exec(line)
       assert.ok(match)
@@ -94,6 +140,48 @@ test('prepareReleaseAssets rejects absolute maintainer paths', async () => {
   const fixture = createFixture({ absoluteVerificationPath: true })
   try {
     assert.throws(() => prepareReleaseAssets(fixture), /绝对路径/)
+    assert.equal(fs.existsSync(fixture.outputDir), false)
+  } finally {
+    fs.rmSync(fixture.rootDir, { recursive: true, force: true })
+  }
+})
+
+test('stable assets fail closed until installer and application signatures are both valid', async () => {
+  const { prepareReleaseAssets } = await releaseAssetsModule
+  const fixture = createFixture()
+  try {
+    assert.throws(
+      () => prepareReleaseAssets({ ...fixture, channel: 'stable', acknowledgeUnsigned: false }),
+      /Authenticode.*Valid/
+    )
+
+    const verification = JSON.parse(fs.readFileSync(fixture.verificationPath, 'utf8'))
+    for (const key of ['installer', 'application']) {
+      verification.signing[key] = {
+        status: 'Valid',
+        subject: 'CN=AgentPlay',
+        thumbprint: 'A'.repeat(40),
+        timestamped: true
+      }
+    }
+    writeJson(fixture.verificationPath, verification)
+    const result = prepareReleaseAssets({ ...fixture, channel: 'stable', acknowledgeUnsigned: false })
+    assert.equal(result.channel.channel, 'stable')
+    assert.equal(result.channel.prerelease, false)
+    assert.equal(result.channel.signed, true)
+  } finally {
+    fs.rmSync(fixture.rootDir, { recursive: true, force: true })
+  }
+})
+
+test('unsigned preview assets require an explicit acknowledgement', async () => {
+  const { prepareReleaseAssets } = await releaseAssetsModule
+  const fixture = createFixture()
+  try {
+    assert.throws(
+      () => prepareReleaseAssets({ ...fixture, acknowledgeUnsigned: false }),
+      /--ack-unsigned/
+    )
     assert.equal(fs.existsSync(fixture.outputDir), false)
   } finally {
     fs.rmSync(fixture.rootDir, { recursive: true, force: true })
@@ -117,6 +205,15 @@ test('prepareReleaseAssets fails closed on inconsistent release evidence', async
         writeJson(fixture.verificationPath, verification)
       },
       pattern: /SHA-256/
+    },
+    {
+      name: 'portable hash mismatch',
+      mutate(fixture) {
+        const verification = JSON.parse(fs.readFileSync(fixture.verificationPath, 'utf8'))
+        verification.portable.sha256 = '0'.repeat(64)
+        writeJson(fixture.verificationPath, verification)
+      },
+      pattern: /便携包 SHA-256/
     },
     {
       name: 'packaged scan missing',

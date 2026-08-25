@@ -43,6 +43,7 @@ jobs:
         run: ./scripts/prepare-pinned-mpv-runtime.ps1
       - run: pnpm check
       - run: pnpm build:electron
+      - run: pnpm release:portable
       - run: pnpm release:verify
       - run: node scripts/security-release-scan.mjs --history --packaged
       - name: Freeze ASCII unsigned artifact

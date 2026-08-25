@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "sourceRelease": {
     "allowed": true,
     "reason": "项目自有源码可按 Apache-2.0 发布；忽略的模型和原生二进制不进入 Git。"
@@ -18,5 +18,25 @@
       "correspondingSourceBytes",
       "correspondingSourceSha256"
     ]
+  },
+  "channels": {
+    "preview": {
+      "allowed": true,
+      "prerelease": true,
+      "allowUnsigned": true,
+      "unsignedNotice": "未签名 Preview，仅供提前体验；请从官方 Release 下载并核对 SHA-256，Windows 可能显示未知发布者。"
+    },
+    "beta": {
+      "allowed": true,
+      "prerelease": true,
+      "allowUnsigned": true,
+      "unsignedNotice": "未签名 Beta，仅供测试；请从官方 Release 下载并核对 SHA-256，Windows 可能显示未知发布者。"
+    },
+    "stable": {
+      "allowed": true,
+      "prerelease": false,
+      "allowUnsigned": false,
+      "signedNotice": "稳定版安装包与主程序均须通过 Authenticode、时间戳和公开下载回读验证。"
+    }
   }
 }

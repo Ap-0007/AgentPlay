@@ -32,6 +32,7 @@ Windows 打包依赖仓库外的可再分发资源。每个资源必须在清单
 
 ```powershell
 pnpm build:electron
+pnpm release:portable
 pnpm release:verify
 node scripts/smoke-packaged-ui.mjs
 node scripts/smoke-packaged-download.mjs
@@ -52,24 +53,41 @@ pnpm security:scan:packaged
 GitHub Release 只上传 ASCII 文件名，至少包含：
 
 - `AgentPlay-<version>-Windows-x64-Standard.exe`
+- `AgentPlay-<version>-Windows-x64-Portable.zip`
 - `AgentPlay-<version>-SHA256SUMS.txt`
+- `AgentPlay-<version>-release-manifest.json`
 - `AgentPlay-<version>-release-verification.json`
 - `AgentPlay-<version>-security-release-scan.json`
 - `AgentPlay-<version>.spdx.json`
+- `Install-AgentPlay.ps1`
 - GitHub 自动生成的 Source code 归档
 
 校验 JSON 只能包含仓库相对路径或公开资产名，不能泄露维护者绝对路径。SPDX SBOM 应从已合并的默认分支通过 GitHub Dependency Graph SBOM API 获取，确保对应最终提交。
 
-### 4.1 数字签名与开源项目申请硬门
+### 4.1 Preview、Beta 与 Stable 三条通道
 
-本地候选、内部测试包和 Draft Release 可以在明确标注 `NotSigned` 的前提下继续验收；面向普通用户宣布“稳定公开版”前，必须同时满足：
+数字签名不再阻塞开源项目持续迭代，但三条通道必须严格分开：
+
+| 通道 | GitHub 状态 | 未签名是否允许 | 面向对象 |
+| --- | --- | --- | --- |
+| Preview | Prerelease | 允许，但必须显式标注并核对 SHA-256 | 希望提前体验最新功能的测试者 |
+| Beta | Prerelease | 允许，但必须显式标注并核对 SHA-256 | 参与完整回归的测试者 |
+| Stable | 正式 Release | 不允许 | 普通用户 |
+
+生成未签名资产必须显式执行 `pnpm release:assets:preview` 或 `pnpm release:assets:beta`；脚本会把通道、Prerelease 状态、签名状态、安装器、便携包、SBOM 和校验文件写入公开清单。稳定版只能执行 `pnpm release:assets:stable`，安装包或 `win-unpacked/AgentPlay.exe` 任一签名不是 `Valid` 时立即失败。
+
+命令行安装只是桌面安装器和便携包的可选入口，不是绕过 Windows 安全机制的手段。`Install-AgentPlay.ps1` 只接受官方 Release，先验证发布清单和 SHA-256，再检查 Authenticode；使用未签名 Preview/Beta 必须显式添加 `-AllowUnsigned`，脚本不会关闭或绕过 SmartScreen。禁止宣传 `irm | iex` 这类未审阅远程脚本执行方式。
+
+### 4.2 数字签名与开源项目申请硬门
+
+本地候选、内部测试包、Preview、Beta 和 Draft Release 可以在明确标注 `NotSigned` 的前提下继续验收；面向普通用户宣布“稳定公开版”前，必须同时满足：
 
 1. SignPath Foundation（或等价的可信开源代码签名计划）正式批准项目，而不是只有提交记录、试用组织或待审核状态；
 2. 候选安装包和安装后的主程序均带有效 Authenticode 签名，签名状态、证书主题、时间戳和 SHA-256 写入本轮验证证据；
 3. 从公开 Release 匿名下载后再次验证签名链和哈希，结果与本地候选一致；
 4. 若申请曾因公开采用证据不足被拒，先补齐可核验的 stars、forks、外部贡献者、独立文章或社区讨论证据，再重新申请，禁止把重复提交申请当作完成。
 
-未获批或未签名时只能发布为明确提示风险的预览/测试资产，不得宣称已解决 SmartScreen、可信发布或 winget 分发。
+未获批或未签名时只能发布为明确提示风险的 Preview/Beta，不得宣称已解决 SmartScreen、可信发布或 winget 分发。
 
 免费 SignPath 重申材料见 `docs/SIGNPATH_REAPPLICATION.md`。获批前不得配置 `SIGNPATH_API_TOKEN` 或把试用组织冒充开源签名组织；获批后只允许从 `master` 手工触发 `.github/workflows/signpath-release.yml`。工作流必须先在 GitHub-hosted Windows runner 构建并上传未签名 artifact，再由 `signpath/github-action-submit-signing-request@v2` 提交；返回产物必须验证 Authenticode，且仍需人工安装后复核主程序签名。该工作流不创建标签、不创建或公开 Release。
 
@@ -77,8 +95,8 @@ GitHub Release 只上传 ASCII 文件名，至少包含：
 
 1. 等待 Ubuntu 与 Windows CI 全绿，并确认 PR 中的提交就是完成本地验收的提交。
 2. 合并 PR 后记录 `master` 的精确提交 SHA。
-3. 在该提交创建带注释标签 `v<version>`，不得让标签指向候选分支的旧提交。
-4. 先创建 Draft Release，上传全部资产并逐个读回远端大小和摘要。
+3. 在该提交创建带注释标签 `v<version>`，不得让标签指向候选分支的旧提交；Preview/Beta 使用带预发布后缀的 SemVer 标签。
+4. 先创建 Draft Release，上传全部资产并逐个读回远端大小和摘要；Preview/Beta 必须勾选 GitHub Prerelease，Stable 不得勾选。
 5. 发布说明列出新增、修复、已知限制、签名状态、许可证与 SHA-256 校验方法。
 6. 发布后使用未登录会话从公开 Release 下载安装包，重新计算 SHA-256 并与 `SHA256SUMS.txt` 比较。
 
@@ -95,4 +113,5 @@ GitHub Release 只上传 ASCII 文件名，至少包含：
 - X 公开下载未通过，或 Facebook 在缺少有效登录态时伪报成功；
 - Office 输出无法被真实 Word、Excel、PowerPoint 打开，或遗留本轮新建进程；
 - 发布说明把未验证平台、未签名状态或不可复现构建写成已完成。
-- 稳定公开版候选未通过 SignPath/等价开源签名计划审批，或安装包、安装后 EXE、公开下载回读任一处 Authenticode 无效。
+- Preview/Beta 未显式披露 `NotSigned`、未标为 Prerelease，或没有安装器、便携包、发布清单、SHA-256、SBOM 与安全扫描闭包。
+- Stable 候选未通过 SignPath/等价开源签名计划审批，或安装包、安装后 EXE、公开下载回读任一处 Authenticode 无效。

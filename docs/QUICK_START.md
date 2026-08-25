@@ -12,6 +12,8 @@ Get-FileHash -Algorithm SHA256 -LiteralPath '.\AgentPlay-0.7.6-Windows-x64-Stand
 
 只有文件来自官方 Release 且哈希完全一致时才继续安装；不要从群聊、网盘或第三方下载站获取安装包。
 
+后续版本会区分 Preview、Beta 和 Stable。Preview/Beta 是 GitHub Prerelease，可以在明确标注未签名且校验资产齐全时供测试；Stable 面向普通用户，要求安装包和主程序都具备有效数字签名。命令行安装不会消除 SmartScreen，也不应通过修改系统安全设置强行绕过。
+
 ## 2. 不用配置模型也能做的事
 
 - 拖入或双击本地视频进行播放。
