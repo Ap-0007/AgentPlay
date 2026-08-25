@@ -233,6 +233,48 @@ test('normalized music quality requires an encoded EBU R128 receipt', () => {
   }
 })
 
+test('C1 multitrack quality requires every aligned track, automation, ducking, loudness and undo project', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-audio-mix-'))
+  try {
+    const output = path.join(dir, 'audio-mix.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const tracks = [
+      { id: 'music-1', role: 'music', duckAgainstDialogue: true, automation: [] },
+      { id: 'ambience-1', role: 'ambience', duckAgainstDialogue: true, automation: [] },
+      { id: 'sfx-1', role: 'sfx', duckAgainstDialogue: false, automation: [] }
+    ]
+    const spec = { decision: { kind: 'media.mix-audio', verification: { toleranceSeconds: 0.2 }, audioMix: { dialogue: { enabled: true, automation: [{ startSeconds: 3, endSeconds: 4, volume: 0.7 }] }, tracks, master: { loudness: { enabled: true } } } } }
+    const base = {
+      success: true,
+      outputs: [output],
+      expectedDurationSeconds: 6,
+      durationSeconds: 6.02,
+      timelineReceipt: [
+        { sourceRange: '00:00.000 → 00:06.000', outputRange: '00:00.000 → 00:06.000' },
+        ...tracks.map(() => ({ sourceRange: '00:00.000 → 素材结束', outputRange: '00:00.000 → 00:06.000' }))
+      ],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false },
+      loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 },
+      audioMixProof: {
+        schemaVersion: 1,
+        method: 'decoded-multitrack-pcm-v1',
+        verdict: 'matched',
+        output: { nonSilent: true, overloadFree: true, samplePeakDbfs: -1.4 },
+        tracks: tracks.map((track) => ({ id: track.id, role: track.role, aligned: true })),
+        automation: { requested: 1, configured: 1 },
+        ducking: { configuredTracks: 2 },
+        dialogue: { configured: true }
+      }
+    }
+    assert.equal(evaluateTaskResult('media.edit-audio-mix', base, spec).passed, true)
+    const misaligned = structuredClone(base)
+    misaligned.audioMixProof.tracks[1].aligned = false
+    const failed = evaluateTaskResult('media.edit-audio-mix', misaligned, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'TRACK_ALIGNMENT_MISMATCH'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('removed-segment media uses the same artifact, duration, timeline and project quality gate', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-remove-segment-'))
   try {

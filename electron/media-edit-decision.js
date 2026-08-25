@@ -1,4 +1,5 @@
 const path = require('path')
+const { compileAudioMixDecisionList, isAudioMixIntent } = require('./audio-mix-decision')
 
 const CHINESE_DIGITS = Object.freeze({
   零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4,
@@ -508,6 +509,8 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   const source = String(sourcePath || '').trim()
   const concatSourcesDecision = compileConcatSourcesDecisionList({ instruction: text, sourcePath: source })
   if (concatSourcesDecision) return { matched: true, decision: concatSourcesDecision }
+  const audioMixDecision = compileAudioMixDecisionList({ instruction: text, sourcePath: source })
+  if (audioMixDecision) return { matched: true, decision: audioMixDecision }
   const musicDecision = compileMusicDecisionList({ instruction: text, sourcePath: source })
   if (musicDecision) return { matched: true, decision: musicDecision }
   const burnDecision = compileBurnSubtitlesDecisionList({ instruction: text, sourcePath: source })
@@ -524,6 +527,20 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (decision) return { matched: true, decision }
   if (!text || !source || /^(?:https?|blob):/i.test(source)) return { matched: false }
   if (CONSULTATION_PATTERN.test(text) || NEGATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text)) return { matched: false }
+  if (/(?:多轨|环境声|氛围声|音效|提示音|自动闪避|分段音量)/.test(text) && !isAudioMixIntent(text)) {
+    return {
+      matched: true,
+      clarification: {
+        schemaVersion: 1,
+        kind: 'media.edit-clarification',
+        reason: 'missing-audio-mix-tracks',
+        question: '要加入哪些本地音频？请分别给出音乐、环境声或音效的完整路径；可以一次拖入多个音频文件。只使用你有权使用的文件。',
+        originalInstruction: text,
+        sourcePath: source,
+        known: {}
+      }
+    }
+  }
   // 字幕条目校对缺序号：给了 .srt 路径且有删除/改动词但没"第 N 条"时追问唯一一项
   if (extractTextSubtitlePath(text) && /(?:字幕)/.test(text) && (CUE_EDIT_DELETE_PATTERN.test(text) || /(改成|改为|换成|改)/.test(text)) && !CUE_EDIT_RANGE_PATTERN.test(text) && !compileCueEditDecisionList({ instruction: text, sourcePath: source })) {
     return {
@@ -749,6 +766,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   const replacementText = text.replace(/^(?:改成|换成|重新)/, '')
   const replacementConcat = compileConcatSourcesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementConcat) return { matched: true, decision: replacementConcat }
+  const replacementAudioMix = compileAudioMixDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementAudioMix) return { matched: true, decision: replacementAudioMix }
   const replacementMusic = compileMusicDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementMusic) return { matched: true, decision: replacementMusic }
   const replacementBurn = compileBurnSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
@@ -924,6 +943,10 @@ function resolveEditClarification({ clarification, answer } = {}) {
     const decision = compileMusicDecisionList({ instruction, sourcePath: pending.sourcePath, audioPath, volume })
     return decision ? { matched: true, decision } : { matched: false }
   }
+  if (pending.reason === 'missing-audio-mix-tracks') {
+    const decision = compileAudioMixDecisionList({ instruction: `${pending.originalInstruction}；${text}`, sourcePath: pending.sourcePath })
+    return decision ? { matched: true, decision } : { matched: false }
+  }
   if (pending.reason === 'missing-range') {
     const ranges = extractRanges(text)
     if (ranges.length !== 1 || !ranges[0]) return { matched: false }
@@ -951,4 +974,4 @@ module.exports = {
   compileTranslateSubtitlesDecisionList,
   compileShiftSubtitlesDecisionList,
   burnForceStyle,
-  compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }
+  compileAudioMixDecisionList, compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

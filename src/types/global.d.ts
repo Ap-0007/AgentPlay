@@ -155,7 +155,7 @@ interface EditDecisionListV1 {
   schemaVersion: 1
   kind: 'agentplay.edit-decision-list'
   decisionKind: string
-  materials: Array<{ id: string; role: 'video' | 'music' | 'subtitle'; path: string; name: string }>
+  materials: Array<{ id: string; role: 'video' | 'music' | 'ambience' | 'sfx' | 'subtitle' | 'effect-video'; path: string; name: string }>
   tracks: Array<{ id: string; type: 'video' | 'audio' | 'subtitle'; materialId: string; optional?: boolean }>
   operations: Array<{
     id: string
@@ -173,7 +173,7 @@ interface EditDecisionListV1 {
 
 interface MediaEditDecisionV1 {
   schemaVersion: 1
-  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.visual-effects' | 'media.smart-reframe' | 'media.visual-repair' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'
+  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.mix-audio' | 'media.visual-effects' | 'media.smart-reframe' | 'media.visual-repair' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues'
   instruction: string
   edl: EditDecisionListV1
   source?: { path: string; name: string }
@@ -218,6 +218,14 @@ interface MediaEditDecisionV1 {
   translate?: { targetLang: '英文' | '中文' | 'auto'; mode: 'translated' | 'bilingual' }
   cueEdit?: { operation: 'delete'; startIndex: number; endIndex: number } | { operation: 'replace'; index: number; text: string }
   audio?: { path: string; volume: number; fadeInSeconds: number; fadeOutSeconds: number; duck: boolean; loop: boolean; selection?: { startSeconds: number; endSeconds: number; durationSeconds: number }; loudness?: { enabled: boolean; targetLufs: number; targetTruePeakDbtp: number; maxTruePeakDbtp: number; lra: number; toleranceLufs: number } }
+  audioMix?: {
+    schemaVersion: 1
+    strategy: 'multitrack-audio-mix-v1'
+    dialogue: { enabled: boolean; volume: number; automation: Array<{ startSeconds: number; endSeconds: number; volume: number }> }
+    tracks: Array<{ id: string; role: 'music' | 'ambience' | 'sfx'; path: string; name: string; volume: number; startSeconds: number; endSeconds?: number; loop: boolean; duckAgainstDialogue: boolean; fadeInSeconds: number; fadeOutSeconds: number; automation: Array<{ startSeconds: number; endSeconds: number; volume: number }> }>
+    removedRoles: Array<'dialogue' | 'music' | 'ambience' | 'sfx'>
+    master: { loudness: { enabled: boolean; targetLufs: number; targetTruePeakDbtp: number; maxTruePeakDbtp: number; lra: number; toleranceLufs: number }; limiter: { limit: number; autoLevel: false } }
+  }
   timeline?: ({ startSeconds: number; endSeconds: number; durationSeconds?: number; removedDurationSeconds?: number; segments?: never } | { segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number; durationSeconds: number; targetStartSeconds: number; targetEndSeconds: number }>; durationSeconds: number; startSeconds?: never; endSeconds?: never; removedDurationSeconds?: never })
   semanticLocate?: {
     schemaVersion: 1
@@ -817,7 +825,7 @@ interface AiPlayerAPI {
     planEdit: (input: { instruction: string; sourcePath: string; clarificationId?: string }) => Promise<{ matched: boolean; cancelled?: boolean; clarification?: MediaEditClarification; review?: { kind: string; summary: string; candidates: Array<{ cueIndex: number; startSeconds: number; endSeconds: number; text: string; reason: string; matches: string[] }> }; decision?: MediaEditDecisionV1; versionPlan?: LongVideoVersionPlanV1; error?: string }>
     planHistory: (input: { instruction: string; currentPath: string }) => Promise<{ matched: boolean; action?: { action: 'undo' | 'redo'; instruction: string }; error?: string }>
     navigateHistory: (input: { instruction: string; currentPath: string }) => Promise<{ success: boolean; matched?: boolean; action?: 'undo' | 'redo'; currentPath?: string; projectId?: string; versionId?: string; cursor?: number; versionCount?: number; canUndo?: boolean; canRedo?: boolean; summary?: string; error?: string }>
-    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; versions?: Array<{ aspect: string; outputPath: string; durationSeconds: number; dimensions: { width: number; height: number } }>; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; effectReceipt?: { effectKinds: string[]; inputDurationSeconds: number; outputDurationSeconds: number; outputDimensions: { width: number; height: number }; dimensionMatch: boolean; representativeSample: { sourceSeconds: number; outputSeconds: number; meanAbsDiff: number }; changed: boolean }; trackingReceipt?: { strategy: string; subject: { description: string; observed: string }; frameCount: number; minimumConfidence: number; minimumSubjectCoverage: number; model: { providerId: string; providerName: string; model: string; local: boolean } }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; semanticSelect?: MediaEditDecisionV1['semanticSelect']; autoInspection?: MediaEditDecisionV1['autoInspection']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
+    trim: (input: { instruction: string; sourcePath: string; requestId: string; workspaceTaskId?: string; decision?: MediaEditDecisionV1 }) => Promise<{ success: boolean; matched?: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; versions?: Array<{ aspect: string; outputPath: string; durationSeconds: number; dimensions: { width: number; height: number } }>; durationSeconds?: number; expectedDurationSeconds?: number; timelineReceipt?: Array<{ operation: string; sourceRange: string; outputRange: string }>; music?: { path: string; volume: number; duck: boolean }; audioMix?: MediaEditDecisionV1['audioMix']; audioMixProof?: { schemaVersion: 1; method: string; verdict: string; tracks: Array<{ id: string; role: string; aligned: boolean }> }; effectReceipt?: { effectKinds: string[]; inputDurationSeconds: number; outputDurationSeconds: number; outputDimensions: { width: number; height: number }; dimensionMatch: boolean; representativeSample: { sourceSeconds: number; outputSeconds: number; meanAbsDiff: number }; changed: boolean }; trackingReceipt?: { strategy: string; subject: { description: string; observed: string }; frameCount: number; minimumConfidence: number; minimumSubjectCoverage: number; model: { providerId: string; providerName: string; model: string; local: boolean } }; semanticCut?: MediaEditDecisionV1['semanticCut']; semanticLocate?: MediaEditDecisionV1['semanticLocate']; semanticSelect?: MediaEditDecisionV1['semanticSelect']; autoInspection?: MediaEditDecisionV1['autoInspection']; projectCapsule?: { schemaVersion: 1; projectId: string; versionId: string; currentPath: string; cursor: number; versionCount: number; canUndo: boolean; canRedo: boolean }; summary?: string; error?: string }>
     runVersionBundle: (input: { sourcePath: string; plan: LongVideoVersionPlanV1; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputs?: string[]; versions?: Array<{ id: string; label: string; outputPath: string; durationSeconds: number; targetSeconds?: number }>; summary?: string; error?: string }>
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
     cancel: (requestId: string) => Promise<boolean>

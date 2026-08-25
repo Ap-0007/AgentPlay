@@ -15,6 +15,7 @@ const HARD_FAILURES = new Set([
   'UNIFIED_VISUAL_QC_FAILED',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
+  'MULTITRACK_PROOF_MISSING', 'TRACK_ALIGNMENT_MISMATCH', 'TRACK_AUTOMATION_MISSING', 'DUCKING_RECEIPT_MISSING',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -272,6 +273,36 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('pixel-change', '代表帧变化', changed ? 1 : 0, 10, reason('EFFECT_CHANGE_MISSING', '代表帧没有检测到视觉效果变化', true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '视觉效果成果没有进入可撤销项目', true))
     add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '视觉效果成果没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
+  } else if (taskType === 'media.edit-audio-mix') {
+    const expectedDuration = Number(result.expectedDurationSeconds || 0)
+    const actualDuration = Number(result.durationSeconds || 0)
+    const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
+    const durationOk = expectedDuration > 0 && actualDuration > 0 && Math.abs(actualDuration - expectedDuration) <= tolerance
+    const expectedTracks = Array.isArray(spec.decision?.audioMix?.tracks) ? spec.decision.audioMix.tracks : []
+    const timelineReceipt = Array.isArray(result.timelineReceipt) ? result.timelineReceipt : []
+    const timelineOk = timelineReceipt.length === expectedTracks.length + 1 && timelineReceipt.every((item) => String(item?.sourceRange || '').length > 0 && String(item?.outputRange || '').length > 0)
+    const proof = result.audioMixProof
+    const proofSchemaOk = proof?.schemaVersion === 1 && proof?.method === 'decoded-multitrack-pcm-v1'
+    const tracksAligned = proofSchemaOk && proof.verdict === 'matched' && Array.isArray(proof.tracks) && proof.tracks.length === expectedTracks.length && proof.tracks.every((item, index) => item.id === expectedTracks[index].id && item.role === expectedTracks[index].role && item.aligned === true)
+    const outputOk = proofSchemaOk && proof.output?.nonSilent === true && proof.output?.overloadFree === true && Number.isFinite(Number(proof.output?.samplePeakDbfs))
+    const automationExpected = Number(spec.decision?.audioMix?.dialogue?.automation?.length || 0) + expectedTracks.reduce((sum, track) => sum + Number(track.automation?.length || 0), 0)
+    const automationOk = proofSchemaOk && Number(proof.automation?.requested) === automationExpected && Number(proof.automation?.configured) === automationExpected
+    const duckExpected = proof?.dialogue?.configured ? expectedTracks.filter((track) => track.duckAgainstDialogue === true && spec.decision?.audioMix?.dialogue?.enabled === true).length : 0
+    const duckOk = proofSchemaOk && Number(proof.ducking?.configuredTracks) === duckExpected
+    const loudnessRequired = spec.decision?.audioMix?.master?.loudness?.enabled === true
+    const loudnessProof = result.loudnessProof
+    const loudnessOk = !loudnessRequired || (loudnessProof?.schemaVersion === 1 && loudnessProof?.method === 'ebur128-post-encode-v1' && loudnessProof?.verdict === 'matched' && Number.isFinite(Number(loudnessProof.integratedLufs)) && Number.isFinite(Number(loudnessProof.truePeakDbtp)))
+    const projectCapsule = result.projectCapsule
+    const projectOk = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && String(projectCapsule.versionId || '').startsWith('version-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '多轨音频任务返回失败状态', false))
+    add('artifact', '多轨成片', artifactRatio, 15, artifactFailure)
+    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '多轨成果不是受支持的视频格式', true))
+    add('duration', '成片时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', '多轨成片时长与源片不一致', true))
+    add('timeline', '轨道时间线', timelineOk ? 1 : 0, 10, reason('TIMELINE_RECEIPT_MISSING', '多轨时间线回执与冻结轨道数量不一致', true))
+    add('track-proof', '轨道声音与对齐证明', tracksAligned && outputOk ? 1 : 0, 15, !proofSchemaOk ? reason('MULTITRACK_PROOF_MISSING', '缺少最终成片的多轨PCM证明', true) : !tracksAligned ? reason('TRACK_ALIGNMENT_MISMATCH', '至少一条音乐、环境声或音效没有通过目标时间对齐', true) : reason('AUDIO_OVERLOAD', '多轨成片静音或样本峰值不安全', true), proofSchemaOk ? `${proof.tracks.filter((item) => item.aligned).length}/${expectedTracks.length} 轨对齐` : '')
+    add('automation-ducking', '分段音量与对白闪避', automationOk && duckOk ? 1 : 0, 10, !automationOk ? reason('TRACK_AUTOMATION_MISSING', '分段音量自动化回执不完整', true) : reason('DUCKING_RECEIPT_MISSING', '对白闪避回执与冻结轨道不一致', true))
+    add('loudness', '编码后响度', loudnessOk ? 1 : 0, 5, !loudnessProof ? reason('LOUDNESS_PROOF_MISSING', '缺少编码后响度回执', true) : reason('LOUDNESS_MISMATCH', '多轨总线编码后响度未达标', true))
+    add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '多轨成果没有进入可撤销编辑项目', true))
   } else if (taskType === 'media.edit-music') {
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)

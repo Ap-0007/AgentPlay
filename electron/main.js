@@ -76,7 +76,7 @@ const { TaskNotificationService } = require('./task-notification-service')
 const { videoTime, documentPage, sheetCell, imageRegion } = require('./evidence-reference')
 const { CrossMaterialQaService, detectCrossMaterialQuestion } = require('./cross-material-qa-service')
 const { imageSize } = require('./docx-image')
-const { compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
+const { compileAudioMixDecisionList, compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
 const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decision-list')
 const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-edit-service')
@@ -1232,7 +1232,7 @@ app.whenReady().then(async () => {
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).isFile()) fs.rmSync(outputPath, { force: true })
       }
       action = type === 'media.smart-reframe' ? '清理不合格的三比例构图成果并从冻结主体轨迹重新执行' : '清理不合格的修复/对比成果并从冻结画面修复决策重新执行'
-    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
+    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
       const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
@@ -2329,6 +2329,30 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.edit-audio-mix', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath, ...frozenTrackPaths] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.mix-audio') throw new Error('冻结的多轨音频决策无效')
+    assertEditDecisionList(decision)
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的多轨音频决策与源视频不一致')
+    const trackPaths = (decision.audioMix?.tracks || []).map((track) => assertAllowedPath(track.path || ''))
+    if (trackPaths.length !== frozenTrackPaths.length || trackPaths.some((trackPath, index) => path.resolve(trackPath).toLowerCase() !== path.resolve(frozenTrackPaths[index]).toLowerCase())) throw new Error('冻结的多轨音频任务缺少素材快照或顺序不一致')
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
+    const roles = { music: '音乐', ambience: '环境声', sfx: '音效' }
+    const trackSummary = decision.audioMix.tracks.map((track) => roles[track.role] || track.role).join('、')
+    const automationCount = Number(decision.audioMix.dialogue?.automation?.length || 0) + decision.audioMix.tracks.reduce((sum, track) => sum + Number(track.automation?.length || 0), 0)
+    status(`正在执行多轨混音（${decision.audioMix.dialogue?.enabled ? '对白' : '移除原声'}＋${trackSummary}，${automationCount} 段音量自动化，对白闪避与编码后响度复测）`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
+      : await mediaEditService.mixAudio({ sourcePath, outputPath, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.edit-concat', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
@@ -2842,21 +2866,23 @@ app.whenReady().then(async () => {
         if (path.resolve(String(decisionSource || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑方案与当前视频不一致')
         decision = JSON.parse(JSON.stringify(input.decision))
       } else {
-        const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+        const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
         decision = rawDecision ? attachEditDecisionList(rawDecision) : null
       }
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-sources'
         ? 'media.edit-concat-sources'
-        : decision.kind === 'media.visual-repair'
+         : decision.kind === 'media.visual-repair'
           ? 'media.visual-repair'
         : decision.kind === 'media.smart-reframe'
           ? 'media.smart-reframe'
         : decision.kind === 'media.visual-effects'
           ? 'media.edit-visual-effects'
-        : decision.kind === 'media.concat-segments'
+         : decision.kind === 'media.concat-segments'
           ? 'media.edit-concat'
-          : decision.kind === 'media.add-music'
+           : decision.kind === 'media.mix-audio'
+             ? 'media.edit-audio-mix'
+           : decision.kind === 'media.add-music'
             ? 'media.edit-music'
             : decision.kind === 'media.burn-subtitles'
               ? 'media.edit-burn-subtitles'
@@ -2874,7 +2900,9 @@ app.whenReady().then(async () => {
         ? [sourcePath, ...(decision.effectSources || []).map((item) => assertAllowedPath(item.path))]
         : decision.kind === 'media.concat-sources'
         ? decision.sources.map((item) => assertAllowedPath(item?.path || ''))
-        : decision.kind === 'media.add-music'
+         : decision.kind === 'media.mix-audio'
+           ? [sourcePath, ...decision.audioMix.tracks.map((track) => assertAllowedPath(track?.path || ''))]
+         : decision.kind === 'media.add-music'
           ? [sourcePath, assertAllowedPath(decision.audio?.path || '')]
           : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'
             ? [assertAllowedPath(decision.subtitle?.path || '')]

@@ -18,6 +18,7 @@ type IntentRouterOptions = {
   runVideoGenTask: (text: string) => Promise<void>
   runEditHistoryTask: (text: string) => Promise<boolean>
   runTrimTask: (text: string) => Promise<boolean>
+  runAudioMixAttachmentTask: (text: string) => Promise<boolean>
   runCompressTask: (text: string) => Promise<void>
   runDedupTask: (text: string) => Promise<void>
   runDocumentTask: () => Promise<void>
@@ -31,7 +32,7 @@ const BATCH_SCOPE_INTENT = /全部|批量|每个|逐一|一起/
 const BATCH_ACTION_INTENT = /压缩|转写/
 const COMPRESS_INTENT = /压缩|压到|视频太大|转码|转成 ?mp4|转换为 ?mp4/
 const DEDUP_INTENT = /^去重|重复文件|查重/
-const EDIT_WITHOUT_SOURCE_INTENT = /(?:剪一下|剪辑|裁剪|剪出|删除视频|删掉视频|防抖|稳定画面|自动修复曝光|修复偏色|(?:删除|删掉|保留|留下|拼接|重排)[\s\S]*(?:秒|分钟|片段)|(?:16\s*[:：]\s*9[\s\S]*9\s*[:：]\s*16|横屏[\s\S]*竖屏)[\s\S]*(?:跟踪|追踪|主体|方形))/
+const EDIT_WITHOUT_SOURCE_INTENT = /(?:剪一下|剪辑|裁剪|剪出|删除视频|删掉视频|防抖|稳定画面|自动修复曝光|修复偏色|多轨混音|添加环境声|添加音效|对白闪避|分段音量|(?:删除|删掉|保留|留下|拼接|重排)[\s\S]*(?:秒|分钟|片段)|(?:16\s*[:：]\s*9[\s\S]*9\s*[:：]\s*16|横屏[\s\S]*竖屏)[\s\S]*(?:跟踪|追踪|主体|方形))/
 const LIBRARY_INTENTS: Array<[RegExp, string, string]> = [
   [/屏幕录制|开始录制|录屏/, 'record', '已打开屏幕录制（在媒体库页操作）'],
   [/整理建议|整理素材|素材整理/, 'organize', '正在生成素材整理建议'],
@@ -42,7 +43,7 @@ const LIBRARY_INTENTS: Array<[RegExp, string, string]> = [
 export function createIntentRouter(options: IntentRouterOptions) {
   const {
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
-    isVideoGenerationIntent, runBatchTask, runCrossMaterialQuestion, runVideoGenTask, runEditHistoryTask, runTrimTask,
+    isVideoGenerationIntent, runBatchTask, runCrossMaterialQuestion, runVideoGenTask, runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
     runCompressTask, runDedupTask, runDocumentTask, runOutcomeWorkflow, setAnalysisFormat,
     runAnalysisTask, send
   } = options
@@ -63,6 +64,7 @@ export function createIntentRouter(options: IntentRouterOptions) {
       return
     }
     if (await runCrossMaterialQuestion(text)) return
+    if (attachments.length > 0 && await runAudioMixAttachmentTask(text)) return
     if (attachments.length > 0) {
       await runDocumentTask()
       return

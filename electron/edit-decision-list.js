@@ -135,6 +135,55 @@ function buildEditDecisionList(decision) {
       materials, tracks, operations, output, quality
     }
   }
+  if (decision.kind === 'media.mix-audio') {
+    const video = material('material-video-1', 'video', decision.source)
+    const mix = decision.audioMix
+    const audioTracks = Array.isArray(mix?.tracks) ? mix.tracks : []
+    if (mix?.schemaVersion !== 1 || mix?.strategy !== 'multitrack-audio-mix-v1' || audioTracks.length > 8 || (!mix.dialogue?.enabled && !audioTracks.length)) throw new Error('EDL 多轨音频合同无效')
+    const materials = audioTracks.map((track, index) => material(`material-audio-${index + 1}`, track.role, track))
+    const validateAutomation = (automation, label) => (Array.isArray(automation) ? automation : []).map((item) => {
+      const range = finiteRange(item.startSeconds, item.endSeconds, `${label}分段音量`)
+      const volume = Number(item.volume)
+      if (!Number.isFinite(volume) || volume < 0 || volume > 1) throw new Error(`EDL ${label}分段音量无效`)
+      return { ...range, volume }
+    })
+    const dialogueVolume = Number(mix.dialogue?.volume)
+    if (!Number.isFinite(dialogueVolume) || dialogueVolume < 0 || dialogueVolume > 1) throw new Error('EDL 对白音量无效')
+    const operations = [{
+      id: 'operation-dialogue', type: mix.dialogue?.enabled ? 'mix-dialogue' : 'disable-dialogue', materialId: video.id,
+      trackIds: ['track-dialogue-1'], parameters: { enabled: mix.dialogue?.enabled === true, volume: dialogueVolume, automation: validateAutomation(mix.dialogue?.automation, '对白') }
+    }]
+    for (let index = 0; index < audioTracks.length; index += 1) {
+      const track = audioTracks[index]
+      if (!['music', 'ambience', 'sfx'].includes(track.role)) throw new Error('EDL 多轨音频角色无效')
+      const volume = Number(track.volume)
+      const startSeconds = Number(track.startSeconds)
+      const endSeconds = track.endSeconds == null ? null : Number(track.endSeconds)
+      if (!Number.isFinite(volume) || volume <= 0 || volume > 1 || !Number.isFinite(startSeconds) || startSeconds < 0 || (endSeconds != null && (!Number.isFinite(endSeconds) || endSeconds <= startSeconds))) throw new Error('EDL 多轨音频参数无效')
+      operations.push({
+        id: `operation-audio-${index + 1}`, type: 'mix-audio-track', materialId: materials[index].id,
+        trackIds: [`track-audio-${index + 1}`],
+        ...(endSeconds != null ? { targetRangeSeconds: { start: startSeconds, end: endSeconds } } : {}),
+        parameters: {
+          role: track.role, volume, startSeconds, loop: track.loop === true,
+          duckAgainstDialogue: track.duckAgainstDialogue === true,
+          fadeInSeconds: Number(track.fadeInSeconds), fadeOutSeconds: Number(track.fadeOutSeconds),
+          automation: validateAutomation(track.automation, track.role)
+        }
+      })
+    }
+    return {
+      schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
+      materials: [video, ...materials],
+      tracks: [
+        { id: 'track-video-1', type: 'video', materialId: video.id },
+        { id: 'track-dialogue-1', type: 'audio', materialId: video.id, optional: true },
+        ...materials.map((item, index) => ({ id: `track-audio-${index + 1}`, type: 'audio', materialId: item.id }))
+      ],
+      operations, output,
+      quality: { ...quality, audioMix: JSON.parse(JSON.stringify(mix)), loudness: JSON.parse(JSON.stringify(mix.master?.loudness || {})) }
+    }
+  }
   if (decision.kind === 'media.add-music') {
     const video = material('material-video-1', 'video', decision.source)
     const music = material('material-music-1', 'music', decision.audio)
