@@ -189,3 +189,15 @@ test('audio probing distinguishes a real audio stream from a silent video', asyn
   assert.equal(await service.probeHasAudio('silent.mp4'), false)
   assert.ok(calls.every((args) => args.includes('a:0') && args.includes('stream=index')))
 })
+
+test('audio stream probing returns channel count and layout for separation gates', async () => {
+  const { EventEmitter } = require('events')
+  const spawnImpl = (_file, args) => {
+    const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => {}
+    process.nextTick(() => { child.stdout.emit('data', Buffer.from(JSON.stringify({ streams: [{ channels: 2, channel_layout: 'stereo', sample_rate: '48000', codec_name: 'aac' }] }))); child.emit('exit', 0) })
+    assert.ok(args.includes('stream=channels,channel_layout,sample_rate,codec_name'))
+    return child
+  }
+  const service = new VideoFrameService({ ffprobePath: process.execPath, spawnImpl })
+  assert.deepEqual(await service.probeAudioStreamInfo('stereo.mp4'), { channels: 2, channelLayout: 'stereo', sampleRate: 48000, codecName: 'aac' })
+})

@@ -59,9 +59,9 @@ test('0.9.0 reports strict closure separately from implementation coverage again
 
 test('0.9.1 records completed semantic and professional visual groups without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*44%（11\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 11)
-  assert.equal(checkboxCount(content, false), 14)
+  assert.match(content, /功能交付完成率：\*\*48%（12\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 12)
+  assert.equal(checkboxCount(content, false), 13)
   assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
@@ -156,12 +156,18 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /UNEXPECTED_BLACK_BARS/)
   assert.match(content, /890 tests、888 pass、0 fail、2项Archive外部网络条件skip/)
   assert.match(content, /B组5\/5闭环，0\.9\.1更新为10\/25=40%/)
-  assert.match(content, /#### C\. 专业音频与音乐（1\/5）/)
+  assert.match(content, /#### C\. 专业音频与音乐（2\/5）/)
   assert.match(content, /第十九个纵向切片（C1闭环并正式勾选）/)
   assert.match(content, /multitrack-audio-mix-v1/)
   assert.match(content, /3\/3外部轨对齐、2段音量自动化、2轨对白闪避/)
   assert.match(content, /911 tests、910 pass、0 fail、1项Archive\.org外部网络条件skip/)
   assert.match(content, /C组更新为1\/5，0\.9\.1更新为11\/25=44%/)
+  assert.match(content, /第二十个纵向切片（C2闭环并正式勾选）/)
+  assert.match(content, /ffmpeg-audio-repair-v1/)
+  assert.match(content, /restoresSpeech=false/)
+  assert.match(content, /不是AI专业分轨/)
+  assert.match(content, /924 tests、924 pass、0 fail、0 skip/)
+  assert.match(content, /C组更新为2\/5，0\.9\.1更新为12\/25=48%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

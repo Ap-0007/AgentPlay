@@ -184,6 +184,20 @@ function buildEditDecisionList(decision) {
       quality: { ...quality, audioMix: JSON.parse(JSON.stringify(mix)), loudness: JSON.parse(JSON.stringify(mix.master?.loudness || {})) }
     }
   }
+  if (decision.kind === 'media.repair-audio') {
+    const video = material('material-video-1', 'video', decision.source)
+    const repair = decision.audioRepair
+    if (repair?.schemaVersion !== 1 || repair?.strategy !== 'ffmpeg-audio-repair-v1' || !['boolean'].includes(typeof repair.denoise?.enabled) || !['boolean'].includes(typeof repair.dcRemoval?.enabled) || !['boolean'].includes(typeof repair.silenceRepair?.enabled) || !['boolean'].includes(typeof repair.separation?.enabled)) throw new Error('EDL 音频修复合同无效')
+    const enabled = ['denoise', 'dcRemoval', 'loudness', 'silenceRepair', 'separation'].filter((key) => repair[key]?.enabled)
+    if (!enabled.length) throw new Error('EDL 音频修复没有启用动作')
+    return {
+      schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
+      materials: [video],
+      tracks: [{ id: 'track-video-1', type: 'video', materialId: video.id }, { id: 'track-audio-1', type: 'audio', materialId: video.id }],
+      operations: enabled.map((key, index) => ({ id: `operation-audio-repair-${index + 1}`, type: `audio-${key}`, materialId: video.id, trackIds: ['track-audio-1'], parameters: JSON.parse(JSON.stringify(repair[key])) })),
+      output, quality: { ...quality, audioRepair: JSON.parse(JSON.stringify(repair)), expectedOutputs: repair.separation.enabled ? ['video', 'voice', 'accompaniment'] : ['video'] }
+    }
+  }
   if (decision.kind === 'media.add-music') {
     const video = material('material-video-1', 'video', decision.source)
     const music = material('material-music-1', 'music', decision.audio)

@@ -76,7 +76,7 @@ const { TaskNotificationService } = require('./task-notification-service')
 const { videoTime, documentPage, sheetCell, imageRegion } = require('./evidence-reference')
 const { CrossMaterialQaService, detectCrossMaterialQuestion } = require('./cross-material-qa-service')
 const { imageSize } = require('./docx-image')
-const { compileAudioMixDecisionList, compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
+const { compileAudioMixDecisionList, compileAudioRepairDecisionList, compileBurnSubtitlesDecisionList, compileConcatSourcesDecisionList, compileCueEditDecisionList, compileEditDecisionList, compileEditHistoryAction, compileMuxSubtitlesDecisionList, compileMusicDecisionList, compileShiftSubtitlesDecisionList, compileTranslateSubtitlesDecisionList } = require('./media-edit-decision')
 const { MediaEditConversation } = require('./media-edit-conversation')
 const { assertEditDecisionList, attachEditDecisionList } = require('./edit-decision-list')
 const { MediaEditService, decodeSubtitleText, parseSrtCues } = require('./media-edit-service')
@@ -1226,12 +1226,12 @@ app.whenReady().then(async () => {
       const actualOutput = actualValue ? path.resolve(actualValue) : ''
       if (frozenOutput && actualOutput === frozenOutput && fs.existsSync(frozenOutput) && fs.statSync(frozenOutput).isFile()) fs.rmSync(frozenOutput, { force: true })
       action = '清理不合格的任务自产物并重新压缩'
-    } else if (type === 'media.smart-reframe' || type === 'media.visual-repair') {
+    } else if (type === 'media.smart-reframe' || type === 'media.visual-repair' || type === 'media.audio-repair') {
       for (const outputValue of task.spec?.plannedOutputs || []) {
         const outputPath = path.resolve(String(outputValue || ''))
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).isFile()) fs.rmSync(outputPath, { force: true })
       }
-      action = type === 'media.smart-reframe' ? '清理不合格的三比例构图成果并从冻结主体轨迹重新执行' : '清理不合格的修复/对比成果并从冻结画面修复决策重新执行'
+      action = type === 'media.smart-reframe' ? '清理不合格的三比例构图成果并从冻结主体轨迹重新执行' : type === 'media.audio-repair' ? '清理不合格的音频修复/分离成果并从冻结音频决策重新执行' : '清理不合格的修复/对比成果并从冻结画面修复决策重新执行'
     } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
@@ -2353,6 +2353,30 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.audio-repair', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.repair-audio') throw new Error('冻结的音频修复决策无效')
+    assertEditDecisionList(decision)
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的音频修复决策与源视频不一致')
+    const expectedOutputCount = decision.audioRepair?.separation?.enabled ? 3 : 1
+    const plannedOutputs = Array.isArray(task.spec.plannedOutputs) ? task.spec.plannedOutputs : []
+    if (plannedOutputs.length !== expectedOutputCount) throw new Error('冻结的音频修复输出数量无效')
+    const outputPath = validatePlannedMediaOutput(plannedOutputs[0], sourcePath, decision.output.suffix, '.mp4', task.id)
+    const stemPaths = plannedOutputs.slice(1).map((item, index) => validatePlannedMediaOutput(item, sourcePath, decision.audioRepair.separation.outputs[index].suffix, '.wav', task.id, index + 1))
+    const actions = [decision.audioRepair.denoise.enabled ? '降噪' : '', decision.audioRepair.dcRemoval.enabled ? '去直流' : '', decision.audioRepair.silenceRepair.enabled ? '短静音底噪修复' : '', decision.audioRepair.loudness.enabled ? '响度匹配' : '', decision.audioRepair.separation.enabled ? '基础人声/伴奏分离' : ''].filter(Boolean)
+    status(`正在执行${actions.join('、')}；基础分离会明确保留串音/变薄伪影提示`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verifyAudioRepair({ sourcePath, outputPath, stemPaths, decision, signal })
+      : await mediaEditService.repairAudio({ sourcePath, outputPath, stemPaths, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, relatedOutputPaths: stemPaths, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    for (const item of result.outputs || [outputPath]) userAuthorizedPaths.add(path.resolve(item))
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.edit-concat', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
@@ -2866,7 +2890,7 @@ app.whenReady().then(async () => {
         if (path.resolve(String(decisionSource || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑方案与当前视频不一致')
         decision = JSON.parse(JSON.stringify(input.decision))
       } else {
-        const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+        const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioRepairDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
         decision = rawDecision ? attachEditDecisionList(rawDecision) : null
       }
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
@@ -2880,6 +2904,8 @@ app.whenReady().then(async () => {
           ? 'media.edit-visual-effects'
          : decision.kind === 'media.concat-segments'
           ? 'media.edit-concat'
+           : decision.kind === 'media.repair-audio'
+             ? 'media.audio-repair'
            : decision.kind === 'media.mix-audio'
              ? 'media.edit-audio-mix'
            : decision.kind === 'media.add-music'
@@ -2947,6 +2973,8 @@ app.whenReady().then(async () => {
             ? { plannedOutputs: decision.reframe.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.mp4', requestId, index)) }
             : decision.kind === 'media.visual-repair'
               ? { plannedOutputs: [plannedMediaOutput(outputAnchor, '画面修复版', '.mp4', requestId, 0), plannedMediaOutput(outputAnchor, '修复前后对比', '.mp4', requestId, 1)] }
+              : decision.kind === 'media.repair-audio'
+                ? { plannedOutputs: [plannedMediaOutput(outputAnchor, decision.output.suffix, '.mp4', requestId, 0), ...decision.audioRepair.separation.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.wav', requestId, index + 1))] }
               : {}),
           ...(engineChoice ? { engineChoice } : {}),
           ...(modelRoute ? { modelRoute } : {})

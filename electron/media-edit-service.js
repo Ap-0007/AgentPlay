@@ -4,6 +4,7 @@ const path = require('path')
 const { buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, parseSrt, translateEntries } = require('./subtitle-bilingual-service')
 const { burnForceStyle } = require('./media-edit-decision')
 const { AudioMixService } = require('./audio-mix-service')
+const { AudioRepairService } = require('./audio-repair-service')
 const { parseSignalStatsLog, shakeScoreFromTransforms } = require('./visual-repair-service')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
@@ -251,9 +252,12 @@ class MediaEditService {
     this.frames = frames
     this.fs = fsImpl
     this.audioMixService = new AudioMixService({ frames, fsImpl })
+    this.audioRepairService = new AudioRepairService({ frames, fsImpl })
   }
 
   async mixAudio(input = {}) { return this.audioMixService.mix(input) }
+  async repairAudio(input = {}) { return this.audioRepairService.run(input) }
+  async verifyAudioRepair(input = {}) { return this.audioRepairService.verify(input) }
 
   async trim({ sourcePath, outputPath, decision, signal } = {}) {
     const source = path.resolve(String(sourcePath || ''))

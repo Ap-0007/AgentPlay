@@ -175,6 +175,27 @@ class VideoFrameService {
     return out.trim().length > 0
   }
 
+  async probeAudioStreamInfo(sourcePath, { signal } = {}) {
+    if (!this.ffprobePath || !fs.existsSync(this.ffprobePath)) throw new Error('缺少 ffprobe 组件')
+    const child = this.spawnImpl(this.ffprobePath, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=channels,channel_layout,sample_rate,codec_name', '-of', 'json', sourcePath], { windowsHide: true, shell: false })
+    let out = ''; let stderr = ''
+    await new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (fn, value) => { if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); fn(value) }
+      const onAbort = () => { try { child.kill() } catch {}; finish(reject, new Error('已取消')) }
+      if (signal) { if (signal.aborted) return onAbort(); signal.addEventListener('abort', onAbort, { once: true }) }
+      child.stdout?.on('data', (chunk) => { out += chunk.toString('utf8') })
+      child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8') })
+      child.once('error', (error) => finish(reject, error))
+      child.once('exit', (code) => code === 0 ? finish(resolve) : finish(reject, new Error(`ffprobe 退出码 ${code}：${stderr.slice(-300)}`)))
+    })
+    try {
+      const stream = JSON.parse(out)?.streams?.[0]
+      const channels = Number(stream?.channels); const sampleRate = Number(stream?.sample_rate)
+      return channels > 0 ? { channels, channelLayout: String(stream.channel_layout || ''), sampleRate: sampleRate > 0 ? sampleRate : null, codecName: String(stream.codec_name || '') } : null
+    } catch { return null }
+  }
+
   async readRawFrameBuffer(args, { signal } = {}) {
     if (!this.ffmpegPath || !fs.existsSync(this.ffmpegPath)) return null
     try {

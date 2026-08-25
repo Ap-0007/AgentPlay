@@ -16,6 +16,7 @@ const HARD_FAILURES = new Set([
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'MULTITRACK_PROOF_MISSING', 'TRACK_ALIGNMENT_MISMATCH', 'TRACK_AUTOMATION_MISSING', 'DUCKING_RECEIPT_MISSING',
+  'AUDIO_REPAIR_PROOF_MISSING', 'DENOISE_NOT_IMPROVED', 'DC_NOT_IMPROVED', 'SILENCE_REPAIR_MISMATCH', 'SEPARATION_PROOF_MISSING', 'SEPARATION_WARNING_MISSING',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -303,6 +304,35 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('automation-ducking', '分段音量与对白闪避', automationOk && duckOk ? 1 : 0, 10, !automationOk ? reason('TRACK_AUTOMATION_MISSING', '分段音量自动化回执不完整', true) : reason('DUCKING_RECEIPT_MISSING', '对白闪避回执与冻结轨道不一致', true))
     add('loudness', '编码后响度', loudnessOk ? 1 : 0, 5, !loudnessProof ? reason('LOUDNESS_PROOF_MISSING', '缺少编码后响度回执', true) : reason('LOUDNESS_MISMATCH', '多轨总线编码后响度未达标', true))
     add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '多轨成果没有进入可撤销编辑项目', true))
+  } else if (taskType === 'media.audio-repair') {
+    const repair = spec.decision?.audioRepair || {}
+    const expectedOutputs = repair.separation?.enabled ? 3 : 1
+    const outputCountOk = outputs.length === expectedOutputs && artifactRatio === 1
+    const expectedDuration = Number(result.expectedDurationSeconds || 0); const actualDuration = Number(result.durationSeconds || 0)
+    const durationOk = expectedDuration > 0 && actualDuration > 0 && Math.abs(expectedDuration - actualDuration) <= Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
+    const proof = result.audioRepairProof
+    const proofSchemaOk = proof?.schemaVersion === 1 && proof?.method === 'decoded-audio-repair-v1'
+    const denoiseOk = !repair.denoise?.enabled || ['improved', 'not-needed'].includes(proof?.denoise?.verdict)
+    const dcOk = !repair.dcRemoval?.enabled || ['improved', 'not-needed'].includes(proof?.dcRemoval?.verdict)
+    const silenceOk = !repair.silenceRepair?.enabled || (['filled', 'not-needed'].includes(proof?.silenceRepair?.verdict) && proof?.silenceRepair?.restoresSpeech === false)
+    const repairProofOk = proofSchemaOk && denoiseOk && dcOk && silenceOk
+    const separation = result.separationProof
+    const separationOk = !repair.separation?.enabled || (separation?.schemaVersion === 1 && separation?.method === 'stereo-mid-side-v1' && separation?.verdict === 'matched-with-artifact-warning' && separation?.outputs?.length === 2 && separation?.distinct === true)
+    const warningOk = !repair.separation?.enabled || (String(separation?.artifactWarning || '').includes('不是AI专业分轨') && separation?.claims?.professionalAiSeparation === false && separation?.claims?.mayContainBleed === true)
+    const loudness = result.loudnessProof
+    const loudnessOk = !repair.loudness?.enabled || (loudness?.schemaVersion === 1 && loudness?.method === 'ebur128-post-encode-v1' && loudness?.verdict === 'matched')
+    const project = result.projectCapsule
+    const projectOk = project?.schemaVersion === 1 && String(project.projectId || '').startsWith('edit-') && project.canUndo === true && outputs.some((item) => path.resolve(item) === path.resolve(String(project.currentPath || '')))
+    const proofFailure = !proofSchemaOk ? reason('AUDIO_REPAIR_PROOF_MISSING', '缺少修复前后PCM证明', true) : !denoiseOk ? reason('DENOISE_NOT_IMPROVED', '降噪没有取得可测改善', true) : !dcOk ? reason('DC_NOT_IMPROVED', '去直流没有取得可测改善', true) : reason('SILENCE_REPAIR_MISMATCH', '短静音底噪修复不完整或冒充恢复语音', true)
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '音频修复任务返回失败状态', false))
+    add('artifacts', '修复版与分离轨', outputCountOk ? 1 : 0, 15, artifactFailure || reason('BUNDLE_INCOMPLETE', `期望 ${expectedOutputs} 个音频修复成果`, true))
+    add('duration', '声画时长', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', '音频修复成片时长与源片不一致', true))
+    add('repair-proof', '降噪/去直流/短静音证明', repairProofOk ? 1 : 0, 15, proofFailure)
+    add('silence-honesty', '静音修复边界', silenceOk ? 1 : 0, 10, reason('SILENCE_REPAIR_MISMATCH', '静音修复必须明确只补连续底噪、不恢复丢失语音', true))
+    add('separation', '基础人声/伴奏分离', separationOk ? 1 : 0, 15, reason('SEPARATION_PROOF_MISSING', '基础分离缺少两条不同且非静音的立体声成果', true))
+    add('separation-warning', '分离伪影提示', warningOk ? 1 : 0, 5, reason('SEPARATION_WARNING_MISSING', '基础分离没有说明串音、变薄和非AI专业分轨边界', true))
+    add('loudness', '编码后响度', loudnessOk ? 1 : 0, 10, reason('LOUDNESS_MISMATCH', '音频修复编码后响度未达标', true))
+    add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '音频修复成果没有进入可撤销项目', true))
   } else if (taskType === 'media.edit-music') {
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)

@@ -1,5 +1,6 @@
 const path = require('path')
 const { compileAudioMixDecisionList, isAudioMixIntent } = require('./audio-mix-decision')
+const { compileAudioRepairDecisionList } = require('./audio-repair-decision')
 
 const CHINESE_DIGITS = Object.freeze({
   零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4,
@@ -511,6 +512,8 @@ function planEditInstruction({ instruction, sourcePath } = {}) {
   if (concatSourcesDecision) return { matched: true, decision: concatSourcesDecision }
   const audioMixDecision = compileAudioMixDecisionList({ instruction: text, sourcePath: source })
   if (audioMixDecision) return { matched: true, decision: audioMixDecision }
+  const audioRepairDecision = compileAudioRepairDecisionList({ instruction: text, sourcePath: source })
+  if (audioRepairDecision) return { matched: true, decision: audioRepairDecision }
   const musicDecision = compileMusicDecisionList({ instruction: text, sourcePath: source })
   if (musicDecision) return { matched: true, decision: musicDecision }
   const burnDecision = compileBurnSubtitlesDecisionList({ instruction: text, sourcePath: source })
@@ -768,6 +771,8 @@ function resolveEditClarification({ clarification, answer } = {}) {
   if (replacementConcat) return { matched: true, decision: replacementConcat }
   const replacementAudioMix = compileAudioMixDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementAudioMix) return { matched: true, decision: replacementAudioMix }
+  const replacementAudioRepair = compileAudioRepairDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
+  if (replacementAudioRepair) return { matched: true, decision: replacementAudioRepair }
   const replacementMusic = compileMusicDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
   if (replacementMusic) return { matched: true, decision: replacementMusic }
   const replacementBurn = compileBurnSubtitlesDecisionList({ instruction: replacementText, sourcePath: pending.sourcePath })
@@ -974,4 +979,4 @@ module.exports = {
   compileTranslateSubtitlesDecisionList,
   compileShiftSubtitlesDecisionList,
   burnForceStyle,
-  compileAudioMixDecisionList, compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }
+  compileAudioMixDecisionList, compileAudioRepairDecisionList, compileMusicDecisionList, compileEditDecisionList, compileEditHistoryAction, planEditInstruction, resolveEditClarification, parseTimeSeconds, chineseInteger, portableBasename }

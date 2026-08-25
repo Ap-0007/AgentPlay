@@ -24,7 +24,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isVisualEffects = runtimeTask.type === 'media.edit-visual-effects'
       const isSmartReframe = runtimeTask.type === 'media.smart-reframe'
       const isVisualRepair = runtimeTask.type === 'media.visual-repair'
-      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music' || runtimeTask.type === 'media.edit-audio-mix' || runtimeTask.type === 'media.edit-concat-sources' || runtimeTask.type === 'media.edit-burn-subtitles' || runtimeTask.type === 'media.edit-mux-subtitles'
+      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music' || runtimeTask.type === 'media.edit-audio-mix' || runtimeTask.type === 'media.audio-repair' || runtimeTask.type === 'media.edit-concat-sources' || runtimeTask.type === 'media.edit-burn-subtitles' || runtimeTask.type === 'media.edit-mux-subtitles'
       const isSubtitleShift = runtimeTask.type === 'media.shift-subtitles'
       const isSubtitleTranslate = runtimeTask.type === 'media.translate-subtitles'
       const isSubtitleCueEdit = runtimeTask.type === 'media.edit-subtitle-cues'

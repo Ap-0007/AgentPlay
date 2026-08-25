@@ -275,6 +275,31 @@ test('C1 multitrack quality requires every aligned track, automation, ducking, l
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('C2 audio repair quality requires measurable repairs and an explicit non-AI separation warning', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-audio-repair-'))
+  try {
+    const outputs = ['repaired.mp4', 'voice.wav', 'accompaniment.wav'].map((name) => path.join(dir, name))
+    fs.writeFileSync(outputs[0], Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    fs.writeFileSync(outputs[1], Buffer.alloc(2048, 1)); fs.writeFileSync(outputs[2], Buffer.alloc(2048, 2))
+    const repair = { denoise: { enabled: true }, dcRemoval: { enabled: true }, silenceRepair: { enabled: true }, loudness: { enabled: true }, separation: { enabled: true } }
+    const spec = { decision: { kind: 'media.repair-audio', verification: { toleranceSeconds: 0.2 }, audioRepair: repair } }
+    const base = {
+      success: true, outputs, expectedDurationSeconds: 6, durationSeconds: 6.02,
+      audioRepairProof: { schemaVersion: 1, method: 'decoded-audio-repair-v1', denoise: { verdict: 'improved' }, dcRemoval: { verdict: 'improved' }, silenceRepair: { verdict: 'filled', restoresSpeech: false } },
+      separationProof: { schemaVersion: 1, method: 'stereo-mid-side-v1', verdict: 'matched-with-artifact-warning', outputs: [{}, {}], distinct: true, artifactWarning: '有串音和变薄风险；这不是AI专业分轨。', claims: { professionalAiSeparation: false, mayContainBleed: true } },
+      loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched' },
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: outputs[0], canUndo: true }
+    }
+    const passed = evaluateTaskResult('media.audio-repair', base, spec)
+    assert.equal(passed.passed, true)
+    assert.equal(passed.score, 100)
+    const dishonest = structuredClone(base); dishonest.separationProof.artifactWarning = ''
+    const failed = evaluateTaskResult('media.audio-repair', dishonest, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'SEPARATION_WARNING_MISSING'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('removed-segment media uses the same artifact, duration, timeline and project quality gate', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-remove-segment-'))
   try {
