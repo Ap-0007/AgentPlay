@@ -166,7 +166,7 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /ffmpeg-audio-repair-v1/)
   assert.match(content, /restoresSpeech=false/)
   assert.match(content, /不是AI专业分轨/)
-  assert.match(content, /924 tests、924 pass、0 fail、0 skip/)
+  assert.match(content, /925 tests、924 pass、0 fail、1项Archive\.org外网条件skip/)
   assert.match(content, /C组更新为2\/5，0\.9\.1更新为12\/25=48%/)
 })
 

@@ -126,6 +126,8 @@ function hashFile(filePath, { signal, onProgress, createReadStream = fs.createRe
     const hash = crypto.createHash('sha256')
     let bytesRead = 0
     let settled = false
+    let readEnded = false
+    let digest = ''
     let stream
     const finish = (callback, value) => {
       if (settled) return
@@ -152,7 +154,18 @@ function hashFile(filePath, { signal, onProgress, createReadStream = fs.createRe
       bytesRead += chunk.length
       onProgress?.({ bytesRead })
     })
-    stream.once('end', () => finish(resolve, hash.digest('hex')))
+    stream.once('end', () => {
+      readEnded = true
+      digest = hash.digest('hex')
+      if (stream.closed) finish(resolve, digest)
+    })
+    stream.once('close', () => {
+      if (!readEnded) {
+        finish(reject, signal?.aborted ? abortError() : new Error('文件读取提前关闭'))
+        return
+      }
+      finish(resolve, digest)
+    })
   })
 }
 
