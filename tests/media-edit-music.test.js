@@ -94,7 +94,7 @@ test('music wiring: task registered, decision routed, renderer gate accepts, tim
   assert.match(main, /decision\.kind === 'media\.add-music'[\s\S]{0,180}\[sourcePath, assertAllowedPath\(decision\.audio\?\.path \|\| ''\)\]/, '配乐任务快照必须同时冻结视频和音乐文件')
   assert.match(panel, /'media\.add-music'/)
   assert.match(panel, /对白闪避/)
-  assert.match(panel, /operation === 'music' \? '音乐' : operation === 'audio-mix' \|\| operation === 'audio-repair' \? '音频' : '源片'/)
+  assert.match(panel, /operation === 'music' \? '音乐' : operation === 'audio-mix' \|\| operation === 'audio-repair' \|\| operation === 'rhythm' \? '音频' : '源片'/)
   assert.match(panel, /两遍响度/)
   assert.match(runtime, /media\.edit-music/)
   assert.match(types, /selection\?: \{ startSeconds: number; endSeconds: number; durationSeconds: number \}/)

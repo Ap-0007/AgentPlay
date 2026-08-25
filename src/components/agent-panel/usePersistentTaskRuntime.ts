@@ -24,7 +24,8 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isVisualEffects = runtimeTask.type === 'media.edit-visual-effects'
       const isSmartReframe = runtimeTask.type === 'media.smart-reframe'
       const isVisualRepair = runtimeTask.type === 'media.visual-repair'
-      const isTimelineEdit = runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music' || runtimeTask.type === 'media.edit-audio-mix' || runtimeTask.type === 'media.audio-repair' || runtimeTask.type === 'media.edit-concat-sources' || runtimeTask.type === 'media.edit-burn-subtitles' || runtimeTask.type === 'media.edit-mux-subtitles'
+      const isRhythmEdit = runtimeTask.type === 'media.rhythm-edit'
+      const isTimelineEdit = isRhythmEdit || runtimeTask.type === 'media.edit-trim' || runtimeTask.type === 'media.edit-remove' || runtimeTask.type === 'media.edit-concat' || runtimeTask.type === 'media.edit-music' || runtimeTask.type === 'media.edit-audio-mix' || runtimeTask.type === 'media.audio-repair' || runtimeTask.type === 'media.edit-concat-sources' || runtimeTask.type === 'media.edit-burn-subtitles' || runtimeTask.type === 'media.edit-mux-subtitles'
       const isSubtitleShift = runtimeTask.type === 'media.shift-subtitles'
       const isSubtitleTranslate = runtimeTask.type === 'media.translate-subtitles'
       const isSubtitleCueEdit = runtimeTask.type === 'media.edit-subtitle-cues'
@@ -129,7 +130,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         const removesSegment = runtimeTask.type === 'media.edit-remove'
         const concatenatesSegments = runtimeTask.type === 'media.edit-concat'
         const segmentCount = trimDecision?.timeline?.segments?.length || 0
-        kind = 'media'; label = concatenatesSegments ? `拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'} ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || (concatenatesSegments ? `按顺序拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'}第${start}秒到第${end}秒`)); source = firstSourcePath
+        kind = 'media'; label = isRhythmEdit ? '节拍剪辑与高潮对齐' : concatenatesSegments ? `拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'} ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || (isRhythmEdit ? '按真实节拍切镜、高潮对齐并自然收束片尾' : concatenatesSegments ? `按顺序拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'}第${start}秒到第${end}秒`)); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isSubtitleShift) {
         kind = 'media'; label = '字幕时间调移'; instruction = String(runtimeTask.spec?.instruction || '字幕时间调移'); source = firstSourcePath

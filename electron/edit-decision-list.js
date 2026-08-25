@@ -198,6 +198,40 @@ function buildEditDecisionList(decision) {
       output, quality: { ...quality, audioRepair: JSON.parse(JSON.stringify(repair)), expectedOutputs: repair.separation.enabled ? ['video', 'voice', 'accompaniment'] : ['video'] }
     }
   }
+  if (decision.kind === 'media.rhythm-edit') {
+    const video = material('material-video-1', 'video', decision.source)
+    const music = material('material-music-1', 'music', decision.music)
+    const rhythm = decision.rhythm
+    const segments = Array.isArray(rhythm?.segments) ? rhythm.segments : []
+    if (rhythm?.schemaVersion !== 1 || rhythm?.strategy !== 'beat-synced-jump-cut-v1' || segments.length < 4 || segments.length > 41) throw new Error('EDL 节拍剪辑合同无效')
+    let cursor = 0
+    const operations = segments.map((segment, index) => {
+      const sourceRangeSeconds = finiteRange(segment.sourceStartSeconds, segment.sourceEndSeconds, `节拍镜头 ${index + 1} 源范围`)
+      const targetRangeSeconds = finiteRange(segment.targetStartSeconds, segment.targetEndSeconds, `节拍镜头 ${index + 1} 目标范围`)
+      if (Math.abs(targetRangeSeconds.start - cursor) > 0.001 || Math.abs((sourceRangeSeconds.end - sourceRangeSeconds.start) - (targetRangeSeconds.end - targetRangeSeconds.start)) > 0.001) throw new Error('EDL 节拍镜头时间线不连续')
+      cursor = targetRangeSeconds.end
+      return { id: `operation-rhythm-${index + 1}`, type: 'append-on-beat', materialId: video.id, trackIds: ['track-video-1', 'track-dialogue-1'], sourceRangeSeconds, targetRangeSeconds }
+    })
+    if (Math.abs(cursor - Number(rhythm.outputDurationSeconds)) > 0.001 || !Array.isArray(rhythm.cutTimes) || rhythm.cutTimes.length !== segments.length - 1) throw new Error('EDL 节拍剪辑总时长或切点无效')
+    operations.push({
+      id: 'operation-rhythm-music', type: 'mix-rhythm-music', materialId: music.id, trackIds: ['track-music-1'],
+      sourceRangeSeconds: { start: 0, end: Number(rhythm.outputDurationSeconds) },
+      targetRangeSeconds: { start: 0, end: Number(rhythm.outputDurationSeconds) },
+      parameters: { volume: Number(decision.policy?.musicVolume), dialogueDucking: decision.policy?.dialogueDucking === true }
+    })
+    operations.push({ id: 'operation-rhythm-tail', type: 'fade-to-beat', materialId: video.id, trackIds: ['track-video-1', 'track-dialogue-1', 'track-music-1'], parameters: JSON.parse(JSON.stringify(rhythm.tail)) })
+    return {
+      schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
+      materials: [video, music],
+      tracks: [
+        { id: 'track-video-1', type: 'video', materialId: video.id },
+        { id: 'track-dialogue-1', type: 'audio', materialId: video.id, optional: true },
+        { id: 'track-music-1', type: 'audio', materialId: music.id }
+      ],
+      operations, output,
+      quality: { ...quality, rhythm: JSON.parse(JSON.stringify(rhythm)), beatAnalysis: { method: rhythm.analysisMethod, bpm: rhythm.bpm, supportRatio: rhythm.supportRatio } }
+    }
+  }
   if (decision.kind === 'media.add-music') {
     const video = material('material-video-1', 'video', decision.source)
     const music = material('material-music-1', 'music', decision.audio)

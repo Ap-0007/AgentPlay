@@ -31,7 +31,7 @@ test('C2 renderer exposes local progress and never hides the separation artifact
   assert.match(panel, /decision\.kind === 'media\.repair-audio' \? 'audio-repair'/)
   assert.match(panel, /专业音频修复与基础分离/)
   assert.match(panel, /带伪影说明的基础人声\/伴奏轨/)
-  assert.match(panel, /'media\.mix-audio', 'media\.repair-audio', 'media\.visual-effects'/)
+  assert.match(panel, /'media\.mix-audio', 'media\.repair-audio', 'media\.rhythm-edit', 'media\.visual-effects'/)
   assert.match(runtime, /runtimeTask\.type === 'media\.audio-repair'/)
   assert.match(router, /降噪\|去直流\|响度匹配\|静音修复\|分离人声\|提取伴奏/)
   assert.match(types, /strategy: 'ffmpeg-audio-repair-v1'/)

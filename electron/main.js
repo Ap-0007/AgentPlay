@@ -90,6 +90,8 @@ const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require('./visual-effect-decision')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
+const { compileRhythmEditRequest, matchesRhythmEditInstruction } = require('./rhythm-edit-decision')
+const { RhythmEditPlanner } = require('./rhythm-edit-service')
 const { buildStyleShotPrompt, compileStyleBlueprint, extractProtectedFragments, hash: styleHash, validateStyleShots } = require('./style-reuse-service')
 const { VisualExportQualityGate } = require('./visual-export-quality')
 const LOCAL_AI_PACK = require('./local-ai-pack-manifest')
@@ -689,6 +691,7 @@ const visualExportQuality = new VisualExportQualityGate({ frames: videoFrames })
 const smartReframePlanner = new SmartReframePlanner({ frames: videoFrames })
 const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
 const visualRepairPlanner = new VisualRepairPlanner({ frames: videoFrames, inspectMedia: (input) => mediaAutoInspection.inspect(input) })
+const rhythmEditPlanner = new RhythmEditPlanner({ frames: videoFrames, authorizePath: (value) => assertAllowedPath(value) })
 const semanticEditService = new SemanticEditService({
   frames: videoFrames,
   loadTranscript: (sourcePath) => {
@@ -1232,7 +1235,7 @@ app.whenReady().then(async () => {
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).isFile()) fs.rmSync(outputPath, { force: true })
       }
       action = type === 'media.smart-reframe' ? '清理不合格的三比例构图成果并从冻结主体轨迹重新执行' : type === 'media.audio-repair' ? '清理不合格的音频修复/分离成果并从冻结音频决策重新执行' : '清理不合格的修复/对比成果并从冻结画面修复决策重新执行'
-    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
+    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.rhythm-edit' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
       const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
@@ -2377,6 +2380,27 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.rhythm-edit', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath, frozenMusicPath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.rhythm-edit') throw new Error('冻结的节拍剪辑决策无效')
+    assertEditDecisionList(decision)
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的节拍剪辑决策与源视频不一致')
+    const musicPath = assertAllowedPath(decision.music?.path || '')
+    if (!frozenMusicPath || path.resolve(musicPath).toLowerCase() !== path.resolve(frozenMusicPath).toLowerCase()) throw new Error('冻结的节拍剪辑缺少音乐素材快照或路径不一致')
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
+    status(`正在按 ${decision.rhythm.bpm.toFixed(1)} BPM 真实节拍执行 ${decision.rhythm.segments.length} 个镜头；高潮区更密，片尾落强拍并淡出`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verifyRhythmEdit({ sourcePath, musicPath, outputPath, decision, signal })
+      : await mediaEditService.rhythmEdit({ sourcePath, musicPath, outputPath, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.edit-concat', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
@@ -2788,6 +2812,12 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       let sourcePath = assertAllowedPath(input.sourcePath)
+      if (matchesRhythmEditInstruction(input.instruction)) {
+        const request = compileRhythmEditRequest({ instruction: input.instruction, sourcePath })
+        if (!request || request.review) return request || { matched: false }
+        const rhythm = await rhythmEditPlanner.plan(request)
+        return rhythm.decision ? { ...rhythm, decision: attachEditDecisionList(rhythm.decision) } : rhythm
+      }
       if (matchesVisualRepairInstruction(input.instruction)) {
         const repair = await visualRepairPlanner.plan({ instruction: input.instruction, sourcePath })
         return repair.decision ? { ...repair, decision: attachEditDecisionList(repair.decision) } : repair
@@ -2906,6 +2936,8 @@ app.whenReady().then(async () => {
           ? 'media.edit-concat'
            : decision.kind === 'media.repair-audio'
              ? 'media.audio-repair'
+           : decision.kind === 'media.rhythm-edit'
+             ? 'media.rhythm-edit'
            : decision.kind === 'media.mix-audio'
              ? 'media.edit-audio-mix'
            : decision.kind === 'media.add-music'
@@ -2928,6 +2960,8 @@ app.whenReady().then(async () => {
         ? decision.sources.map((item) => assertAllowedPath(item?.path || ''))
          : decision.kind === 'media.mix-audio'
            ? [sourcePath, ...decision.audioMix.tracks.map((track) => assertAllowedPath(track?.path || ''))]
+         : decision.kind === 'media.rhythm-edit'
+           ? [sourcePath, assertAllowedPath(decision.music?.path || '')]
          : decision.kind === 'media.add-music'
           ? [sourcePath, assertAllowedPath(decision.audio?.path || '')]
           : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'

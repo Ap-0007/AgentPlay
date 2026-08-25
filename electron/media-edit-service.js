@@ -5,6 +5,7 @@ const { buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, parseS
 const { burnForceStyle } = require('./media-edit-decision')
 const { AudioMixService } = require('./audio-mix-service')
 const { AudioRepairService } = require('./audio-repair-service')
+const { RhythmEditService } = require('./rhythm-edit-service')
 const { parseSignalStatsLog, shakeScoreFromTransforms } = require('./visual-repair-service')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
@@ -253,11 +254,14 @@ class MediaEditService {
     this.fs = fsImpl
     this.audioMixService = new AudioMixService({ frames, fsImpl })
     this.audioRepairService = new AudioRepairService({ frames, fsImpl })
+    this.rhythmEditService = new RhythmEditService({ frames, fsImpl })
   }
 
   async mixAudio(input = {}) { return this.audioMixService.mix(input) }
   async repairAudio(input = {}) { return this.audioRepairService.run(input) }
   async verifyAudioRepair(input = {}) { return this.audioRepairService.verify(input) }
+  async rhythmEdit(input = {}) { return this.rhythmEditService.run(input) }
+  async verifyRhythmEdit(input = {}) { return this.rhythmEditService.verify(input) }
 
   async trim({ sourcePath, outputPath, decision, signal } = {}) {
     const source = path.resolve(String(sourcePath || ''))
@@ -1778,6 +1782,7 @@ class MediaEditService {
 
   async verify({ sourcePath, outputPath, decision, signal } = {}) {
     if (decision?.kind === 'media.mix-audio') return this.audioMixService.verify({ sourcePath, outputPath, decision, signal })
+    if (decision?.kind === 'media.rhythm-edit') return this.rhythmEditService.verify({ sourcePath, musicPath: decision.music?.path, outputPath, decision, signal })
     if (decision?.kind === 'media.visual-effects') {
       const source = path.resolve(String(sourcePath || '')); const output = path.resolve(String(outputPath || ''))
       const sourceDuration = await this.frames.probeDuration(source, { signal })

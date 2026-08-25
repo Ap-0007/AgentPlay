@@ -24,7 +24,7 @@ test('renderer and types expose confirm-first repair, comparison outputs and per
   const hook = read('src/components/agent-panel/useMediaCreativeTasks.ts'); const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts'); const types = read('src/types/global.d.ts')
   assert.match(hook, /visualRepair\?\.confirmationRequired/)
   assert.match(hook, /低质量片段仅提示、不自动删除/)
-  assert.match(hook, /operation: reviewDecision\.kind === 'media\.visual-repair' \? 'repair'/)
+  assert.match(hook, /operation: reviewDecision\.kind === 'media\.rhythm-edit' \? 'rhythm' : reviewDecision\.kind === 'media\.visual-repair' \? 'repair'/)
   assert.match(runtime, /media\.visual-repair/)
   assert.match(runtime, /画面防抖与质量修复/)
   assert.match(types, /'media\.visual-repair'/)

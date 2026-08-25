@@ -17,6 +17,7 @@ const HARD_FAILURES = new Set([
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'MULTITRACK_PROOF_MISSING', 'TRACK_ALIGNMENT_MISMATCH', 'TRACK_AUTOMATION_MISSING', 'DUCKING_RECEIPT_MISSING',
   'AUDIO_REPAIR_PROOF_MISSING', 'DENOISE_NOT_IMPROVED', 'DC_NOT_IMPROVED', 'SILENCE_REPAIR_MISMATCH', 'SEPARATION_PROOF_MISSING', 'SEPARATION_WARNING_MISSING',
+  'BEAT_EVIDENCE_MISSING', 'BEAT_CUT_NOT_VISIBLE', 'HIGHLIGHT_DENSITY_MISMATCH', 'MUSIC_ALIGNMENT_MISSING', 'TAIL_FADE_MISSING',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -304,6 +305,31 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('automation-ducking', '分段音量与对白闪避', automationOk && duckOk ? 1 : 0, 10, !automationOk ? reason('TRACK_AUTOMATION_MISSING', '分段音量自动化回执不完整', true) : reason('DUCKING_RECEIPT_MISSING', '对白闪避回执与冻结轨道不一致', true))
     add('loudness', '编码后响度', loudnessOk ? 1 : 0, 5, !loudnessProof ? reason('LOUDNESS_PROOF_MISSING', '缺少编码后响度回执', true) : reason('LOUDNESS_MISMATCH', '多轨总线编码后响度未达标', true))
     add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '多轨成果没有进入可撤销编辑项目', true))
+  } else if (taskType === 'media.rhythm-edit') {
+    const rhythm = spec.decision?.rhythm || {}
+    const receipt = result.rhythmReceipt
+    const proof = result.beatProof
+    const expectedDuration = Number(rhythm.outputDurationSeconds || 0)
+    const actualDuration = Number(result.durationSeconds || 0)
+    const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
+    const durationOk = expectedDuration >= 6 && actualDuration > 0 && Math.abs(expectedDuration - actualDuration) <= tolerance
+    const receiptOk = receipt?.schemaVersion === 1 && receipt?.strategy === 'beat-synced-jump-cut-v1' && receipt.pace === rhythm.pace && Number(receipt.bpm) === Number(rhythm.bpm) && Number(receipt.supportRatio) >= 0.45 && Array.isArray(receipt.cutTimes) && receipt.cutTimes.length === rhythm.cutTimes?.length
+    const proofOk = proof?.schemaVersion === 1 && proof?.method === 'decoded-beat-cut-proof-v1'
+    const visibleOk = proofOk && Number(proof.visibleCutRatio) >= Number(spec.decision?.verification?.minimumVisibleCutRatio || 0.5)
+    const highlightOk = proofOk && proof.highlight?.denserThanOutside === true && Number(proof.highlight?.densityRatio) <= 0.8
+    const musicOk = proofOk && Number(proof.musicCorrelation) >= 0.02
+    const tailOk = proofOk && proof.tail?.audioFaded === true && proof.tail?.videoFaded === true
+    const project = result.projectCapsule
+    const projectOk = project?.schemaVersion === 1 && String(project.projectId || '').startsWith('edit-') && project.canUndo === true && outputs.some((item) => path.resolve(item) === path.resolve(String(project.currentPath || '')))
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '节拍剪辑任务返回失败状态', false))
+    add('artifact', '节拍成片', artifactRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, artifactFailure || reason('INVALID_FORMAT', '节拍成果不是受支持的视频格式', true))
+    add('duration', '冻结时间线', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', '节拍成片时长与冻结时间线不一致', true))
+    add('beat-evidence', '真实节拍网格', receiptOk ? 1 : 0, 10, reason('BEAT_EVIDENCE_MISSING', '缺少解码PCM节拍、BPM或网格支持率回执', true))
+    add('visible-cuts', '切点画面变化', visibleOk ? 1 : 0, 15, reason('BEAT_CUT_NOT_VISIBLE', '真实节拍切点没有形成足够可见的镜头变化', true))
+    add('highlight-density', '高潮切镜密度', highlightOk ? 1 : 0, 15, reason('HIGHLIGHT_DENSITY_MISMATCH', '音乐高潮区切镜没有比普通段更密', true))
+    add('music-alignment', '成片音乐对齐', musicOk ? 1 : 0, 10, reason('MUSIC_ALIGNMENT_MISSING', '成片高潮区没有检测到冻结音乐的PCM相关证据', true))
+    add('natural-tail', '片尾自然收束', tailOk ? 1 : 0, 10, reason('TAIL_FADE_MISSING', '片尾画面或声音没有在冻结强拍处完成淡出', true))
+    add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '节拍剪辑成果没有进入可撤销项目', true))
   } else if (taskType === 'media.audio-repair') {
     const repair = spec.decision?.audioRepair || {}
     const expectedOutputs = repair.separation?.enabled ? 3 : 1
