@@ -119,7 +119,10 @@ test('WiFi upload authenticates before multipart parsing and never renders the P
     assert.equal(fs.readFileSync(path.join(uploadDir, 'allowed.txt'), 'utf8'), 'allowed')
   } finally {
     await wifi.stop()
-    fs.rmSync(uploadDir, { recursive: true, force: true })
+    // Windows runner can release the final directory entry a few milliseconds after
+    // server.close() has completed. Keep the lifecycle wait above and bound only the
+    // test-evidence cleanup retry; never widen the product upload path or swallow failure.
+    fs.rmSync(uploadDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 
