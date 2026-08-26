@@ -172,7 +172,7 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /decoded-pcm-onset-grid-v1/)
   assert.match(content, /beat-synced-jump-cut-v1/)
   assert.match(content, /高潮平均切镜0\.500秒、普通段0\.907秒/)
-  assert.match(content, /939 tests、939 pass、0 fail、0 skip/)
+  assert.match(content, /940 tests、940 pass、0 fail、0 skip/)
   assert.match(content, /C组更新为3\/5，0\.9\.1更新为13\/25=52%/)
 })
 

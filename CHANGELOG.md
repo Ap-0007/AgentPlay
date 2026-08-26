@@ -33,6 +33,7 @@
 - 修复全新 Windows 环境双击 MP4 报“没有注册类”的问题：增加不抢占现有默认播放器的 ProgID、OpenWithProgids 和默认应用能力注册，并在卸载时完整清理。
 - 修复发布校验脚本依赖未声明的 7zip 路径，以及 Windows PowerShell 5.1 读取无 BOM 中文安装脚本时的解析失败。
 - 修复重复文件扫描哈希在 Windows 文件句柄真正关闭前返回，导致结果正确但临时目录清理偶发 `ENOTEMPTY` 的竞态。
+- 修复 WiFi 上传服务关闭后立即返回、Windows 测试和调用方无法等待 HTTP 连接真正释放的问题；`stop()` 现在返回可等待的关闭 Promise。
 
 ### 已知限制
 

@@ -111,8 +111,13 @@ class WifiTransfer {
   }
 
   stop() {
-    if (this.server) this.server.close()
+    const server = this.server
     this.server = null
+    if (!server) return Promise.resolve()
+    return new Promise((resolve) => {
+      server.close(resolve)
+      server.closeIdleConnections?.()
+    })
   }
 }
 

@@ -74,6 +74,21 @@ test('ExcelJS reads a real xlsx workbook after the patched uuid override', async
   }
 })
 
+test('WiFi stop resolves only after the HTTP server close callback', async () => {
+  const wifi = new WifiTransfer()
+  let closed = false
+  wifi.server = {
+    close(callback) { setTimeout(() => { closed = true; callback() }, 20) },
+    closeIdleConnections() {}
+  }
+  const pending = wifi.stop()
+  assert.equal(typeof pending?.then, 'function')
+  assert.equal(closed, false)
+  await pending
+  assert.equal(closed, true)
+  assert.equal(wifi.server, null)
+})
+
 test('WiFi upload authenticates before multipart parsing and never renders the PIN', async () => {
   const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-player-wifi-secure-'))
   const wifi = new WifiTransfer()
@@ -100,9 +115,10 @@ test('WiFi upload authenticates before multipart parsing and never renders the P
       body: accepted
     })
     assert.equal(acceptedResponse.status, 200)
+    await acceptedResponse.text()
     assert.equal(fs.readFileSync(path.join(uploadDir, 'allowed.txt'), 'utf8'), 'allowed')
   } finally {
-    wifi.stop()
+    await wifi.stop()
     fs.rmSync(uploadDir, { recursive: true, force: true })
   }
 })
