@@ -58,7 +58,7 @@ test('cue-edit decision: replace/delete compile with ranges, clarifications chai
 })
 
 test('cue-edit wiring: task registered, decision routed, renderer gate accepts, quality checklist covers', () => {
-  assert.match(main, /persistentTaskRuntime\.register\('media\.edit-subtitle-cues'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.edit-subtitle-cues'/)
   assert.match(main, /decision\.kind === 'media\.edit-subtitle-cues'/)
   assert.match(main, /'media\.edit-subtitle-cues'/)
   assert.match(main, /compileCueEditDecisionList/)

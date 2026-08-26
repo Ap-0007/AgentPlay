@@ -86,7 +86,7 @@ test('music decision honours an explicit play-once and no-normalization request'
 })
 
 test('music wiring: task registered, decision routed, renderer gate accepts, timeline edit set updated', () => {
-  assert.match(main, /persistentTaskRuntime\.register\('media\.edit-music'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.edit-music'/)
   assert.match(main, /decision\.kind === 'media\.add-music'/)
   assert.match(main, /media\.edit-music' \|\| type === 'media\.edit-concat'|media\.edit-trim' \|\| type === 'media\.edit-remove' \|\| type === 'media\.edit-concat' \|\| type === 'media\.edit-music'/, '质量修复清单必须含配乐')
   assert.match(main, /compileMusicDecisionList/)

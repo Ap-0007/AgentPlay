@@ -10,7 +10,7 @@ test('main process freezes one shared plan and recovers every deterministic vers
   assert.match(main, /semanticEditService\.setLongVersionPlanner/)
   assert.match(main, /taskKind: 'long-video-version-planning'/)
   assert.match(main, /freezeLongVideoVersionPlan/)
-  assert.match(main, /persistentTaskRuntime\.register\('media\.version-bundle'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.version-bundle'/)
   assert.match(main, /buildVersionEditDecision/)
   assert.match(main, /mediaEditService\.(?:trim|concatSegments)/)
   assert.match(main, /ipcMain\.handle\('media:version-bundle-run'/)

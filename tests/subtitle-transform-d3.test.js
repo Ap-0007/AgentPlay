@@ -125,7 +125,7 @@ test('D3 uses one persistent task, frozen translation route, conversation UI and
   const quality = fs.readFileSync(path.join(__dirname, '..', 'electron', 'task-result-quality.js'), 'utf8')
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'agent-panel', 'useMediaCreativeTasks.ts'), 'utf8')
   const smoke = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'smoke-packaged-subtitle-transform-d3.mjs'), 'utf8')
-  assert.match(main, /register\('media\.transform-subtitles'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.transform-subtitles'/)
   assert.match(main, /freezeTaskModelRoute/)
   assert.match(media, /transformSubtitles/)
   assert.match(quality, /SUBTITLE_TRANSFORM_MISMATCH/)

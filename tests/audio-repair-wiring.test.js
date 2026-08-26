@@ -8,8 +8,8 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
 
 test('C2 is one persistent main-process task with three frozen outputs and related project artifacts', () => {
   const main = read('electron/main.js')
-  const start = main.indexOf("persistentTaskRuntime.register('media.audio-repair'")
-  const end = main.indexOf("persistentTaskRuntime.register('media.edit-concat'", start)
+  const start = main.indexOf("registerGovernedMediaEdit('media.audio-repair'")
+  const end = main.indexOf("registerGovernedMediaEdit('media.edit-concat'", start)
   const executor = main.slice(start, end)
   assert.ok(start > 0)
   assert.match(executor, /decision\.kind !== 'media\.repair-audio'/)

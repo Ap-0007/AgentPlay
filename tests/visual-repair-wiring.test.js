@@ -9,7 +9,7 @@ test('main process plans, confirms, persists, repairs and verifies visual repair
   const main = read('electron/main.js'); const service = read('electron/media-edit-service.js'); const quality = read('electron/task-result-quality.js')
   assert.match(main, /new VisualRepairPlanner/)
   assert.match(main, /matchesVisualRepairInstruction/)
-  assert.match(main, /persistentTaskRuntime\.register\('media\.visual-repair'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.visual-repair'/)
   assert.match(main, /plannedMediaOutput\(outputAnchor, '修复前后对比'/)
   assert.match(service, /async visualRepair\(/)
   assert.match(service, /vidstabdetect=shakiness=8/)

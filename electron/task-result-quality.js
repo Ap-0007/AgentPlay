@@ -26,7 +26,8 @@ const HARD_FAILURES = new Set([
   'AI_ASSET_RECEIPT_MISSING', 'AI_ASSET_PROVENANCE_MISMATCH', 'AI_ASSET_SOURCE_UPLOAD_VIOLATION', 'AI_ASSET_MEDIA_INVALID', 'AI_ASSET_APPROVAL_MISSING', 'AI_ASSET_RECOVERY_REPEAT',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE',
-  'BATCH_EDIT_RECEIPT_MISSING', 'BATCH_EDIT_ISOLATION_FAILED'
+  'BATCH_EDIT_RECEIPT_MISSING', 'BATCH_EDIT_ISOLATION_FAILED',
+  'EDIT_GOVERNANCE_RECEIPT_MISSING', 'EDIT_GOVERNANCE_BYPASS'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -742,6 +743,24 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('summary', '结果说明', String(result.summary || '').trim() ? 1 : 0, 20, reason('SUMMARY_MISSING', '缺少结果说明', true))
   }
 
+  if (spec.editGovernance) {
+    const receipt = result.editGovernanceReceipt
+    const run = receipt?.run
+    const step = Array.isArray(run?.steps) ? run.steps[0] : null
+    const governanceOk = receipt?.schemaVersion === 1
+      && receipt?.strategy === 'shared-media-edit-governance-receipt-v1'
+      && receipt?.verdict === 'matched'
+      && receipt?.governanceDigest === spec.editGovernance.digest
+      && receipt?.taskType === taskType
+      && run?.status === 'completed'
+      && Number(run?.budget?.turns) === 1
+      && Number(run?.budget?.toolCalls) === 1
+      && Number(run?.budget?.toolCalls) <= Number(run?.budget?.maxToolCalls)
+      && step?.status === 'completed'
+      && step?.evidence?.verified === true
+      && (spec.editGovernance.approval?.required !== true || receipt?.approval?.status === 'approved')
+    add('edit-governance', '统一编辑路由、审批、预算、账本与恢复', governanceOk ? 1 : 0, 0, !receipt ? reason('EDIT_GOVERNANCE_RECEIPT_MISSING', '缺少统一编辑治理回执', false) : reason('EDIT_GOVERNANCE_BYPASS', '编辑任务绕过了统一路由、审批、预算、运行账本或恢复协议', false))
+  }
   const score = checks.reduce((sum, item) => sum + item.score, 0)
   const threshold = 80
   const uniqueReasons = [...new Map(reasons.filter(Boolean).map((item) => [item.code, item])).values()]

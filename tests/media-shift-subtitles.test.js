@@ -65,7 +65,7 @@ test('shift-subtitles decision: path+direction+offset compiles, clarifications c
 })
 
 test('shift-subtitles wiring: task registered, decision routed, renderer gate accepts, quality checklist covers', () => {
-  assert.match(main, /persistentTaskRuntime\.register\('media\.shift-subtitles'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.shift-subtitles'/)
   assert.match(main, /decision\.kind === 'media\.shift-subtitles'/)
   assert.match(main, /'media\.shift-subtitles'/)
   assert.match(main, /compileShiftSubtitlesDecisionList/)

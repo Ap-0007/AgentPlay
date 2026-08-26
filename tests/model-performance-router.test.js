@@ -195,6 +195,8 @@ test('persistent task families map to stable model evaluation task kinds', () =>
   assert.equal(taskKindForPersistentType('analysis.run'), 'analysis')
   assert.equal(taskKindForPersistentType('project.evidence-qa'), 'cross-material-qa')
   assert.equal(taskKindForPersistentType('subtitle.generate'), 'subtitle-translation')
+  assert.equal(taskKindForPersistentType('media.translate-subtitles'), 'subtitle-translation')
+  assert.equal(taskKindForPersistentType('media.transform-subtitles'), 'subtitle-translation')
   assert.equal(taskKindForPersistentType('creative.video-generate'), 'creative-video')
   assert.equal(taskKindForPersistentType('creative.recut-short'), 'creative-planning')
   assert.equal(taskKindForPersistentType('download.direct'), null)

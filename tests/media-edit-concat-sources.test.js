@@ -55,7 +55,7 @@ test('concat-sources decision: two paths compile in order, missing second source
 })
 
 test('concat-sources wiring: task registered, decision routed, renderer gate accepts, quality checklist covers', () => {
-  assert.match(main, /persistentTaskRuntime\.register\('media\.edit-concat-sources'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.edit-concat-sources'/)
   assert.match(main, /decision\.kind === 'media\.concat-sources'/)
   assert.match(main, /'media\.edit-concat-sources'/, 'media:trim 路由必须含跨素材拼接')
   assert.match(main, /type === 'media\.edit-music'/, '质量修复清单必须含配乐')

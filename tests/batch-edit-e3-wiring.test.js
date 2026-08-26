@@ -13,7 +13,7 @@ test('E3 wires batch edit through trusted IPC, persistent runtime and renderer i
   const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts')
   assert.match(main, /ipcMain\.handle\('media:batch-edit-plan'/)
   assert.match(main, /ipcMain\.handle\('media:batch-edit-run'/)
-  assert.match(main, /persistentTaskRuntime\.register\('media\.batch-edit'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.batch-edit'/)
   assert.match(main, /snapshotMediaSources\(\[sourcePath, \.\.\.dependencies\]\)/)
   assert.match(preload, /planBatchEdit/)
   assert.match(preload, /runBatchEdit/)

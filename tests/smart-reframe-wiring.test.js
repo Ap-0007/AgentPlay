@@ -11,7 +11,7 @@ test('main process owns vision planning, correction context, three-output persis
   assert.match(main, /smartReframePlanner\.setSubjectAnalyzer/)
   assert.match(main, /ensureCloudConsent\(`将当前视频的5张均匀关键帧/)
   assert.match(main, /mediaEditProjects\.smartReframeContext/)
-  assert.match(main, /persistentTaskRuntime\.register\('media\.smart-reframe'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.smart-reframe'/)
   assert.match(main, /plannedOutputs: decision\.reframe\.outputs\.map/)
   assert.match(service, /async smartReframe\(/)
   assert.match(service, /smartReframeCropExpressions/)

@@ -63,13 +63,15 @@ test('translate-subtitles decision: target/mode compile, missing file or target 
 })
 
 test('translate-subtitles wiring: task registered, decision routed with frozen engine, renderer gate accepts, quality covers', () => {
-  assert.match(main, /persistentTaskRuntime\.register\('media\.translate-subtitles'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.translate-subtitles'/)
   assert.match(main, /decision\.kind === 'media\.translate-subtitles'/)
   assert.match(main, /'media\.translate-subtitles'/)
   assert.match(main, /compileTranslateSubtitlesDecisionList/)
   assert.match(main, /engineChoice === 'offline'/)
   assert.match(main, /resolveTaskModelRoute\(task\.spec\.modelRoute\)/, '云端引擎必须走冻结路由重建')
-  assert.match(main, /ensureCloudConsent\(`把字幕原文发送给 \$\{engine\.label\} 翻译成\$\{targetLang\}；视频文件不会上传`\)/, '云端翻译必须先过同意框')
+  assert.match(main, /const approvalSummary = `把字幕原文发送给 \$\{engine\.label\} 翻译成\$\{targetLang\}；视频文件不会上传`/)
+  assert.match(main, /ensureCloudConsent\(approvalSummary\)/, '云端翻译必须先过同意框')
+  assert.match(main, /approvalContract = \{ action: 'cloud', summary: approvalSummary \}/, '同意结果必须绑定进持久审批对象')
   assert.match(main, /media\.shift-subtitles' \|\| type === 'media\.translate-subtitles'/, '质量修复清单必须含字幕翻译')
   assert.match(panel, /'media\.translate-subtitles'/)
   assert.match(panel, /翻译字幕/)

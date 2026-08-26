@@ -65,6 +65,20 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now()),
         ...(typeof item.bytes === 'number' ? { bytes: item.bytes } : {})
       }))
+      const editGovernance = runtimeTask.spec?.editGovernance as { digest?: string; registry?: { executor?: string }; budget?: { maxTurns?: number; maxToolCalls?: number; maxElapsedMs?: number } } | undefined
+      const editGovernanceReceipt = runtimeTask.result?.editGovernanceReceipt as { verdict?: string; governanceDigest?: string; run?: { budget?: { turns?: number; maxTurns?: number; toolCalls?: number; maxToolCalls?: number; elapsedMs?: number; maxElapsedMs?: number } } } | undefined
+      const rawGovernanceBudget = editGovernanceReceipt?.run?.budget
+      const governanceBudget = rawGovernanceBudget
+        ? { turns: Number(rawGovernanceBudget.turns) || 0, maxTurns: Number(rawGovernanceBudget.maxTurns) || 1, toolCalls: Number(rawGovernanceBudget.toolCalls) || 0, maxToolCalls: Number(rawGovernanceBudget.maxToolCalls) || 1, elapsedMs: Number(rawGovernanceBudget.elapsedMs) || 0, maxElapsedMs: Number(rawGovernanceBudget.maxElapsedMs) || 0 }
+        : editGovernance?.budget ? { turns: 0, maxTurns: Number(editGovernance.budget.maxTurns) || 1, toolCalls: 0, maxToolCalls: Number(editGovernance.budget.maxToolCalls) || 1, elapsedMs: 0, maxElapsedMs: Number(editGovernance.budget.maxElapsedMs) || 0 } : null
+      if (editGovernance) deliveryEvidence.push({
+        id: `edit-governance-${runtimeTask.id}`,
+        kind: 'receipt' as const,
+        label: '统一编辑治理回执',
+        value: `${editGovernance.registry?.executor || runtimeTask.type} · 路由/审批/预算/账本/恢复${editGovernanceReceipt?.verdict === 'matched' ? '已核验' : '已冻结'}`,
+        verified: editGovernanceReceipt?.verdict === 'matched' && editGovernanceReceipt.governanceDigest === editGovernance.digest,
+        createdAt: Number(runtimeTask.completedAt || runtimeTask.updatedAt || Date.now())
+      })
       if (deliveryReceipt?.bundle) deliveryEvidence.push({
         id: `bundle-${runtimeTask.id}`,
         kind: 'receipt' as const,
@@ -175,7 +189,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         retry = { kind: 'dedup', instruction, directoryPath: source }
       }
 
-      if (!existing) store.startTask({ id: runtimeTask.workspaceTaskId, kind, label, instruction, source, retry })
+      if (!existing) store.startTask({ id: runtimeTask.workspaceTaskId, kind, label, instruction, source, retry, budget: governanceBudget })
       if (runtimeTask.state === 'completed') {
         const fallbackSummary = isDocument ? '文档处理完成（已从检查点恢复）'
           : isAnalysis ? '视频解剖完成（已从检查点恢复）'
@@ -199,7 +213,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
                     : isDedup ? '重复文件检查完成（已从哈希检查点恢复）' : '视频下载完成（已从检查点恢复）'
         store.updateTask(runtimeTask.workspaceTaskId, {
           phase: 'completed', status: '', error: '', outputs: outputPaths, summary: String(runtimeTask.result?.summary || fallbackSummary),
-          evidence: deliveryEvidence, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
+          evidence: deliveryEvidence, budget: governanceBudget, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
         })
         const aiShotPath = isAiAssets ? ((runtimeTask.result?.aiAssetReceipt as { artifacts?: Array<{ kind?: string; path?: string }> } | undefined)?.artifacts || []).find((item) => item.kind === 'shot')?.path : ''
         if ((isDownload || isCreative || isTimelineEdit || isBatchEdit || isVersionBundle || isVisualEffects || isSmartReframe || isVisualRepair || Boolean(aiShotPath)) && fromEvent && (aiShotPath || outputPaths[0]) && !surfacedOutputs.has(runtimeTask.id)) {
@@ -222,7 +236,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       store.updateTask(runtimeTask.workspaceTaskId, {
         phase: runtimeTask.state === 'waiting_approval' ? 'waiting' : runtimeTask.state,
         status: runtimeTask.approval?.summary || runtimeTask.status || (runtimeTask.state === 'queued' ? '等待恢复' : '正在从检查点恢复'),
-        error: '', quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
+        error: '', budget: governanceBudget, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
       })
     }
     const syncAll = () => {

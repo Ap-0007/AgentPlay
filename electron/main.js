@@ -96,6 +96,8 @@ const { AiAssetBundleService } = require('./ai-asset-bundle-service')
 const { PersonalEditSkillStore, compilePersonalEditSkillCommand } = require('./personal-edit-skill-service')
 const { compileBatchEditPlan, assertBatchEditPlan } = require('./batch-edit-plan')
 const { BatchEditService } = require('./batch-edit-service')
+const { MediaEditExecutorRegistry } = require('./media-edit-executor-registry')
+const { freezeMediaEditGovernance, runGovernedMediaEdit } = require('./media-edit-governance')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const { compileRhythmEditRequest, matchesRhythmEditInstruction } = require('./rhythm-edit-decision')
@@ -699,6 +701,7 @@ const videoFrames = new VideoFrameService({
 const mediaEditService = new MediaEditService({ frames: videoFrames, transcription: transcriptionService })
 const subtitleLayoutService = new SubtitleLayoutService({ frames: videoFrames })
 const visualExportQuality = new VisualExportQualityGate({ frames: videoFrames })
+const mediaEditExecutors = new MediaEditExecutorRegistry({ service: mediaEditService, visualQuality: visualExportQuality })
 const smartReframePlanner = new SmartReframePlanner({ frames: videoFrames })
 const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
 const visualRepairPlanner = new VisualRepairPlanner({ frames: videoFrames, inspectMedia: (input) => mediaAutoInspection.inspect(input) })
@@ -1301,6 +1304,26 @@ app.whenReady().then(async () => {
     failureClassifier: classifyTaskFailure,
     prepareRepair: prepareQualityRepair,
     maxQualityRepairs: 1
+  })
+  const registerGovernedMediaEdit = (type, executor, options = {}) => persistentTaskRuntime.register(type, async (context) => {
+    const maximumMs = Math.max(1000, Number(context.task.spec?.editGovernance?.budget?.maxElapsedMs) || 6 * 60 * 60 * 1000)
+    const governedController = new AbortController()
+    const abortFromRuntime = () => governedController.abort()
+    context.signal.addEventListener('abort', abortFromRuntime, { once: true })
+    let budgetTimer = null
+    const budgetExpiry = new Promise((_, reject) => {
+      budgetTimer = setTimeout(() => { governedController.abort(); reject(new Error('编辑任务超过冻结时间预算')) }, maximumMs)
+    })
+    try {
+      return await runGovernedMediaEdit({ task: context.task, executor: () => Promise.race([executor({ ...context, signal: governedController.signal }), budgetExpiry]) })
+    } finally {
+      if (budgetTimer) clearTimeout(budgetTimer)
+      context.signal.removeEventListener('abort', abortFromRuntime)
+    }
+  }, options)
+  const governMediaEditSpec = ({ taskType, spec, approval = null, itemCount = 1 }) => ({
+    spec: { ...spec, editGovernance: freezeMediaEditGovernance({ taskType, decision: spec.decision, plan: spec.plan, modelRoute: spec.modelRoute, approvalContract: spec.approvalContract || approval, itemCount }) },
+    approval
   })
   const freezeTaskModelRoute = (config, { taskKind = '', metricModel = '' } = {}) => ({
     providerId: String(config.providerId || ''),
@@ -2283,7 +2306,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-trim', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-trim', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.trim') throw new Error('冻结的剪辑决策无效')
@@ -2295,9 +2318,7 @@ app.whenReady().then(async () => {
       : decision.semanticLocate
       ? `正在按${decision.semanticLocate.wordTimingEvidence ? '逐词DTW' : '字幕'}定位从第 ${decision.semanticLocate.cueIndex} 条原话“${decision.semanticLocate.query}”开始剪辑`
       : `正在剪辑 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒`)
-    const result = fs.existsSync(outputPath)
-      ? await mediaEditService.verify({ sourcePath, outputPath, decision: task.spec.decision, signal })
-      : await mediaEditService.trim({ sourcePath, outputPath, decision: task.spec.decision, signal })
+    const result = await mediaEditExecutors.execute({ decision, sourcePath, outputPath, signal })
     validateMediaSources(task.spec.sources)
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision: task.spec.decision, repairing: task.checkpoint?.stage === 'quality-repair' })
     const completed = {
@@ -2317,7 +2338,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-remove', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-remove', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.remove-segment') throw new Error('冻结的删除片段决策无效')
@@ -2325,9 +2346,7 @@ app.whenReady().then(async () => {
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的删除片段决策与源视频不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(`正在删除 ${decision.timeline.startSeconds}–${decision.timeline.endSeconds} 秒并重建连续时间线`)
-    const result = fs.existsSync(outputPath)
-      ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
-      : await mediaEditService.removeSegment({ sourcePath, outputPath, decision, signal })
+    const result = await mediaEditExecutors.execute({ decision, sourcePath, outputPath, signal })
     validateMediaSources(task.spec.sources)
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
     const completed = { ...result, projectCapsule }
@@ -2336,7 +2355,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-music', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-music', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath, frozenAudioPath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.add-music') throw new Error('冻结的配乐决策无效')
@@ -2349,9 +2368,7 @@ app.whenReady().then(async () => {
       ? `、响度两遍测量并归一到 ${Number(decision.audio.loudness.targetLufs)} LUFS`
       : '、不做响度归一'
     status(`正在配乐（音量 ${Math.round((Number(decision.audio?.volume) || 0.15) * 100)}%${decision.audio?.duck !== false ? '、对白闪避' : ''}${loudnessStatus}）`)
-    const result = fs.existsSync(outputPath)
-      ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
-      : await mediaEditService.addMusic({ sourcePath, outputPath, decision: { ...decision, audio: { ...decision.audio, path: audioPath } }, signal })
+    const result = await mediaEditExecutors.execute({ decision, sourcePath, dependencyPaths: [audioPath], outputPath, signal })
     validateMediaSources(task.spec.sources)
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
     const completed = { ...result, projectCapsule }
@@ -2360,7 +2377,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-audio-mix', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-audio-mix', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath, ...frozenTrackPaths] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.mix-audio') throw new Error('冻结的多轨音频决策无效')
@@ -2384,7 +2401,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.audio-repair', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.audio-repair', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.repair-audio') throw new Error('冻结的音频修复决策无效')
@@ -2408,7 +2425,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.rhythm-edit', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.rhythm-edit', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath, frozenMusicPath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.rhythm-edit') throw new Error('冻结的节拍剪辑决策无效')
@@ -2429,7 +2446,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-concat', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-concat', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.concat-segments') throw new Error('冻结的多片段拼接决策无效')
@@ -2477,7 +2494,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-visual-effects', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-visual-effects', async ({ task, signal, checkpoint, status }) => {
     const sourcePaths = validateMediaSources(task.spec.sources)
     const [sourcePath, ...effectSources] = sourcePaths
     const decision = task.spec.decision
@@ -2488,20 +2505,16 @@ app.whenReady().then(async () => {
     if (decisionEffectPaths.length !== effectSources.length || decisionEffectPaths.some((item, index) => item !== path.resolve(effectSources[index]))) throw new Error('视觉效果辅助素材快照不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(decision.brandPackage ? `正在按“${decision.brandPackage.template.label}”渲染标题、章节条、人物条、角标和片尾` : `正在应用 ${decision.effects.length} 类视觉效果：${decision.effects.map((item) => item.type).join('、')}`)
-    const result = fs.existsSync(outputPath)
-      ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
-      : await mediaEditService.visualEffects({ sourcePath, outputPath, decision, signal })
+    const result = await mediaEditExecutors.execute({ decision, sourcePath, dependencyPaths: effectSources, outputPath, signal, visualProfile: 'b1-visual-effects' })
     validateMediaSources(task.spec.sources)
-    const visualQc = await visualExportQuality.inspect({ sourcePath, artifacts: [{ path: outputPath, role: 'visual-effects', expectedDimensions: result.effectReceipt?.outputDimensions, allowBlackBars: decision.effects.some((item) => item.type === 'scale' && Number(item.factor) < 1) }], profile: 'b1-visual-effects', signal })
-    if (!visualQc.passed) { if (fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true }); throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((item) => item.code).join('、')}`) }
     const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
-    const completed = { ...result, visualQc, projectCapsule }
+    const completed = { ...result, projectCapsule }
     checkpoint({ stage: 'artifact-written', result: completed })
     userAuthorizedPaths.add(path.resolve(outputPath))
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.smart-reframe', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.smart-reframe', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.smart-reframe') throw new Error('冻结的智能构图决策无效')
@@ -2521,7 +2534,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.visual-repair', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.visual-repair', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.visual-repair') throw new Error('冻结的画面修复决策无效')
@@ -2560,7 +2573,7 @@ app.whenReady().then(async () => {
     return attachEditDecisionList({ ...common, kind: 'media.concat-segments', timeline: { segments: timelineSegments, durationSeconds: Number(cursor.toFixed(3)) } })
   }
 
-  persistentTaskRuntime.register('media.version-bundle', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.version-bundle', async ({ task, signal, checkpoint, status }) => {
     if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
     const [sourcePath] = validateMediaSources(task.spec.sources)
     const plan = task.spec.plan
@@ -2591,7 +2604,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-concat-sources', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-concat-sources', async ({ task, signal, checkpoint, status }) => {
     const sourcePaths = validateMediaSources(task.spec.sources)
     const [sourcePath] = sourcePaths
     const decision = task.spec.decision
@@ -2619,7 +2632,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-burn-subtitles', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-burn-subtitles', async ({ task, signal, checkpoint, status }) => {
     // D5: 预览与最终烧录使用同一冻结成果；播放器不再用另一套渲染器重建“预览版”。
     const [sourcePath, frozenSubtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
@@ -2641,7 +2654,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-mux-subtitles', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-mux-subtitles', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath, frozenSubtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.mux-subtitles') throw new Error('冻结的软字幕封装决策无效')
@@ -2662,7 +2675,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.shift-subtitles', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.shift-subtitles', async ({ task, signal, checkpoint, status }) => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.shift-subtitles') throw new Error('冻结的字幕调时决策无效')
@@ -2682,7 +2695,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.translate-subtitles', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.translate-subtitles', async ({ task, signal, checkpoint, status }) => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.translate-subtitles') throw new Error('冻结的字幕翻译决策无效')
@@ -2724,7 +2737,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.edit-subtitle-cues', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.edit-subtitle-cues', async ({ task, signal, checkpoint, status }) => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.edit-subtitle-cues') throw new Error('冻结的字幕校对决策无效')
@@ -2753,27 +2766,7 @@ app.whenReady().then(async () => {
       personalEditSkills.assertReceipt(decision.personalEditSkill)
       if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的批量编辑决策与源视频不一致')
       const outputPath = validatePlannedMediaOutput(item.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id, index)
-      let result
-      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
-        result = await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
-      } else if (decision.kind === 'media.trim') {
-        result = await mediaEditService.trim({ sourcePath, outputPath, decision, signal })
-      } else if (decision.kind === 'media.remove-segment') {
-        result = await mediaEditService.removeSegment({ sourcePath, outputPath, decision, signal })
-      } else if (decision.kind === 'media.add-music') {
-        const audioPath = assertAllowedPath(decision.audio?.path || '')
-        if (dependencyPaths.length !== 1 || path.resolve(audioPath).toLowerCase() !== path.resolve(dependencyPaths[0]).toLowerCase()) throw new Error('批量配乐依赖快照不一致')
-        result = await mediaEditService.addMusic({ sourcePath, outputPath, decision: { ...decision, audio: { ...decision.audio, path: audioPath } }, signal })
-      } else if (decision.kind === 'media.visual-effects') {
-        const expected = (decision.effectSources || []).map((entry) => path.resolve(String(entry?.path || '')).toLowerCase())
-        if (expected.length !== dependencyPaths.length || expected.some((entry, dependencyIndex) => entry !== path.resolve(dependencyPaths[dependencyIndex]).toLowerCase())) throw new Error('批量视觉效果依赖快照不一致')
-        result = await mediaEditService.visualEffects({ sourcePath, outputPath, decision, signal })
-        const visualQc = await visualExportQuality.inspect({ sourcePath, artifacts: [{ path: outputPath, role: 'visual-effects', expectedDimensions: result.effectReceipt?.outputDimensions, allowBlackBars: decision.effects.some((entry) => entry.type === 'scale' && Number(entry.factor) < 1) }], profile: 'e3-batch-visual-effects', signal })
-        if (!visualQc.passed) throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((entry) => entry.code).join('、')}`)
-        result = { ...result, visualQc }
-      } else {
-        throw new Error(`不支持批量执行 ${decision.kind}`)
-      }
+      const result = await mediaEditExecutors.execute({ decision, sourcePath, dependencyPaths, outputPath, signal, visualProfile: 'e3-batch-visual-effects' })
       validateMediaSources(item.sources)
       const projectCapsule = mediaEditProjects.recordEdit({ taskId: `${task.id}:${item.id}`, sourcePath, outputPath, decision, repairing: false })
       const completed = { ...result, outputs: [outputPath], projectCapsule }
@@ -2787,13 +2780,13 @@ app.whenReady().then(async () => {
       if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) fs.rmSync(resolved, { force: true })
     }
   })
-  persistentTaskRuntime.register('media.batch-edit', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.batch-edit', async ({ task, signal, checkpoint, status }) => {
     if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
     assertBatchEditPlan(task.spec.plan)
     return batchEditService.run({ task, signal, checkpoint, status })
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.transform-subtitles', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.transform-subtitles', async ({ task, signal, checkpoint, status }) => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.transform-subtitles' || decision.subtitleTransform?.strategy !== 'ordered-subtitle-transform-v1') throw new Error('冻结的批量字幕变换决策无效')
@@ -2825,7 +2818,7 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
-  persistentTaskRuntime.register('media.subtitle-layout-variants', async ({ task, signal, checkpoint, status }) => {
+  registerGovernedMediaEdit('media.subtitle-layout-variants', async ({ task, signal, checkpoint, status }) => {
     const [sourcePath, subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision; const profiles = decision?.subtitleLayout?.profiles || []
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.subtitle-layout-variants' || decision.subtitleLayout?.strategy !== 'responsive-ass-layout-v1' || !profiles.length) throw new Error('冻结的响应式字幕布局决策无效')
@@ -2976,11 +2969,12 @@ app.whenReady().then(async () => {
           outputPath: plannedMediaOutput(sourcePath, entry.decision.output.suffix, '.mp4', requestId, index)
         }
       })
+      const prepared = governMediaEditSpec({ taskType: 'media.batch-edit', itemCount: items.length, spec: { instruction: plan.instruction, plan, planDigest: plan.digest, items } })
       persistentTaskRuntime.enqueue({
         id: requestId,
         type: 'media.batch-edit',
         workspaceTaskId: input.workspaceTaskId,
-        spec: { instruction: plan.instruction, plan, planDigest: plan.digest, items }
+        spec: prepared.spec
       })
       const task = await persistentTaskRuntime.run(requestId)
       if (task.state !== 'completed') return { ...(task.checkpoint?.result || {}), success: false, requestId, cancelled: task.state === 'cancelled', error: task.failure?.message || task.error || '批量编辑未完成' }
@@ -3101,12 +3095,13 @@ app.whenReady().then(async () => {
       const subtitlePath = adjacentSubtitle ? fs.realpathSync(plannedSubtitle) : assertAllowedPath(plan.subtitlePath)
       if (adjacentSubtitle) userAuthorizedPaths.add(path.resolve(subtitlePath))
       const entries = [...(plan.variants || []), ...(plan.chapters || [])]
+      const prepared = governMediaEditSpec({ taskType: 'media.version-bundle', itemCount: entries.length, spec: {
+        instruction: plan.instruction, plan, sources: snapshotMediaSources([sourcePath, subtitlePath]),
+        plannedOutputs: entries.map((entry, index) => plannedMediaOutput(sourcePath, entry.label, '.mp4', requestId, index))
+      } })
       persistentTaskRuntime.enqueue({
         id: requestId, type: 'media.version-bundle', workspaceTaskId: input.workspaceTaskId,
-        spec: {
-          instruction: plan.instruction, plan, sources: snapshotMediaSources([sourcePath, subtitlePath]),
-          plannedOutputs: entries.map((entry, index) => plannedMediaOutput(sourcePath, entry.label, '.mp4', requestId, index))
-        }
+        spec: prepared.spec
       })
       const task = await persistentTaskRuntime.run(requestId)
       if (task.state !== 'completed') return { success: false, requestId, cancelled: task.state === 'cancelled', error: task.error || '长视频多版本任务未完成' }
@@ -3190,9 +3185,11 @@ app.whenReady().then(async () => {
             : [sourcePath]
       const outputExtension = decision.output?.container === 'vtt' ? '.vtt' : decision.output?.container === 'srt' ? '.srt' : decision.output?.container === 'ass' ? '.ass' : '.mp4'
       const outputAnchor = decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues' || decision.kind === 'media.transform-subtitles' ? allSourcePaths[0] : sourcePath
-      // 字幕翻译：在入队前冻结引擎与模型路由；云端先过原生同意框，拒绝则回退本地离线组件（仅英译中）
+      // 字幕翻译：冻结引擎、模型路由和任务绑定审批对象；拒绝仍可回退本地离线组件（仅英译中）。
       let engineChoice = ''
       let modelRoute = null
+      let approvalContract = null
+      let cloudApprovalGranted = false
       if (decision.kind === 'media.translate-subtitles' || (decision.kind === 'media.transform-subtitles' && decision.subtitleTransform?.translate)) {
         const subtitleText = decodeSubtitleText(fs.readFileSync(allSourcePaths[0]))
         const cueCount = parseSrtCues(subtitleText).length
@@ -3205,10 +3202,13 @@ app.whenReady().then(async () => {
         if (engine.offline) {
           engineChoice = 'offline'
         } else {
-          const approved = await ensureCloudConsent(`把字幕原文发送给 ${engine.label} 翻译成${targetLang}；视频文件不会上传`)
+          const approvalSummary = `把字幕原文发送给 ${engine.label} 翻译成${targetLang}；视频文件不会上传`
+          const approved = await ensureCloudConsent(approvalSummary)
           if (approved) {
             engineChoice = 'cloud'
             modelRoute = freezeTaskModelRoute(creativeConfig(), { taskKind: 'subtitle-translation' })
+            approvalContract = { action: 'cloud', summary: approvalSummary }
+            cloudApprovalGranted = true
           } else if (offlineTranslate.availability().available && shouldUseOffline(entries, targetLang)) {
             engineChoice = 'offline'
           } else {
@@ -3216,29 +3216,34 @@ app.whenReady().then(async () => {
           }
         }
       }
-      persistentTaskRuntime.enqueue({
+      const baseSpec = {
+        instruction: decision.instruction,
+        decision,
+        sources: snapshotMediaSources(allSourcePaths),
+        outputPath: plannedMediaOutput(outputAnchor, decision.output.suffix, outputExtension, requestId),
+        ...(decision.kind === 'media.smart-reframe'
+          ? { plannedOutputs: decision.reframe.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.mp4', requestId, index)) }
+          : decision.kind === 'media.subtitle-layout-variants'
+            ? { plannedOutputs: decision.subtitleLayout.profiles.map((item, index) => plannedMediaOutput(decision.subtitle.path, `字幕布局-${item.id}`, '.ass', requestId, index)) }
+          : decision.kind === 'media.visual-repair'
+            ? { plannedOutputs: [plannedMediaOutput(outputAnchor, '画面修复版', '.mp4', requestId, 0), plannedMediaOutput(outputAnchor, '修复前后对比', '.mp4', requestId, 1)] }
+            : decision.kind === 'media.repair-audio'
+              ? { plannedOutputs: [plannedMediaOutput(outputAnchor, decision.output.suffix, '.mp4', requestId, 0), ...decision.audioRepair.separation.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.wav', requestId, index + 1))] }
+            : {}),
+        ...(engineChoice ? { engineChoice } : {}),
+        ...(modelRoute ? { modelRoute } : {}),
+        ...(approvalContract ? { approvalContract: { action: approvalContract.action, scope: 'subtitle-translation' } } : {})
+      }
+      const prepared = governMediaEditSpec({ taskType, spec: baseSpec, approval: approvalContract })
+      let task = persistentTaskRuntime.enqueue({
         id: requestId,
         type: taskType,
         workspaceTaskId: input.workspaceTaskId,
-        spec: {
-          instruction: decision.instruction,
-          decision,
-          sources: snapshotMediaSources(allSourcePaths),
-          outputPath: plannedMediaOutput(outputAnchor, decision.output.suffix, outputExtension, requestId),
-          ...(decision.kind === 'media.smart-reframe'
-            ? { plannedOutputs: decision.reframe.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.mp4', requestId, index)) }
-            : decision.kind === 'media.subtitle-layout-variants'
-              ? { plannedOutputs: decision.subtitleLayout.profiles.map((item, index) => plannedMediaOutput(decision.subtitle.path, `字幕布局-${item.id}`, '.ass', requestId, index)) }
-            : decision.kind === 'media.visual-repair'
-              ? { plannedOutputs: [plannedMediaOutput(outputAnchor, '画面修复版', '.mp4', requestId, 0), plannedMediaOutput(outputAnchor, '修复前后对比', '.mp4', requestId, 1)] }
-              : decision.kind === 'media.repair-audio'
-                ? { plannedOutputs: [plannedMediaOutput(outputAnchor, decision.output.suffix, '.mp4', requestId, 0), ...decision.audioRepair.separation.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.wav', requestId, index + 1))] }
-              : {}),
-          ...(engineChoice ? { engineChoice } : {}),
-          ...(modelRoute ? { modelRoute } : {})
-        }
+        spec: prepared.spec,
+        approval: prepared.approval
       })
-      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state === 'waiting_approval' && cloudApprovalGranted) task = persistentTaskRuntime.approve(task.approval.id, task.approval.token)
+      task = await persistentTaskRuntime.run(requestId)
       if (task.state !== 'completed') return { success: false, matched: true, requestId, cancelled: task.state === 'cancelled', error: task.error || '视频剪辑未完成' }
       return { ...task.result, matched: true, requestId }
     } catch (error) {

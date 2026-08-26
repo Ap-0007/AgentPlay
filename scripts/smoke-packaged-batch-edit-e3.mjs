@@ -12,6 +12,7 @@ const executable = path.resolve(valueArg('--exe') || path.join(root, 'release', 
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-packaged-batch-edit-e3-'))
 const mediaDir = path.join(profileDir, 'media')
 const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'batch-edit-e3-packaged')
+const governanceEvidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-edit-governance-e4-packaged')
 const installedFfmpeg = path.join(process.env.APPDATA || '', 'ai-player', 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
 const stagedFfmpeg = path.join(profileDir, 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
 const ffmpeg = path.join(installedFfmpeg, 'bin', 'ffmpeg.exe')
@@ -41,7 +42,7 @@ function cleanup() { const resolved = path.resolve(profileDir); if (!resolved.st
 let session
 try {
   if (!fs.existsSync(executable) || !fs.existsSync(ffmpeg)) throw new Error('缺少候选EXE或已安装FFmpeg')
-  fs.mkdirSync(mediaDir, { recursive: true }); fs.mkdirSync(path.dirname(stagedFfmpeg), { recursive: true }); fs.symlinkSync(installedFfmpeg, stagedFfmpeg, 'junction'); fs.mkdirSync(evidenceDir, { recursive: true })
+  fs.mkdirSync(mediaDir, { recursive: true }); fs.mkdirSync(path.dirname(stagedFfmpeg), { recursive: true }); fs.symlinkSync(installedFfmpeg, stagedFfmpeg, 'junction'); fs.mkdirSync(evidenceDir, { recursive: true }); fs.mkdirSync(governanceEvidenceDir, { recursive: true })
   for (let index = 0; index < sources.length; index += 1) {
     const source = sources[index]
     const made = spawnSync(ffmpeg, ['-hide_banner', '-nostdin', '-f', 'lavfi', '-i', `testsrc2=duration=${source.duration}:size=640x360:rate=15`, '-f', 'lavfi', '-i', `sine=frequency=${440 + index * 110}:duration=${source.duration}`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', '-y', source.path, '-loglevel', 'error'], { windowsHide: true, shell: false })
@@ -58,6 +59,8 @@ try {
   const task = await session.evaluate(`(async()=>{const wait=(ms)=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<3600;i++){const item=(await window.aiPlayer.taskRuntime.list()).find(x=>x.id===${JSON.stringify(requestId)});if(item&&['completed','failed','cancelled'].includes(item.state))return item;await wait(100)}throw new Error('E3批量编辑超时')})()`, true)
   const states = (task.result?.results || []).map((item) => item.state)
   if (!result?.success || task.state !== 'completed' || task.quality?.score !== 100 || JSON.stringify(states) !== JSON.stringify(['succeeded', 'failed', 'succeeded'])) throw new Error(`E3安装态结果不合格：${JSON.stringify({ result, state: task.state, quality: task.quality, states, error: task.error }).slice(0, 8000)}`)
+  const governance = task.result?.editGovernanceReceipt
+  if (task.spec?.editGovernance?.strategy !== 'shared-media-edit-governance-v1' || governance?.strategy !== 'shared-media-edit-governance-receipt-v1' || governance?.verdict !== 'matched' || governance?.governanceDigest !== task.spec.editGovernance.digest || governance?.run?.status !== 'completed' || governance?.run?.budget?.toolCalls !== 1 || governance?.run?.steps?.[0]?.evidence?.verified !== true) throw new Error(`E4统一治理回执不合格：${JSON.stringify({ spec: task.spec?.editGovernance, governance }).slice(0, 6000)}`)
   const failed = task.result.results[1]
   if (failed.outputPath || failed.failure?.code !== 'MEDIA_RANGE_OUT_OF_BOUNDS') throw new Error(`E3失败隔离不合格：${JSON.stringify(failed)}`)
   if (task.result.outputs.length !== 2 || task.result.results.filter((item) => item.state === 'succeeded').some((item) => item.qualityScore !== 100)) throw new Error('E3成功项没有逐条100分或成果数不符')
@@ -67,9 +70,10 @@ try {
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); const screenshotPath = path.join(evidenceDir, 'conversation-result.png'); fs.writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64'))
   await closeSession(session); session = await openSession()
   const restarted = await session.evaluate(`(async()=>{const wait=(ms)=>new Promise(r=>setTimeout(r,ms));for(let i=0;i<300;i++){try{if(window.aiPlayer?.taskRuntime?.list){const item=(await window.aiPlayer.taskRuntime.list()).find(x=>x.id===${JSON.stringify(requestId)});if(item)return item}}catch{}await wait(100)}throw new Error('E3重启任务未恢复')})()`, true)
-  const restartPersisted = restarted.state === 'completed' && restarted.attempts === attempts && restarted.result?.batchEditReceipt?.recovery?.repeatedCompletedItems === 0
+  const restartPersisted = restarted.state === 'completed' && restarted.attempts === attempts && restarted.result?.batchEditReceipt?.recovery?.repeatedCompletedItems === 0 && restarted.result?.editGovernanceReceipt?.governanceDigest === governance.governanceDigest
   if (!restartPersisted) throw new Error(`E3重启后重复执行或回执丢失：${JSON.stringify({ before: attempts, after: restarted.attempts, receipt: restarted.result?.batchEditReceipt })}`)
-  const receipt = { passed: true, checkedAt: new Date().toISOString(), strategy: plan.plan.strategy, planDigest: plan.plan.digest, total: 3, successCount: 2, failureCount: 1, states, failureCode: failed.failure.code, qualityScore: task.quality.score, sourceHashesUnchanged: true, restartPersisted, repeatedCompletedItems: restarted.result.batchEditReceipt.recovery.repeatedCompletedItems, outputs: task.result.outputs.map((item) => ({ name: path.basename(item), bytes: fs.statSync(item).size, sha256: sha256(item) })), screenshotPath }
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), strategy: plan.plan.strategy, planDigest: plan.plan.digest, total: 3, successCount: 2, failureCount: 1, states, failureCode: failed.failure.code, qualityScore: task.quality.score, sourceHashesUnchanged: true, restartPersisted, repeatedCompletedItems: restarted.result.batchEditReceipt.recovery.repeatedCompletedItems, editGovernance: { strategy: task.spec.editGovernance.strategy, digest: task.spec.editGovernance.digest, hiddenExecutor: task.spec.editGovernance.registry.hiddenExecutor, runtime: task.spec.editGovernance.runtime.name, approval: governance.approval, budget: governance.run.budget, runStatus: governance.run.status, verifiedStep: governance.run.steps[0].evidence.verified }, outputs: task.result.outputs.map((item) => ({ name: path.basename(item), bytes: fs.statSync(item).size, sha256: sha256(item) })), screenshotPath }
   const receiptPath = path.join(evidenceDir, 'receipt.json'); fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`)
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, successCount: 2, failureCount: 1, qualityScore: receipt.qualityScore, failureCode: receipt.failureCode, restartPersisted }, null, 2)}\n`)
+  const governanceReceiptPath = path.join(governanceEvidenceDir, 'receipt.json'); fs.writeFileSync(governanceReceiptPath, `${JSON.stringify(receipt, null, 2)}\n`); fs.copyFileSync(screenshotPath, path.join(governanceEvidenceDir, 'conversation-result.png'))
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, governanceReceiptPath, successCount: 2, failureCount: 1, qualityScore: receipt.qualityScore, failureCode: receipt.failureCode, governance: receipt.editGovernance, restartPersisted }, null, 2)}\n`)
 } finally { if (session) await closeSession(session); cleanup() }

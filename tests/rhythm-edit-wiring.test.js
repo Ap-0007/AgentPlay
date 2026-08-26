@@ -8,8 +8,8 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
 
 test('C3 planning and execution stay in the main process with frozen video and music snapshots', () => {
   const main = read('electron/main.js')
-  const start = main.indexOf("persistentTaskRuntime.register('media.rhythm-edit'")
-  const end = main.indexOf("persistentTaskRuntime.register('media.edit-concat'", start)
+  const start = main.indexOf("registerGovernedMediaEdit('media.rhythm-edit'")
+  const end = main.indexOf("registerGovernedMediaEdit('media.edit-concat'", start)
   const executor = main.slice(start, end)
   assert.ok(start > 0)
   assert.match(main, /matchesRhythmEditInstruction/)

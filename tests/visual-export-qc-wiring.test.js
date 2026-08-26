@@ -20,8 +20,8 @@ test('B1-B4 all pass through one unified visual export quality gate', () => {
 })
 
 test('explicit inset and before-after comparison may declare expected bars while normal exports cannot', () => {
-  const main = read('electron/main.js')
-  assert.match(main, /allowBlackBars: decision\.effects\.some\(\(item\) => item\.type === 'scale' && Number\(item\.factor\) < 1\)/)
+  const main = read('electron/main.js'); const registry = read('electron/media-edit-executor-registry.js')
+  assert.match(registry, /allowBlackBars: decision\.effects\.some\(\(entry\) => entry\.type === 'scale' && Number\(entry\.factor\) < 1\)/)
   assert.match(main, /role: 'before-after-comparison'[\s\S]{0,160}allowBlackBars: true/)
   assert.doesNotMatch(main, /role: `reframe-\$\{item\.aspect\}`[^\n]+allowBlackBars: true/)
 })

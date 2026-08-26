@@ -8,8 +8,8 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
 
 test('C1 owns one persistent main-process path with every external audio source frozen', () => {
   const main = read('electron/main.js')
-  const start = main.indexOf("persistentTaskRuntime.register('media.edit-audio-mix'")
-  const end = main.indexOf("persistentTaskRuntime.register('media.edit-concat'", start)
+  const start = main.indexOf("registerGovernedMediaEdit('media.edit-audio-mix'")
+  const end = main.indexOf("registerGovernedMediaEdit('media.edit-concat'", start)
   const executor = main.slice(start, end)
   assert.ok(start > 0)
   assert.match(executor, /decision\.kind !== 'media\.mix-audio'/)

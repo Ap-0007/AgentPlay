@@ -91,7 +91,7 @@ test('D4 quality reaches 100 only when every resolution profile passes five layo
 
 test('D4 uses one persistent layout task, conversation flow and packaged six-profile acceptance', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8'); const quality = fs.readFileSync(path.join(__dirname, '..', 'electron', 'task-result-quality.js'), 'utf8'); const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'agent-panel', 'useMediaCreativeTasks.ts'), 'utf8'); const smoke = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'smoke-packaged-subtitle-layout-d4.mjs'), 'utf8')
-  assert.match(main, /register\('media\.subtitle-layout-variants'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.subtitle-layout-variants'/)
   for (const code of ['SUBTITLE_LAYOUT_FONT_FAILED', 'SUBTITLE_LAYOUT_LINES_FAILED', 'SUBTITLE_LAYOUT_WRAPPING_FAILED', 'SUBTITLE_LAYOUT_OCCLUSION_FAILED', 'SUBTITLE_LAYOUT_POSITION_FAILED']) assert.match(quality, new RegExp(code))
   assert.match(renderer, /多比例字幕布局/)
   for (const marker of ['quality100', 'profileCount', 'fontPassed', 'linesPassed', 'wrappingPassed', 'occlusionPassed', 'positionPassed', 'sourceHashesUnchanged']) assert.match(smoke, new RegExp(marker))

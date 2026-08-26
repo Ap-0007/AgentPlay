@@ -55,7 +55,7 @@ test('mux-subtitles decision: soft-mux verbs compile, burn verbs stay with burn,
 })
 
 test('mux-subtitles wiring: task registered, decision routed, renderer gate accepts, quality checklist covers', () => {
-  assert.match(main, /persistentTaskRuntime\.register\('media\.edit-mux-subtitles'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.edit-mux-subtitles'/)
   assert.match(main, /decision\.kind === 'media\.mux-subtitles'/)
   assert.match(main, /'media\.edit-mux-subtitles'/)
   assert.match(main, /compileMuxSubtitlesDecisionList/)

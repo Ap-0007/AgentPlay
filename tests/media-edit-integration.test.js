@@ -10,10 +10,10 @@ test('main process owns planning, frozen execution, recovery and cancellation fo
   const main = read('electron/main.js')
   assert.match(main, /compileEditDecisionList/)
   assert.match(main, /new MediaEditService\(\{ frames: videoFrames, transcription: transcriptionService \}\)/)
-  assert.match(main, /persistentTaskRuntime\.register\('media\.edit-trim'/)
-  const executor = main.slice(main.indexOf("persistentTaskRuntime.register('media.edit-trim'"), main.indexOf("persistentTaskRuntime.register('media.edit-remove'"))
+  assert.match(main, /registerGovernedMediaEdit\('media\.edit-trim'/)
+  const executor = main.slice(main.indexOf("registerGovernedMediaEdit('media.edit-trim'"), main.indexOf("registerGovernedMediaEdit('media.edit-remove'"))
   assert.equal((executor.match(/validateMediaSources\(task\.spec\.sources\)/g) || []).length, 2, '剪辑前后都必须复核源文件指纹')
-  assert.match(main, /mediaEditService\.trim\(\{[\s\S]{0,240}decision: task\.spec\.decision[\s\S]{0,240}signal/)
+  assert.match(main, /mediaEditExecutors\.execute\(\{ decision, sourcePath, outputPath, signal \}\)/)
   assert.match(main, /checkpoint\(\{ stage: 'artifact-written', result/)
   assert.match(main, /ipcMain\.handle\('media:edit-plan'/)
   assert.match(main, /ipcMain\.handle\('media:trim'/)
@@ -37,7 +37,7 @@ test('main process attaches and revalidates the canonical EDL before every persi
 test('main process persists an edit capsule before checkpointing and owns undo or redo navigation', () => {
   const main = read('electron/main.js')
   assert.match(main, /new MediaEditProjectStore\(\{ rootDir: path\.join\(app\.getPath\('userData'\), 'media-edit-projects'\) \}\)/)
-  const executor = main.slice(main.indexOf("persistentTaskRuntime.register('media.edit-trim'"), main.indexOf("persistentTaskRuntime.register('media.edit-remove'"))
+  const executor = main.slice(main.indexOf("registerGovernedMediaEdit('media.edit-trim'"), main.indexOf("registerGovernedMediaEdit('media.edit-remove'"))
   assert.match(executor, /mediaEditProjects\.recordEdit\(\{[\s\S]{0,260}taskId: task\.id[\s\S]{0,260}sourcePath[\s\S]{0,260}outputPath/)
   assert.ok(executor.indexOf('mediaEditProjects.recordEdit') < executor.indexOf("checkpoint({ stage: 'artifact-written'"), '项目版本必须先持久化再收口任务检查点')
   assert.match(main, /ipcMain\.handle\('media:edit-history-plan'/)
@@ -99,12 +99,12 @@ test('renderer routes a confirmed undo or redo action back to the project versio
 
 test('remove-segment decisions enter their own recoverable task and the shared edit project', () => {
   const main = read('electron/main.js')
-  const executorStart = main.indexOf("persistentTaskRuntime.register('media.edit-remove'")
+  const executorStart = main.indexOf("registerGovernedMediaEdit('media.edit-remove'")
   const executorEnd = main.indexOf("persistentTaskRuntime.register('media.dedup'")
   const executors = main.slice(executorStart, executorEnd)
-  assert.match(executors, /persistentTaskRuntime\.register\('media\.edit-remove'/)
+  assert.match(executors, /registerGovernedMediaEdit\('media\.edit-remove'/)
   assert.match(executors, /decision\.kind !== 'media\.remove-segment'/)
-  assert.match(executors, /mediaEditService\.removeSegment/)
+  assert.match(executors, /mediaEditExecutors\.execute/)
   assert.match(executors, /mediaEditProjects\.recordEdit\(\{[\s\S]{0,260}taskId: task\.id/)
   assert.match(main, /const taskType = decision\.kind === 'media\.concat-sources'/)
   assert.match(main, /decision\.kind === 'media\.concat-segments'/)
@@ -126,7 +126,7 @@ test('renderer presents remove-segment as a recoverable edit with every timeline
 
 test('concat decisions run as their own persistent task and repair from the same frozen timeline', () => {
   const main = read('electron/main.js')
-  const start = main.indexOf("persistentTaskRuntime.register('media.edit-concat'")
+  const start = main.indexOf("registerGovernedMediaEdit('media.edit-concat'")
   const end = main.indexOf("persistentTaskRuntime.register('media.dedup'")
   const executor = main.slice(start, end)
   assert.ok(start > 0, 'multi-segment concat must have a main-process persistent executor')

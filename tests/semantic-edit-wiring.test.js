@@ -12,7 +12,7 @@ test('main process plans semantic pauses once and executes the frozen EDL throug
   assert.match(main, /semanticEditService\.plan\(\{ instruction: input\.instruction, sourcePath \}\)/)
   assert.match(main, /if \(input\.decision\) \{[\s\S]{0,220}assertEditDecisionList\(input\.decision\)/)
   assert.match(main, /decision\.semanticCut[\s\S]{0,240}真实音轨证据/)
-  assert.match(main, /persistentTaskRuntime\.register\('media\.edit-concat'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.edit-concat'/)
   assert.match(main, /loadTranscript:[\s\S]{0,260}findAdjacentSubtitle/)
   assert.match(main, /createWordTimingLoader\(\{ frames: videoFrames, transcription: transcriptionService \}\)/)
   assert.match(main, /semanticEditService\.setSemanticAnalyzer/)

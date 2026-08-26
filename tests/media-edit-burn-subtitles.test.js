@@ -55,7 +55,7 @@ test('burn-subtitles decision: path compiles, missing file clarifies, resolution
 })
 
 test('burn-subtitles wiring: task registered, decision routed, renderer gate accepts, quality checklist covers', () => {
-  assert.match(main, /persistentTaskRuntime\.register\('media\.edit-burn-subtitles'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.edit-burn-subtitles'/)
   assert.match(main, /decision\.kind === 'media\.burn-subtitles'/)
   assert.match(main, /'media\.edit-burn-subtitles'/, 'media:trim 路由必须含烧录字幕')
   assert.match(main, /media\.edit-concat-sources' \|\| type === 'media\.edit-burn-subtitles'/, '质量修复清单必须含烧录字幕')
