@@ -22,6 +22,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isCompress = runtimeTask.type === 'media.compress'
       const isVersionBundle = runtimeTask.type === 'media.version-bundle'
       const isVisualEffects = runtimeTask.type === 'media.edit-visual-effects'
+      const restoredBrandPackage = (runtimeTask.spec?.decision as { brandPackage?: { template?: { label?: string } } } | undefined)?.brandPackage
       const isSmartReframe = runtimeTask.type === 'media.smart-reframe'
       const isVisualRepair = runtimeTask.type === 'media.visual-repair'
       const isRhythmEdit = runtimeTask.type === 'media.rhythm-edit'
@@ -116,7 +117,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         kind = 'media'; label = '长视频多版本'; instruction = String(runtimeTask.spec?.instruction || '生成长视频多版本'); source = firstSourcePath
         retry = { kind: 'versions', instruction, sourcePath: firstSourcePath }
       } else if (isVisualEffects) {
-        kind = 'media'; label = '专业画面效果'; instruction = String(runtimeTask.spec?.instruction || '应用视觉效果'); source = firstSourcePath
+        kind = 'media'; label = restoredBrandPackage ? `品牌包装 · ${restoredBrandPackage.template?.label || '品牌模板'}` : '专业画面效果'; instruction = String(runtimeTask.spec?.instruction || (restoredBrandPackage ? '生成品牌包装' : '应用视觉效果')); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isSmartReframe) {
         kind = 'media'; label = '三比例主体跟踪'; instruction = String(runtimeTask.spec?.instruction || '生成横屏、竖屏和方形版本'); source = firstSourcePath
@@ -161,7 +162,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
                   : isVersionBundle ? '长视频多版本完成（已从共享证据检查点恢复）'
                   : isSmartReframe ? '三比例主体跟踪完成（已从冻结关键帧恢复）'
                   : isVisualRepair ? '画面质量修复完成（已从冻结修复决策恢复）'
-                  : isVisualEffects ? '专业画面效果完成（已从冻结效果决策恢复）'
+                  : isVisualEffects ? (restoredBrandPackage ? '品牌包装完成（已从冻结模板恢复）' : '专业画面效果完成（已从冻结效果决策恢复）')
                   : isTimelineEdit ? '视频剪辑完成（已从冻结时间线恢复）'
                     : isSubtitleShift ? '字幕调时完成（已从冻结决策恢复）'
                       : isSubtitleTranslate ? '字幕翻译完成（已从冻结决策恢复）'

@@ -2459,7 +2459,7 @@ app.whenReady().then(async () => {
     const decisionEffectPaths = (decision.effectSources || []).map((item) => path.resolve(String(item.path || '')))
     if (decisionEffectPaths.length !== effectSources.length || decisionEffectPaths.some((item, index) => item !== path.resolve(effectSources[index]))) throw new Error('视觉效果辅助素材快照不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(`正在应用 ${decision.effects.length} 类视觉效果：${decision.effects.map((item) => item.type).join('、')}`)
+    status(decision.brandPackage ? `正在按“${decision.brandPackage.template.label}”渲染标题、章节条、人物条、角标和片尾` : `正在应用 ${decision.effects.length} 类视觉效果：${decision.effects.map((item) => item.type).join('、')}`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
       : await mediaEditService.visualEffects({ sourcePath, outputPath, decision, signal })

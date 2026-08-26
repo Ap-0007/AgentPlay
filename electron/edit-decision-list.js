@@ -283,14 +283,14 @@ function buildEditDecisionList(decision) {
     const operations = effects.map((effect, index) => ({
       id: `operation-${index + 1}`, type: `visual-${String(effect.type || '')}`,
       materialId: effect.type === 'pip' ? `material-effect-${effectSources.findIndex((item) => item.path === effect.path) + 1}` : video.id,
-      trackIds: ['track-video-1'], parameters: JSON.parse(JSON.stringify(effect))
+      trackIds: ['track-video-1'], parameters: JSON.parse(JSON.stringify(effect.type === 'brand-package' ? { ...effect, brandPackage: decision.brandPackage } : effect))
     }))
     if (operations.some((item) => !item.type || item.materialId === 'material-effect-0')) throw new Error('EDL 视觉效果素材无效')
     return {
       schemaVersion: 1, kind: 'agentplay.edit-decision-list', decisionKind: decision.kind,
       materials: [video, ...effectSources],
       tracks: [{ id: 'track-video-1', type: 'video', materialId: video.id }, { id: 'track-audio-1', type: 'audio', materialId: video.id, optional: true }, ...effectSources.map((item, index) => ({ id: `track-effect-${index + 1}`, type: 'video', materialId: item.id }))],
-      operations, output, quality: { ...quality, effects: JSON.parse(JSON.stringify(effects)) }
+      operations, output, quality: { ...quality, effects: JSON.parse(JSON.stringify(effects)), ...(decision.brandPackage ? { brandPackage: JSON.parse(JSON.stringify(decision.brandPackage)) } : {}) }
     }
   }
   if (decision.kind === 'media.smart-reframe') {

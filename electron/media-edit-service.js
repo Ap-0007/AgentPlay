@@ -8,6 +8,7 @@ const { AudioRepairService } = require('./audio-repair-service')
 const { RhythmEditService } = require('./rhythm-edit-service')
 const { AudioExportQualityGate } = require('./audio-export-quality')
 const { ProfessionalSubtitleService } = require('./professional-subtitle-service')
+const { BrandPackageService } = require('./brand-package-service')
 const { parseSignalStatsLog, shakeScoreFromTransforms } = require('./visual-repair-service')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
@@ -259,6 +260,7 @@ class MediaEditService {
     this.audioRepairService = new AudioRepairService({ frames, fsImpl, exportQuality: this.exportQuality })
     this.rhythmEditService = new RhythmEditService({ frames, fsImpl, exportQuality: this.exportQuality })
     this.professionalSubtitleService = transcription ? new ProfessionalSubtitleService({ frames, transcription, fsImpl }) : null
+    this.brandPackageService = new BrandPackageService({ frames, fsImpl })
   }
 
   async mixAudio(input = {}) { return this.audioMixService.mix(input) }
@@ -1517,6 +1519,7 @@ class MediaEditService {
     const source = path.resolve(String(sourcePath || ''))
     const output = path.resolve(String(outputPath || ''))
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.visual-effects' || !Array.isArray(decision.effects) || !decision.effects.length) throw new Error('视觉效果决策无效')
+    if (decision.brandPackage?.strategy === 'ass-brand-package-v1') return this.brandPackageService.render({ sourcePath, outputPath, decision, signal })
     if (path.resolve(String(decision.source?.path || '')) !== source || source === output) throw new Error('视觉效果决策与源文件不一致或试图覆盖原片')
     if (!this.fs.existsSync(source) || this.fs.existsSync(output) || !this.frames.availability().available) throw new Error(this.fs.existsSync(output) ? '成果文件已存在，为避免覆盖已停止' : '源视频或ffmpeg不可用')
     const sourceDuration = await this.frames.probeDuration(source, { signal })
@@ -1800,6 +1803,14 @@ class MediaEditService {
     if (decision?.kind === 'media.mix-audio') return this.audioMixService.verify({ sourcePath, outputPath, decision, signal })
     if (decision?.kind === 'media.rhythm-edit') return this.rhythmEditService.verify({ sourcePath, musicPath: decision.music?.path, outputPath, decision, signal })
     if (decision?.kind === 'media.visual-effects') {
+      if (decision.brandPackage?.strategy === 'ass-brand-package-v1') {
+        const verified = await this.brandPackageService.verify({ sourcePath, outputPath, decision, signal })
+        const representative = [verified.proof.elements.title, ...(verified.proof.elements.chapters.samples || []), verified.proof.elements.person, verified.proof.elements.corner, verified.proof.elements.outro].find((item) => Number.isFinite(Number(item?.seconds)))
+        const effectReceipt = { effectKinds: ['brand-package'], inputDurationSeconds: verified.plan.timeline.durationSeconds, outputDurationSeconds: Number(verified.durationSeconds.toFixed(3)), outputDimensions: { width: Number(verified.outputDimensions.width), height: Number(verified.outputDimensions.height) }, dimensionMatch: true, representativeSample: { sourceSeconds: Number(representative?.seconds || 0), outputSeconds: Number(representative?.seconds || 0), meanAbsDiff: Number((verified.maximumDifference * 255).toFixed(3)) }, changed: true }
+        const labels = { title: '标题', chapters: '章节条', person: '人物条', corner: '角标', outro: '片尾' }
+        const verifiedLabels = verified.plan.requiredElements.map((item) => labels[item]).join('、')
+        return { success: true, outputPath, outputs: [outputPath], outputBytes: this.fs.statSync(outputPath).size, durationSeconds: verified.durationSeconds, expectedDurationSeconds: verified.plan.timeline.durationSeconds, effectReceipt, brandPackage: verified.plan, brandPackageProof: verified.proof, summary: `已恢复并核验“${verified.plan.template.label}”品牌包装，${verifiedLabels}像素证据完整` }
+      }
       const source = path.resolve(String(sourcePath || '')); const output = path.resolve(String(outputPath || ''))
       const sourceDuration = await this.frames.probeDuration(source, { signal })
       const transition = decision.effects.find((item) => item.type === 'transition')

@@ -1,12 +1,13 @@
 const path = require('path')
 
 const VISUAL_EFFECT_PATTERN = /裁成|裁剪画面|放大\s*\d|缩小\s*\d|画中画|关键帧|缓慢推近|缓慢拉远|从左到右|从右到左|转场|叠化|遮罩|打码|模糊|亮度|对比度|饱和度|暖色|冷色/
+const BRAND_PACKAGE_PATTERN = /品牌包装|品牌模板|标题条|标题《|章节条|章节[：:]|人物条|人物《|角标|片尾包装|片尾《/
 const CONSULTATION_PATTERN = /能不能|可不可以|可以吗|是否|怎么|如何/
 const VIDEO_PATH_PATTERN = /([A-Za-z]:\\[^，；。\n]+?\.(?:mp4|mkv|mov|webm|m4v|wmv|avi))/i
 
 function matchesVisualEffectInstruction(instruction) {
   const text = String(instruction || '').trim()
-  return Boolean(text && !CONSULTATION_PATTERN.test(text) && VISUAL_EFFECT_PATTERN.test(text))
+  return Boolean(text && !CONSULTATION_PATTERN.test(text) && (VISUAL_EFFECT_PATTERN.test(text) || BRAND_PACKAGE_PATTERN.test(text)))
 }
 
 function bounded(value, min, max) { return Math.max(min, Math.min(max, Number(value))) }
@@ -47,8 +48,57 @@ function signedPercent(text, label, base, scale) {
   return base
 }
 
+const BRAND_TEMPLATES = Object.freeze({
+  'clean-tech': { id: 'clean-tech', label: '清爽科技', primaryAss: '&H00FFD65A', accentAss: '&H00FFFFFF', backAss: '&HC0201810' },
+  'warm-human': { id: 'warm-human', label: '温暖人文', primaryAss: '&H006FD0FF', accentAss: '&H00FFFFFF', backAss: '&HC02B2018' },
+  'bold-news': { id: 'bold-news', label: '高对比资讯', primaryAss: '&H004C4CFF', accentAss: '&H00FFFFFF', backAss: '&HC0101010' }
+})
+
+function bracketValue(text, label) {
+  const match = new RegExp(`${label}《([^》]{1,80})》`).exec(text)
+  return match ? match[1].trim() : ''
+}
+
+function compileBrandPackageDecision({ instruction, sourcePath } = {}) {
+  const text = String(instruction || '').trim(); const source = String(sourcePath || '').trim()
+  if (!BRAND_PACKAGE_PATTERN.test(text) || CONSULTATION_PATTERN.test(text) || /(?:不要|不用|取消|例如|比如|假如|如果)/.test(text)) return { matched: false }
+  const title = bracketValue(text, '标题')
+  const personText = bracketValue(text, '人物')
+  const corner = bracketValue(text, '角标')
+  const outro = bracketValue(text, '片尾')
+  const personParts = personText.split(/[｜|/]/).map((item) => item.trim()).filter(Boolean)
+  const chapters = [...text.matchAll(/第\s*(\d+(?:\.\d+)?)\s*秒《([^》]{1,60})》/g)].map((match) => ({ atSeconds: Number(match[1]), text: match[2].trim() })).slice(0, 8)
+  if (personText && personParts.length !== 2) {
+    return { matched: true, review: { kind: 'brand-package-clarification', summary: '人物条请同时给姓名和身份，例如：人物《张三｜产品经理》。', candidates: [] } }
+  }
+  const elementKinds = [title ? 'title' : '', chapters.length ? 'chapters' : '', personParts.length === 2 ? 'person' : '', corner ? 'corner' : '', outro ? 'outro' : ''].filter(Boolean)
+  if (!source || !elementKinds.length) {
+    return { matched: true, review: { kind: 'brand-package-clarification', summary: '品牌包装需要一次说清标题、章节、人物、角标和片尾，例如：标题《新品发布》；章节：第3秒《核心功能》；人物《张三｜产品经理》；角标《品牌名》；片尾《谢谢观看》。', candidates: [] } }
+  }
+  const template = /温暖|人文/.test(text) ? BRAND_TEMPLATES['warm-human'] : /高对比|资讯|新闻/.test(text) ? BRAND_TEMPLATES['bold-news'] : BRAND_TEMPLATES['clean-tech']
+  const outroDuration = /片尾\s*(\d+(?:\.\d+)?)\s*秒/.exec(text)
+  const brandPackage = {
+    schemaVersion: 1, strategy: 'ass-brand-package-v1', template: { ...template },
+    ...(title ? { title: { text: title.slice(0, 80) } } : {}),
+    ...(chapters.length ? { chapters } : {}),
+    ...(personParts.length === 2 ? { person: { name: personParts[0].slice(0, 40), role: personParts[1].slice(0, 60) } } : {}),
+    ...(corner ? { corner: { text: corner.slice(0, 40) } } : {}),
+    ...(outro ? { outro: { text: outro.slice(0, 80), durationSeconds: Number(bounded(Number(outroDuration?.[1] || 2.2), 1.5, 3).toFixed(3)) } } : {})
+  }
+  return {
+    matched: true,
+    decision: {
+      schemaVersion: 1, kind: 'media.visual-effects', instruction: text,
+      source: { path: source, name: path.basename(source) }, effects: [{ type: 'brand-package', templateId: template.id, elementKinds }], brandPackage,
+      output: { container: 'mp4', overwrite: false, suffix: `品牌包装版-${template.label}` },
+      verification: { toleranceSeconds: 0.2, expectedEffectKinds: ['brand-package'], expectedBrandElements: elementKinds }
+    }
+  }
+}
+
 function compileVisualEffectDecision({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim()
+  if (BRAND_PACKAGE_PATTERN.test(text)) return compileBrandPackageDecision({ instruction: text, sourcePath })
   if (!matchesVisualEffectInstruction(text)) return { matched: false }
   const source = String(sourcePath || '').trim()
   const effects = []
@@ -103,4 +153,4 @@ function compileVisualEffectDecision({ instruction, sourcePath } = {}) {
   }
 }
 
-module.exports = { compileVisualEffectDecision, matchesVisualEffectInstruction, positionOf, timeRange, timeRangeNear }
+module.exports = { BRAND_TEMPLATES, compileBrandPackageDecision, compileVisualEffectDecision, matchesVisualEffectInstruction, positionOf, timeRange, timeRangeNear }

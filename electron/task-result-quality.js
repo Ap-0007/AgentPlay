@@ -19,6 +19,7 @@ const HARD_FAILURES = new Set([
   'AUDIO_REPAIR_PROOF_MISSING', 'DENOISE_NOT_IMPROVED', 'DC_NOT_IMPROVED', 'SILENCE_REPAIR_MISMATCH', 'SEPARATION_PROOF_MISSING', 'SEPARATION_WARNING_MISSING',
   'BEAT_EVIDENCE_MISSING', 'BEAT_CUT_NOT_VISIBLE', 'HIGHLIGHT_DENSITY_MISMATCH', 'MUSIC_ALIGNMENT_MISSING', 'TAIL_FADE_MISSING',
   'SPEAKER_EVIDENCE_MISSING', 'WORD_TIMING_MISSING', 'KARAOKE_PROOF_MISSING', 'KEYWORD_EMPHASIS_MISSING', 'SUBTITLE_SAFE_AREA_FAILED',
+  'BRAND_TITLE_MISSING', 'BRAND_CHAPTERS_MISSING', 'BRAND_PERSON_MISSING', 'BRAND_CORNER_MISSING', 'BRAND_OUTRO_MISSING',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -286,14 +287,39 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const projectCapsule = result.projectCapsule
     const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
     const visualQcOk = result.visualQc?.strategy === 'unified-visual-export-qc-v1' && result.visualQc?.passed === true && result.visualQc?.artifacts?.length === 1
-    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '视觉效果任务返回失败状态', false))
-    add('artifact', '成片文件', artifactRatio, 15, artifactFailure)
-    add('effects', '冻结效果清单', kindsMatch ? 1 : 0, 15, reason('EFFECT_RECEIPT_MISMATCH', '成片回执与冻结视觉效果清单不一致', true))
-    add('duration', '成片时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', '视觉效果成片时长不符合冻结决策', true))
-    add('dimensions', '分辨率与裁切', dimensionsOk ? 1 : 0, 10, reason('DIMENSION_MISMATCH', '视觉效果成片分辨率与冻结决策不一致', true))
-    add('pixel-change', '代表帧变化', changed ? 1 : 0, 10, reason('EFFECT_CHANGE_MISSING', '代表帧没有检测到视觉效果变化', true))
-    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '视觉效果成果没有进入可撤销项目', true))
-    add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '视觉效果成果没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
+    const isBrandPackage = spec.decision?.brandPackage?.strategy === 'ass-brand-package-v1'
+    if (isBrandPackage) {
+      const proof = result.brandPackageProof
+      const proofOk = proof?.schemaVersion === 1 && proof?.method === 'brand-package-pixel-proof-v1' && proof?.verdict === 'matched' && proof?.templateId === spec.decision.brandPackage.template?.id
+      const expectedElements = new Set(spec.decision.verification?.expectedBrandElements || [])
+      const titleOk = !expectedElements.has('title') || (proofOk && proof.elements?.title?.visible === true)
+      const expectedChapterCount = Number(spec.decision.brandPackage.chapters?.length || 0)
+      const chaptersOk = !expectedElements.has('chapters') || (proofOk && expectedChapterCount > 0 && Number(proof.elements?.chapters?.count) === expectedChapterCount && Number(proof.elements?.chapters?.visibleCount) === expectedChapterCount)
+      const personOk = !expectedElements.has('person') || (proofOk && proof.elements?.person?.visible === true)
+      const cornerOk = !expectedElements.has('corner') || (proofOk && proof.elements?.corner?.visible === true)
+      const outroOk = !expectedElements.has('outro') || (proofOk && proof.elements?.outro?.visible === true)
+      add('declared-success', '执行状态', success ? 1 : 0, 5, reason('RESULT_FAILED', '品牌包装任务返回失败状态', false))
+      add('artifact', '品牌包装成片', artifactRatio, 10, artifactFailure)
+      add('brand-contract', '冻结品牌模板', kindsMatch && proofOk ? 1 : 0, 10, reason('EFFECT_RECEIPT_MISMATCH', '品牌模板或效果回执与冻结决策不一致', true))
+      add('duration', '成片时长', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', '品牌包装成片时长与原片不一致', true))
+      add('dimensions', '原画幅分辨率', dimensionsOk ? 1 : 0, 10, reason('DIMENSION_MISMATCH', '品牌包装改变了原片分辨率', true))
+      add('brand-title', '标题像素', titleOk ? 1 : 0, 8, reason('BRAND_TITLE_MISSING', '最终成片没有形成标题像素证据', true))
+      add('brand-chapters', '章节条像素', chaptersOk ? 1 : 0, 8, reason('BRAND_CHAPTERS_MISSING', '最终成片章节条数量或像素证据不完整', true))
+      add('brand-person', '人物条像素', personOk ? 1 : 0, 8, reason('BRAND_PERSON_MISSING', '最终成片没有形成人物条像素证据', true))
+      add('brand-corner', '角标像素', cornerOk ? 1 : 0, 8, reason('BRAND_CORNER_MISSING', '最终成片没有形成角标像素证据', true))
+      add('brand-outro', '片尾像素', outroOk ? 1 : 0, 8, reason('BRAND_OUTRO_MISSING', '最终成片没有形成片尾像素证据', true))
+      add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '品牌包装成果没有进入可撤销项目', true))
+      add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 10, reason('UNIFIED_VISUAL_QC_FAILED', '品牌包装成果没有通过编码、分辨率、黑边、黑帧与完整解码检查', true))
+    } else {
+      add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '视觉效果任务返回失败状态', false))
+      add('artifact', '成片文件', artifactRatio, 15, artifactFailure)
+      add('effects', '冻结效果清单', kindsMatch ? 1 : 0, 15, reason('EFFECT_RECEIPT_MISMATCH', '成片回执与冻结视觉效果清单不一致', true))
+      add('duration', '成片时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', '视觉效果成片时长不符合冻结决策', true))
+      add('dimensions', '分辨率与裁切', dimensionsOk ? 1 : 0, 10, reason('DIMENSION_MISMATCH', '视觉效果成果分辨率与冻结决策不一致', true))
+      add('pixel-change', '代表帧变化', changed ? 1 : 0, 10, reason('EFFECT_CHANGE_MISSING', '代表帧没有检测到视觉效果变化', true))
+      add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '视觉效果成果没有进入可撤销项目', true))
+      add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '视觉效果成果没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
+    }
   } else if (taskType === 'media.edit-audio-mix') {
     const unifiedAudioQc = audioExportQcStatus(result)
     const expectedDuration = Number(result.expectedDurationSeconds || 0)

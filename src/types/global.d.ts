@@ -199,7 +199,9 @@ interface MediaEditDecisionV1 {
     | { type: 'mask'; kind: 'solid' | 'privacy'; position: string; width: number; height: number; opacity: number; timeRange?: { startSeconds: number; endSeconds: number } }
     | { type: 'blur'; strength: number; timeRange?: { startSeconds: number; endSeconds: number } }
     | { type: 'color'; brightness: number; contrast: number; saturation: number; temperature: number }
+    | { type: 'brand-package'; templateId: 'clean-tech' | 'warm-human' | 'bold-news'; elementKinds: Array<'title' | 'chapters' | 'person' | 'corner' | 'outro'> }
   >
+  brandPackage?: { schemaVersion: 1; strategy: 'ass-brand-package-v1'; template: { id: 'clean-tech' | 'warm-human' | 'bold-news'; label: string; primaryAss: string; accentAss: string; backAss: string }; title?: { text: string }; chapters?: Array<{ atSeconds: number; text: string }>; person?: { name: string; role: string }; corner?: { text: string }; outro?: { text: string; durationSeconds: number } }
   reframe?: {
     strategy: 'vision-keyframes-linear-follow-v1'
     subject: { description: string; observed: string }
