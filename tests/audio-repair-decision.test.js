@@ -37,3 +37,10 @@ test('C2 does not execute consultation, examples or empty action text', () => {
   assert.equal(compileAudioRepairDecisionList({ sourcePath: SOURCE, instruction: '比如给视频降噪' }), null)
   assert.equal(compileAudioRepairDecisionList({ sourcePath: SOURCE, instruction: '处理一下音频' }), null)
 })
+
+test('C2 does not steal background-music work merely because the music export requests loudness normalization', () => {
+  assert.equal(compileAudioRepairDecisionList({
+    sourcePath: SOURCE,
+    instruction: '给视频加背景音乐 D:/Music/background.mp3，用音乐第1秒到第3秒，循环铺满，响度归一到-16 LUFS'
+  }), null)
+})

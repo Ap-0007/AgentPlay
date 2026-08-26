@@ -6,6 +6,7 @@ const { burnForceStyle } = require('./media-edit-decision')
 const { AudioMixService } = require('./audio-mix-service')
 const { AudioRepairService } = require('./audio-repair-service')
 const { RhythmEditService } = require('./rhythm-edit-service')
+const { AudioExportQualityGate } = require('./audio-export-quality')
 const { parseSignalStatsLog, shakeScoreFromTransforms } = require('./visual-repair-service')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
@@ -252,9 +253,10 @@ class MediaEditService {
     if (!frames) throw new Error('媒体剪辑服务缺少 FFmpeg 执行器')
     this.frames = frames
     this.fs = fsImpl
-    this.audioMixService = new AudioMixService({ frames, fsImpl })
-    this.audioRepairService = new AudioRepairService({ frames, fsImpl })
-    this.rhythmEditService = new RhythmEditService({ frames, fsImpl })
+    this.exportQuality = new AudioExportQualityGate({ frames, fsImpl })
+    this.audioMixService = new AudioMixService({ frames, fsImpl, exportQuality: this.exportQuality })
+    this.audioRepairService = new AudioRepairService({ frames, fsImpl, exportQuality: this.exportQuality })
+    this.rhythmEditService = new RhythmEditService({ frames, fsImpl, exportQuality: this.exportQuality })
   }
 
   async mixAudio(input = {}) { return this.audioMixService.mix(input) }
@@ -876,10 +878,11 @@ class MediaEditService {
       this.assertLoudnessProofDeliverable(loudnessProof)
       const audioProof = await this.audioProofForMusic({ source, audio, output: tempPath, sourceDuration, hasSourceAudio: hasAudio, decision, signal })
       this.assertAudioProofDeliverable(audioProof)
+      const audioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: tempPath, decision, externalAudioPaths: [{ path: audio, role: 'music' }], signal })
       this.assertSourceUnchanged(sourceBefore, source)
       this.assertSourceUnchanged(musicBefore, audio, '声音证明期间音乐文件发生变化，已拒绝交付')
       this.fs.renameSync(tempPath, output)
-      return this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, loudnessProof, music: { path: audio, volume, duck, loop, selection, fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut } })
+      return this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, loudnessProof, audioExportQc, music: { path: audio, volume, duck, loop, selection, fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut } })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
@@ -1849,6 +1852,7 @@ class MediaEditService {
     }
     let musicAudioProof = null
     let musicLoudnessProof = null
+    let musicAudioExportQc = null
     if (isMusic) {
       const hasSourceAudio = await this.frames.probeHasAudio(source, { signal })
       const audio = path.resolve(String(decision.audio?.path || ''))
@@ -1857,6 +1861,7 @@ class MediaEditService {
       this.assertLoudnessProofDeliverable(musicLoudnessProof)
       musicAudioProof = await this.audioProofForMusic({ source, audio, output, sourceDuration, hasSourceAudio, decision, signal })
       this.assertAudioProofDeliverable(musicAudioProof)
+      musicAudioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: output, decision, externalAudioPaths: [{ path: audio, role: 'music' }], signal })
     }
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
@@ -1865,7 +1870,7 @@ class MediaEditService {
         : isConcatSources
           ? this.concatSourcesReceipt({ output, decision, probes: concatSourcesProbes, expectedDuration, actualDuration, frameProof: editFrameProof })
           : isMusic
-            ? this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof: musicAudioProof, loudnessProof: musicLoudnessProof })
+            ? this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof: musicAudioProof, loudnessProof: musicLoudnessProof, audioExportQc: musicAudioExportQc })
           : isBurnSubtitles
             ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
             : isMuxSubtitles
@@ -1893,7 +1898,7 @@ class MediaEditService {
     }
   }
 
-  musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, loudnessProof, music = null }) {
+  musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof, loudnessProof, audioExportQc, music = null }) {
     const volume = Math.max(0.01, Math.min(1, Number(music?.volume ?? decision.audio?.volume) || 0.15))
     const duck = (music?.duck ?? decision.audio?.duck) !== false
     const fadeInSeconds = Math.max(0, Number(music?.fadeInSeconds ?? decision.audio?.fadeInSeconds) || 0)
@@ -1917,12 +1922,13 @@ class MediaEditService {
       music: { path: audioPath, volume, duck, loop, ...(selection ? { selection } : {}), fadeInSeconds, fadeOutSeconds },
       audioProof,
       loudnessProof,
+      audioExportQc,
       timelineReceipt: [{
         operation: `添加背景音乐（${Math.round(volume * 100)}%${duck ? '、对白闪避' : ''}${loop ? '、循环铺满' : '、播放一次'}）`,
         sourceRange: musicRange,
         outputRange: fullRange
       }],
-      summary: `已生成 ${Number(actualDuration.toFixed(3)).toFixed(3)} 秒配乐版新视频（音乐${selection ? ` ${musicRange}` : '全段'}${loop ? '循环铺满' : '播放一次'}，音量 ${Math.round(volume * 100)}%${duck ? '，对白闪避' : ''}）；原文件未改动；音轨非静音、声音变化、样本峰值与淡入淡出窗口已核对${loudnessProof?.verdict === 'matched' ? `；编码后响度 ${loudnessProof.integratedLufs} LUFS、true peak ${loudnessProof.truePeakDbtp} dBTP` : ''}`
+      summary: `已生成 ${Number(actualDuration.toFixed(3)).toFixed(3)} 秒配乐版新视频（音乐${selection ? ` ${musicRange}` : '全段'}${loop ? '循环铺满' : '播放一次'}，音量 ${Math.round(volume * 100)}%${duck ? '，对白闪避' : ''}）；统一声音导出质量门已通过；原文件未改动；音轨非静音、声音变化、样本峰值与淡入淡出窗口已核对${loudnessProof?.verdict === 'matched' ? `；编码后响度 ${loudnessProof.integratedLufs} LUFS、true peak ${loudnessProof.truePeakDbtp} dBTP` : ''}`
     }
   }
 

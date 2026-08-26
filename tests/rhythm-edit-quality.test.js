@@ -15,6 +15,7 @@ test('C3 quality is 100 only with all rhythm, highlight and tail evidence', () =
       success: true, outputs: [output], durationSeconds: 10,
       rhythmReceipt: { schemaVersion: 1, strategy: 'beat-synced-jump-cut-v1', ...rhythm },
       beatProof: { schemaVersion: 1, method: 'decoded-beat-cut-proof-v1', visibleCutRatio: 0.75, musicCorrelation: 0.4, highlight: { densityRatio: 0.5, denserThanOutside: true }, tail: { audioFaded: true, videoFaded: true } },
+      audioExportQc: { schemaVersion: 1, method: 'unified-audio-export-qc-v1', verdict: 'matched', clipping: { verdict: 'matched', truePeakDbtp: -1.2 }, loudness: { verdict: 'matched', integratedLufs: -16 }, avSync: { verdict: 'matched', startDeltaSeconds: 0, endDeltaSeconds: 0 }, silence: { verdict: 'matched', maximumSilenceSeconds: 0 }, copyright: { verdict: 'documented', sources: [{ status: 'user-supplied-unverified' }] } },
       projectCapsule: { schemaVersion: 1, projectId: 'edit-rhythm', versionId: 'version-rhythm', currentPath: output, canUndo: true }
     }
     const spec = { decision: { rhythm, verification: { toleranceSeconds: 0.2, minimumVisibleCutRatio: 0.5 } } }

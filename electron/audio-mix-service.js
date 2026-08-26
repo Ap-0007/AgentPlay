@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const { AudioExportQualityGate } = require('./audio-export-quality')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'])
@@ -55,9 +56,9 @@ function parseLoudnormMeasurement(stderr) {
 }
 
 class AudioMixService {
-  constructor({ frames, fsImpl = fs } = {}) {
+  constructor({ frames, fsImpl = fs, exportQuality = null } = {}) {
     if (!frames) throw new Error('多轨音频服务缺少 FFmpeg 执行器')
-    this.frames = frames; this.fs = fsImpl
+    this.frames = frames; this.fs = fsImpl; this.exportQuality = exportQuality || new AudioExportQualityGate({ frames, fsImpl })
   }
 
   assertDecision(source, decision) {
@@ -246,10 +247,11 @@ class AudioMixService {
       if (loudnessProof.verdict !== 'matched' && loudnessProof.verdict !== 'not-requested') throw new Error('多轨总线编码后响度未达标')
       const audioMixProof = await this.proof({ source, output: tempPath, decision, sourceDuration, plan, signal })
       this.assertProof(audioMixProof, decision)
+      const audioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: tempPath, decision, externalAudioPaths: tracks.map((track) => ({ path: track.path, role: track.role })), signal })
       this.assertUnchanged(sourceBefore, source, '声音证明期间源视频发生变化')
       trackBefore.forEach((item) => this.assertUnchanged(item.stat, item.path, '声音证明期间音频素材发生变化'))
       this.fs.renameSync(tempPath, output)
-      return this.receipt({ output, decision, sourceDuration, actualDuration, proof: audioMixProof, loudnessProof })
+      return this.receipt({ output, decision, sourceDuration, actualDuration, proof: audioMixProof, loudnessProof, audioExportQc })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
@@ -273,15 +275,16 @@ class AudioMixService {
     const plan = await this.buildFilterPlan({ source, decision, sourceDuration, hasSourceAudio, signal })
     const loudnessProof = await this.loudnessProof(output, decision, signal); if (!['matched', 'not-requested'].includes(loudnessProof.verdict)) throw new Error('多轨总线响度复核失败')
     const proof = await this.proof({ source, output, decision, sourceDuration, plan, signal }); this.assertProof(proof, decision)
-    return this.receipt({ output, decision, sourceDuration, actualDuration, proof, loudnessProof })
+    const audioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: output, decision, externalAudioPaths: decision.audioMix.tracks.map((track) => ({ path: track.path, role: track.role })), signal })
+    return this.receipt({ output, decision, sourceDuration, actualDuration, proof, loudnessProof, audioExportQc })
   }
 
-  receipt({ output, decision, sourceDuration, actualDuration, proof, loudnessProof }) {
+  receipt({ output, decision, sourceDuration, actualDuration, proof, loudnessProof, audioExportQc }) {
     const roles = { music: '音乐', ambience: '环境声', sfx: '音效' }
     const timelineReceipt = decision.audioMix.tracks.map((track) => ({ operation: `添加${roles[track.role] || track.role} ${track.id}`, sourceRange: `00:00.000 → ${track.loop ? '循环' : '素材结束'}`, outputRange: `${formatTimestamp(track.startSeconds)} → ${formatTimestamp(track.endSeconds ?? sourceDuration)}` }))
     if (decision.audioMix.dialogue?.enabled) timelineReceipt.unshift({ operation: '保留并调整对白', sourceRange: `00:00.000 → ${formatTimestamp(sourceDuration)}`, outputRange: `00:00.000 → ${formatTimestamp(sourceDuration)}` })
     else timelineReceipt.unshift({ operation: '移除原声对白', sourceRange: `00:00.000 → ${formatTimestamp(sourceDuration)}`, outputRange: '不进入最终总线' })
-    return { success: true, outputPath: output, outputs: [output], outputBytes: this.fs.statSync(output).size, sourceDurationSeconds: sourceDuration, expectedDurationSeconds: sourceDuration, durationSeconds: Number(actualDuration.toFixed(3)), audioMix: JSON.parse(JSON.stringify(decision.audioMix)), audioMixProof: proof, loudnessProof, timelineReceipt, summary: `已生成 ${Number(actualDuration).toFixed(3)} 秒多轨混音版：${decision.audioMix.dialogue?.enabled ? '保留对白' : '移除原声'}，加入 ${decision.audioMix.tracks.map((track) => roles[track.role]).join('、')}；${proof.tracks.length} 条外部轨均通过目标时间对齐，${proof.automation.configured} 段音量自动化已执行，${proof.ducking.configuredTracks} 条轨道启用对白闪避；原文件未改动${loudnessProof.verdict === 'matched' ? `；编码后响度 ${loudnessProof.integratedLufs} LUFS、true peak ${loudnessProof.truePeakDbtp} dBTP` : ''}` }
+    return { success: true, outputPath: output, outputs: [output], outputBytes: this.fs.statSync(output).size, sourceDurationSeconds: sourceDuration, expectedDurationSeconds: sourceDuration, durationSeconds: Number(actualDuration.toFixed(3)), audioMix: JSON.parse(JSON.stringify(decision.audioMix)), audioMixProof: proof, loudnessProof, audioExportQc, timelineReceipt, summary: `已生成 ${Number(actualDuration).toFixed(3)} 秒多轨混音版：${decision.audioMix.dialogue?.enabled ? '保留对白' : '移除原声'}，加入 ${decision.audioMix.tracks.map((track) => roles[track.role]).join('、')}；${proof.tracks.length} 条外部轨均通过目标时间对齐，${proof.automation.configured} 段音量自动化已执行，${proof.ducking.configuredTracks} 条轨道启用对白闪避；统一声音导出质量门已通过；原文件未改动${loudnessProof.verdict === 'matched' ? `；编码后响度 ${loudnessProof.integratedLufs} LUFS、true peak ${loudnessProof.truePeakDbtp} dBTP` : ''}` }
   }
 }
 

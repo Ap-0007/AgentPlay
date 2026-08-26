@@ -196,6 +196,39 @@ class VideoFrameService {
     } catch { return null }
   }
 
+  async probeStreamTiming(sourcePath, { signal } = {}) {
+    if (!this.ffprobePath || !fs.existsSync(this.ffprobePath)) throw new Error('缺少 ffprobe 组件')
+    const child = this.spawnImpl(this.ffprobePath, [
+      '-v', 'error', '-show_entries', 'format=duration:stream=index,codec_type,start_time,duration', '-of', 'json', sourcePath
+    ], { windowsHide: true, shell: false })
+    let out = ''; let stderr = ''
+    await new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (fn, value) => { if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); fn(value) }
+      const onAbort = () => { try { child.kill() } catch {}; finish(reject, new Error('已取消')) }
+      if (signal) { if (signal.aborted) return onAbort(); signal.addEventListener('abort', onAbort, { once: true }) }
+      child.stdout?.on('data', (chunk) => { out += chunk.toString('utf8') })
+      child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8') })
+      child.once('error', (error) => finish(reject, error))
+      child.once('exit', (code) => code === 0 ? finish(resolve) : finish(reject, new Error(`ffprobe 退出码 ${code}：${stderr.slice(-300)}`)))
+    })
+    try {
+      const parsed = JSON.parse(out)
+      const durationSeconds = Number(parsed?.format?.duration)
+      const normalize = (stream) => {
+        if (!stream) return null
+        const startSeconds = Number.isFinite(Number(stream.start_time)) ? Number(stream.start_time) : 0
+        const streamDuration = Number.isFinite(Number(stream.duration)) && Number(stream.duration) > 0 ? Number(stream.duration) : durationSeconds
+        if (!(streamDuration > 0)) return null
+        return { startSeconds, durationSeconds: streamDuration, endSeconds: startSeconds + streamDuration }
+      }
+      const streams = Array.isArray(parsed?.streams) ? parsed.streams : []
+      const video = normalize(streams.find((stream) => stream.codec_type === 'video'))
+      const audio = normalize(streams.find((stream) => stream.codec_type === 'audio'))
+      return durationSeconds > 0 && video && audio ? { durationSeconds, video, audio } : null
+    } catch { return null }
+  }
+
   async readRawFrameBuffer(args, { signal } = {}) {
     if (!this.ffmpegPath || !fs.existsSync(this.ffmpegPath)) return null
     try {

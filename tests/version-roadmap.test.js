@@ -59,9 +59,9 @@ test('0.9.0 reports strict closure separately from implementation coverage again
 
 test('0.9.1 records completed semantic and professional visual groups without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*56%（14\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 14)
-  assert.equal(checkboxCount(content, false), 11)
+  assert.match(content, /功能交付完成率：\*\*60%（15\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 15)
+  assert.equal(checkboxCount(content, false), 10)
   assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
@@ -156,7 +156,7 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /UNEXPECTED_BLACK_BARS/)
   assert.match(content, /890 tests、888 pass、0 fail、2项Archive外部网络条件skip/)
   assert.match(content, /B组5\/5闭环，0\.9\.1更新为10\/25=40%/)
-  assert.match(content, /#### C\. 专业音频与音乐（4\/5）/)
+  assert.match(content, /#### C\. 专业音频与音乐（5\/5）/)
   assert.match(content, /第十九个纵向切片（C1闭环并正式勾选）/)
   assert.match(content, /multitrack-audio-mix-v1/)
   assert.match(content, /3\/3外部轨对齐、2段音量自动化、2轨对白闪避/)
@@ -181,6 +181,14 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /3,782,661字节/)
   assert.match(content, /948 tests、948 pass、0 fail、0 skip/)
   assert.match(content, /C组更新为4\/5，0\.9\.1更新为14\/25=56%/)
+  assert.match(content, /第二十三个纵向切片（C5闭环并正式勾选）/)
+  assert.match(content, /unified-audio-export-qc-v1/)
+  assert.match(content, /matched-user-policy/)
+  assert.match(content, /UNIFIED_AUDIO_QC_FAILED/)
+  assert.match(content, /-16\.0 LUFS、-11\.6 dBTP/)
+  assert.match(content, /声画起点差0\.023秒\/终点差0秒/)
+  assert.match(content, /959 tests、959 pass、0 fail、0 skip/)
+  assert.match(content, /C组5\/5闭环，0\.9\.1更新为15\/25=60%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

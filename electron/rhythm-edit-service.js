@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const { AudioExportQualityGate } = require('./audio-export-quality')
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'])
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
@@ -302,9 +303,9 @@ function grayDiff(left, right) {
 }
 
 class RhythmEditService {
-  constructor({ frames, fsImpl = fs } = {}) {
+  constructor({ frames, fsImpl = fs, exportQuality = null } = {}) {
     if (!frames) throw new Error('节拍剪辑服务缺少FFmpeg执行器')
-    this.frames = frames; this.fs = fsImpl
+    this.frames = frames; this.fs = fsImpl; this.exportQuality = exportQuality || new AudioExportQualityGate({ frames, fsImpl })
   }
 
   assertDecision(source, music, decision) {
@@ -407,7 +408,7 @@ class RhythmEditService {
     return { duration, beatProof }
   }
 
-  receipt({ output, decision, beatProof }) {
+  receipt({ output, decision, beatProof, audioExportQc }) {
     return {
       success: true,
       outputPath: output,
@@ -426,7 +427,8 @@ class RhythmEditService {
         tail: decision.rhythm.tail
       },
       beatProof,
-      summary: `已按真实 ${decision.rhythm.bpm.toFixed(1)} BPM 节拍生成 ${decision.rhythm.segments.length} 个镜头；高潮区切镜更密，片尾在强拍处完成画面与声音淡出，原文件未改动`
+      audioExportQc,
+      summary: `已按真实 ${decision.rhythm.bpm.toFixed(1)} BPM 节拍生成 ${decision.rhythm.segments.length} 个镜头；高潮区切镜更密，片尾在强拍处完成画面与声音淡出；统一声音导出质量门已通过，原文件未改动`
     }
   }
 
@@ -441,10 +443,11 @@ class RhythmEditService {
     try {
       await this.frames.run(['-hide_banner', '-nostdin', '-i', source, '-i', music, '-filter_complex', this.filterGraph({ decision, hasSourceAudio }), '-map', '[vout]', '-map', '[aout]', '-t', decision.rhythm.outputDurationSeconds.toFixed(3), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-y', temp], { timeoutMs: 60 * 60 * 1000, signal })
       const proof = await this.proof({ source, music, output: temp, decision, signal })
+      const audioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: temp, decision, externalAudioPaths: [{ path: music, role: 'music' }], signal })
       const sourceAfter = this.fs.statSync(source); const musicAfter = this.fs.statSync(music)
       if (sourceBefore.size !== sourceAfter.size || Math.trunc(sourceBefore.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs) || musicBefore.size !== musicAfter.size || Math.trunc(musicBefore.mtimeMs) !== Math.trunc(musicAfter.mtimeMs)) throw new Error('节拍剪辑期间源视频或音乐发生变化')
       this.fs.renameSync(temp, output)
-      return this.receipt({ output, decision, beatProof: proof.beatProof })
+      return this.receipt({ output, decision, beatProof: proof.beatProof, audioExportQc })
     } catch (error) {
       if (this.fs.existsSync(temp)) this.fs.rmSync(temp, { force: true })
       throw error
@@ -456,7 +459,8 @@ class RhythmEditService {
     this.assertDecision(source, music, decision)
     if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 1024) throw new Error('节拍剪辑成果不存在或不完整')
     const proof = await this.proof({ source, music, output, decision, signal })
-    return this.receipt({ output, decision, beatProof: proof.beatProof })
+    const audioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: output, decision, externalAudioPaths: [{ path: music, role: 'music' }], signal })
+    return this.receipt({ output, decision, beatProof: proof.beatProof, audioExportQc })
   }
 }
 

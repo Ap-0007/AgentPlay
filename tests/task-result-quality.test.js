@@ -6,6 +6,17 @@ const path = require('node:path')
 
 const { evaluateTaskResult, classifyTaskFailure } = require('../electron/task-result-quality')
 
+function matchedAudioExportQc(status = 'user-supplied-unverified') {
+  return {
+    schemaVersion: 1, method: 'unified-audio-export-qc-v1', verdict: 'matched',
+    clipping: { verdict: 'matched', samplePeakDbfs: -1.4, truePeakDbtp: -1.3 },
+    loudness: { verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 },
+    avSync: { verdict: 'matched', startDeltaSeconds: 0.02, endDeltaSeconds: 0.01 },
+    silence: { verdict: 'matched', maximumSilenceSeconds: 0, silenceRatio: 0 },
+    copyright: { verdict: 'documented', sources: [{ status, requiresUserResponsibility: status === 'user-supplied-unverified' }] }
+  }
+}
+
 test('subtitle quality score verifies a real target-language SRT artifact', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-srt-'))
   try {
@@ -178,6 +189,7 @@ test('music edit quality requires decoded audio proof instead of trusting an aud
 
     const passed = evaluateTaskResult('media.edit-music', {
       ...base,
+      audioExportQc: matchedAudioExportQc(),
       audioProof: {
         schemaVersion: 1,
         method: 'decoded-pcm-s16le-v1',
@@ -224,6 +236,7 @@ test('normalized music quality requires an encoded EBU R128 receipt', () => {
 
     const passed = evaluateTaskResult('media.edit-music', {
       ...result,
+      audioExportQc: matchedAudioExportQc(),
       loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 }
     }, spec)
     assert.equal(passed.passed, true)
@@ -255,6 +268,7 @@ test('C1 multitrack quality requires every aligned track, automation, ducking, l
       ],
       projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false },
       loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 },
+      audioExportQc: matchedAudioExportQc(),
       audioMixProof: {
         schemaVersion: 1,
         method: 'decoded-multitrack-pcm-v1',
@@ -288,6 +302,7 @@ test('C2 audio repair quality requires measurable repairs and an explicit non-AI
       audioRepairProof: { schemaVersion: 1, method: 'decoded-audio-repair-v1', denoise: { verdict: 'improved' }, dcRemoval: { verdict: 'improved' }, silenceRepair: { verdict: 'filled', restoresSpeech: false } },
       separationProof: { schemaVersion: 1, method: 'stereo-mid-side-v1', verdict: 'matched-with-artifact-warning', outputs: [{}, {}], distinct: true, artifactWarning: '有串音和变薄风险；这不是AI专业分轨。', claims: { professionalAiSeparation: false, mayContainBleed: true } },
       loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched' },
+      audioExportQc: matchedAudioExportQc('source-contained'),
       projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: outputs[0], canUndo: true }
     }
     const passed = evaluateTaskResult('media.audio-repair', base, spec)

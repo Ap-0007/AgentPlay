@@ -12,7 +12,7 @@ const HARD_FAILURES = new Set([
   'REFRAME_OUTPUT_MISMATCH', 'TRACKING_EVIDENCE_MISSING', 'SUBJECT_COVERAGE_LOW',
   'VISUAL_REPAIR_PROOF_MISSING', 'STABILIZATION_NOT_IMPROVED', 'COLOR_REPAIR_NOT_IMPROVED', 'COMPARISON_MISSING',
   'STYLE_BLUEPRINT_MISSING', 'STYLE_STRUCTURE_MISMATCH', 'COPYRIGHT_BOUNDARY_FAILED',
-  'UNIFIED_VISUAL_QC_FAILED',
+  'UNIFIED_VISUAL_QC_FAILED', 'UNIFIED_AUDIO_QC_FAILED',
   'AUDIO_PROOF_MISSING', 'AUDIO_SILENT', 'AUDIO_CHANGE_MISSING', 'AUDIO_OVERLOAD', 'AUDIO_FADE_PROOF_MISSING',
   'LOUDNESS_PROOF_MISSING', 'LOUDNESS_MISMATCH',
   'MULTITRACK_PROOF_MISSING', 'TRACK_ALIGNMENT_MISMATCH', 'TRACK_AUTOMATION_MISSING', 'DUCKING_RECEIPT_MISSING',
@@ -59,6 +59,24 @@ function inspectArtifact(filePath) {
 
 function reason(code, message, repairable = false, detail = '') {
   return { code, message, repairable: Boolean(repairable), ...(detail ? { detail } : {}) }
+}
+
+function audioExportQcStatus(result = {}) {
+  const qc = result.audioExportQc
+  const matched = qc?.schemaVersion === 1
+    && qc?.method === 'unified-audio-export-qc-v1'
+    && qc?.verdict === 'matched'
+    && qc.clipping?.verdict === 'matched'
+    && String(qc.loudness?.verdict || '').startsWith('matched')
+    && qc.avSync?.verdict === 'matched'
+    && String(qc.silence?.verdict || '').startsWith('matched')
+    && qc.copyright?.verdict === 'documented'
+    && Array.isArray(qc.copyright?.sources)
+    && qc.copyright.sources.length > 0
+  const detail = matched
+    ? `${qc.loudness.integratedLufs} LUFS / ${qc.clipping.truePeakDbtp} dBTP；声画起点差${qc.avSync.startDeltaSeconds}秒；静音最长${qc.silence.maximumSilenceSeconds}秒；来源${qc.copyright.sources.length}项`
+    : ''
+  return { matched, detail }
 }
 
 function evaluateTaskResult(type, result = {}, spec = {}) {
@@ -276,6 +294,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '视觉效果成果没有进入可撤销项目', true))
     add('unified-visual-qc', '统一视觉导出质量门', visualQcOk ? 1 : 0, 15, reason('UNIFIED_VISUAL_QC_FAILED', '视觉效果成果没有通过分辨率、比例、黑边、黑帧、编码与完整解码检查', true))
   } else if (taskType === 'media.edit-audio-mix') {
+    const unifiedAudioQc = audioExportQcStatus(result)
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
@@ -297,15 +316,17 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const projectCapsule = result.projectCapsule
     const projectOk = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && String(projectCapsule.versionId || '').startsWith('version-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '多轨音频任务返回失败状态', false))
-    add('artifact', '多轨成片', artifactRatio, 15, artifactFailure)
+    add('artifact', '多轨成片', artifactRatio, 10, artifactFailure)
     add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '多轨成果不是受支持的视频格式', true))
     add('duration', '成片时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', '多轨成片时长与源片不一致', true))
     add('timeline', '轨道时间线', timelineOk ? 1 : 0, 10, reason('TIMELINE_RECEIPT_MISSING', '多轨时间线回执与冻结轨道数量不一致', true))
-    add('track-proof', '轨道声音与对齐证明', tracksAligned && outputOk ? 1 : 0, 15, !proofSchemaOk ? reason('MULTITRACK_PROOF_MISSING', '缺少最终成片的多轨PCM证明', true) : !tracksAligned ? reason('TRACK_ALIGNMENT_MISMATCH', '至少一条音乐、环境声或音效没有通过目标时间对齐', true) : reason('AUDIO_OVERLOAD', '多轨成片静音或样本峰值不安全', true), proofSchemaOk ? `${proof.tracks.filter((item) => item.aligned).length}/${expectedTracks.length} 轨对齐` : '')
+    add('track-proof', '轨道声音与对齐证明', tracksAligned && outputOk ? 1 : 0, 10, !proofSchemaOk ? reason('MULTITRACK_PROOF_MISSING', '缺少最终成片的多轨PCM证明', true) : !tracksAligned ? reason('TRACK_ALIGNMENT_MISMATCH', '至少一条音乐、环境声或音效没有通过目标时间对齐', true) : reason('AUDIO_OVERLOAD', '多轨成片静音或样本峰值不安全', true), proofSchemaOk ? `${proof.tracks.filter((item) => item.aligned).length}/${expectedTracks.length} 轨对齐` : '')
     add('automation-ducking', '分段音量与对白闪避', automationOk && duckOk ? 1 : 0, 10, !automationOk ? reason('TRACK_AUTOMATION_MISSING', '分段音量自动化回执不完整', true) : reason('DUCKING_RECEIPT_MISSING', '对白闪避回执与冻结轨道不一致', true))
     add('loudness', '编码后响度', loudnessOk ? 1 : 0, 5, !loudnessProof ? reason('LOUDNESS_PROOF_MISSING', '缺少编码后响度回执', true) : reason('LOUDNESS_MISMATCH', '多轨总线编码后响度未达标', true))
     add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '多轨成果没有进入可撤销编辑项目', true))
+    add('unified-audio-qc', '统一声音导出质量门', unifiedAudioQc.matched ? 1 : 0, 10, reason('UNIFIED_AUDIO_QC_FAILED', '多轨成果没有同时通过削波、响度、声画同步、异常静音和版权来源检查', true), unifiedAudioQc.detail)
   } else if (taskType === 'media.rhythm-edit') {
+    const unifiedAudioQc = audioExportQcStatus(result)
     const rhythm = spec.decision?.rhythm || {}
     const receipt = result.rhythmReceipt
     const proof = result.beatProof
@@ -322,15 +343,17 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const project = result.projectCapsule
     const projectOk = project?.schemaVersion === 1 && String(project.projectId || '').startsWith('edit-') && project.canUndo === true && outputs.some((item) => path.resolve(item) === path.resolve(String(project.currentPath || '')))
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '节拍剪辑任务返回失败状态', false))
-    add('artifact', '节拍成片', artifactRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, artifactFailure || reason('INVALID_FORMAT', '节拍成果不是受支持的视频格式', true))
-    add('duration', '冻结时间线', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', '节拍成片时长与冻结时间线不一致', true))
+    add('artifact', '节拍成片', artifactRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 5, artifactFailure || reason('INVALID_FORMAT', '节拍成果不是受支持的视频格式', true))
+    add('duration', '冻结时间线', durationOk ? 1 : 0, 5, reason('DURATION_MISMATCH', '节拍成片时长与冻结时间线不一致', true))
     add('beat-evidence', '真实节拍网格', receiptOk ? 1 : 0, 10, reason('BEAT_EVIDENCE_MISSING', '缺少解码PCM节拍、BPM或网格支持率回执', true))
     add('visible-cuts', '切点画面变化', visibleOk ? 1 : 0, 15, reason('BEAT_CUT_NOT_VISIBLE', '真实节拍切点没有形成足够可见的镜头变化', true))
     add('highlight-density', '高潮切镜密度', highlightOk ? 1 : 0, 15, reason('HIGHLIGHT_DENSITY_MISMATCH', '音乐高潮区切镜没有比普通段更密', true))
     add('music-alignment', '成片音乐对齐', musicOk ? 1 : 0, 10, reason('MUSIC_ALIGNMENT_MISSING', '成片高潮区没有检测到冻结音乐的PCM相关证据', true))
     add('natural-tail', '片尾自然收束', tailOk ? 1 : 0, 10, reason('TAIL_FADE_MISSING', '片尾画面或声音没有在冻结强拍处完成淡出', true))
     add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '节拍剪辑成果没有进入可撤销项目', true))
+    add('unified-audio-qc', '统一声音导出质量门', unifiedAudioQc.matched ? 1 : 0, 10, reason('UNIFIED_AUDIO_QC_FAILED', '节拍剪辑成果没有同时通过削波、响度、声画同步、异常静音和版权来源检查', true), unifiedAudioQc.detail)
   } else if (taskType === 'media.audio-repair') {
+    const unifiedAudioQc = audioExportQcStatus(result)
     const repair = spec.decision?.audioRepair || {}
     const expectedOutputs = repair.separation?.enabled ? 3 : 1
     const outputCountOk = outputs.length === expectedOutputs && artifactRatio === 1
@@ -351,15 +374,17 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const projectOk = project?.schemaVersion === 1 && String(project.projectId || '').startsWith('edit-') && project.canUndo === true && outputs.some((item) => path.resolve(item) === path.resolve(String(project.currentPath || '')))
     const proofFailure = !proofSchemaOk ? reason('AUDIO_REPAIR_PROOF_MISSING', '缺少修复前后PCM证明', true) : !denoiseOk ? reason('DENOISE_NOT_IMPROVED', '降噪没有取得可测改善', true) : !dcOk ? reason('DC_NOT_IMPROVED', '去直流没有取得可测改善', true) : reason('SILENCE_REPAIR_MISMATCH', '短静音底噪修复不完整或冒充恢复语音', true)
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '音频修复任务返回失败状态', false))
-    add('artifacts', '修复版与分离轨', outputCountOk ? 1 : 0, 15, artifactFailure || reason('BUNDLE_INCOMPLETE', `期望 ${expectedOutputs} 个音频修复成果`, true))
+    add('artifacts', '修复版与分离轨', outputCountOk ? 1 : 0, 10, artifactFailure || reason('BUNDLE_INCOMPLETE', `期望 ${expectedOutputs} 个音频修复成果`, true))
     add('duration', '声画时长', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', '音频修复成片时长与源片不一致', true))
-    add('repair-proof', '降噪/去直流/短静音证明', repairProofOk ? 1 : 0, 15, proofFailure)
+    add('repair-proof', '降噪/去直流/短静音证明', repairProofOk ? 1 : 0, 10, proofFailure)
     add('silence-honesty', '静音修复边界', silenceOk ? 1 : 0, 10, reason('SILENCE_REPAIR_MISMATCH', '静音修复必须明确只补连续底噪、不恢复丢失语音', true))
     add('separation', '基础人声/伴奏分离', separationOk ? 1 : 0, 15, reason('SEPARATION_PROOF_MISSING', '基础分离缺少两条不同且非静音的立体声成果', true))
     add('separation-warning', '分离伪影提示', warningOk ? 1 : 0, 5, reason('SEPARATION_WARNING_MISSING', '基础分离没有说明串音、变薄和非AI专业分轨边界', true))
     add('loudness', '编码后响度', loudnessOk ? 1 : 0, 10, reason('LOUDNESS_MISMATCH', '音频修复编码后响度未达标', true))
     add('project', '可撤销项目', projectOk ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '音频修复成果没有进入可撤销项目', true))
+    add('unified-audio-qc', '统一声音导出质量门', unifiedAudioQc.matched ? 1 : 0, 10, reason('UNIFIED_AUDIO_QC_FAILED', '音频修复成果没有同时通过削波、响度、声画同步、异常静音和版权来源检查', true), unifiedAudioQc.detail)
   } else if (taskType === 'media.edit-music') {
+    const unifiedAudioQc = audioExportQcStatus(result)
     const expectedDuration = Number(result.expectedDurationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)
     const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
@@ -404,13 +429,14 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       ? `样本峰值 ${Number(audioProof.output?.samplePeakDbfs).toFixed(2)} dBFS；${Number(audioProof.change?.changedWindows) || 0}/${Number(audioProof.change?.comparedWindows) || 0} 个窗口确认变化`
       : ''
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '配乐视频', artifactRatio, 15, artifactFailure)
+    add('artifacts', '配乐视频', artifactRatio, 10, artifactFailure)
     add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '配乐成果不是受支持的视频格式', true))
-    add('duration-receipt', '成品时长', durationOk ? 1 : 0, 15, reason('DURATION_MISMATCH', `成品时长与源片不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
+    add('duration-receipt', '成品时长', durationOk ? 1 : 0, 10, reason('DURATION_MISMATCH', `成品时长与源片不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
     add('timeline-receipt', '配乐范围回执', hasTimelineReceipt ? 1 : 0, 10, reason('TIMELINE_RECEIPT_MISSING', '缺少背景音乐覆盖范围回执', true))
     add('audio-proof', '声音质量证明', proofOk ? 1 : 0, 15, audioFailure, proofDetail)
     add('loudness-proof', '编码后响度', loudnessOk ? 1 : 0, 15, loudnessFailure, loudnessSchemaOk ? `${loudnessProof.integratedLufs} LUFS；true peak ${loudnessProof.truePeakDbtp} dBTP` : '')
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 10, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+    add('unified-audio-qc', '统一声音导出质量门', unifiedAudioQc.matched ? 1 : 0, 10, reason('UNIFIED_AUDIO_QC_FAILED', '配乐成果没有同时通过削波、响度、声画同步、异常静音和版权来源检查', true), unifiedAudioQc.detail)
   } else if (taskType === 'media.edit-trim' || taskType === 'media.edit-remove' || taskType === 'media.edit-concat' || taskType === 'media.edit-concat-sources' || taskType === 'media.edit-burn-subtitles' || taskType === 'media.edit-mux-subtitles') {
     const expectedDuration = Number(result.expectedDurationSeconds || spec.decision?.timeline?.durationSeconds || 0)
     const actualDuration = Number(result.durationSeconds || 0)

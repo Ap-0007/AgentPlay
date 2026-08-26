@@ -7,6 +7,7 @@ const DC_REMOVAL = /(?:去直流|去除直流|直流偏移|去\s*DC|移除\s*DC)
 const LOUDNESS = /(?:响度匹配|响度归一|响度标准化|统一响度)/
 const SILENCE_REPAIR = /(?:静音修复|修复静音|修复断音|数字静音|静音断点)/
 const SEPARATION = /(?:分离人声|人声.*伴奏.*分离|分离.*人声.*伴奏|提取人声|提取伴奏)/
+const MUSIC_EDIT = /(?:(?:加|添加|配|换).{0,6}(?:背景音乐|配乐)|(?:背景音乐|配乐).{0,8}(?:加入|添加|使用)|用音乐第\s*\d)/
 
 function portableBasename(value) { return path.posix.basename(String(value || '').replaceAll('\\', '/')) }
 
@@ -18,7 +19,7 @@ function targetLoudness(text) {
 
 function compileAudioRepairDecisionList({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim(); const source = String(sourcePath || '').trim()
-  if (!text || !source || CONSULTATION.test(text) || EXAMPLE.test(text)) return null
+  if (!text || !source || CONSULTATION.test(text) || EXAMPLE.test(text) || MUSIC_EDIT.test(text)) return null
   const actions = {
     denoise: DENOISE.test(text) && !/(?:不要|不用|取消|关闭).{0,4}(?:降噪|去噪)/.test(text),
     dcRemoval: DC_REMOVAL.test(text) && !/(?:不要|不用|取消|关闭).{0,4}(?:去直流|去除直流|去\s*DC)/i.test(text),

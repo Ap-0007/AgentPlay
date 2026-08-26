@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const { parseSilenceEvents } = require('./semantic-edit-service')
+const { AudioExportQualityGate } = require('./audio-export-quality')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
 
@@ -29,9 +30,9 @@ function parseLoudnorm(stderr) {
 function fileHash(filePath) { return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') }
 
 class AudioRepairService {
-  constructor({ frames, fsImpl = fs } = {}) {
+  constructor({ frames, fsImpl = fs, exportQuality = null } = {}) {
     if (!frames) throw new Error('音频修复服务缺少 FFmpeg 执行器')
-    this.frames = frames; this.fs = fsImpl
+    this.frames = frames; this.fs = fsImpl; this.exportQuality = exportQuality || new AudioExportQualityGate({ frames, fsImpl })
   }
 
   assertDecision(source, decision) {
@@ -193,9 +194,10 @@ class AudioRepairService {
       const separation = await this.separate({ repairedPcm: pcmPath, repair, duration: sourceDuration, stemPaths, signal })
       const loudnessProof = await this.correctEncodedLoudness(tempOutput, repair.loudness, signal)
       this.assertProofs(repairProof, separation.proof, loudnessProof, repair)
+      const audioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: tempOutput, decision, externalAudioPaths: [], signal })
       const current = this.fs.statSync(source); if (before.size !== current.size || Math.trunc(before.mtimeMs) !== Math.trunc(current.mtimeMs)) throw new Error('音频修复期间源视频发生变化')
       this.fs.renameSync(tempOutput, output)
-      return this.receipt({ output, sourceDuration, actualDuration, decision, repairProof, separationProof: separation.proof, stemPaths: separation.outputs, loudnessProof })
+      return this.receipt({ output, sourceDuration, actualDuration, decision, repairProof, separationProof: separation.proof, stemPaths: separation.outputs, loudnessProof, audioExportQc })
     } catch (error) {
       if (this.fs.existsSync(tempOutput)) this.fs.rmSync(tempOutput, { force: true })
       for (const stem of stemPaths) if (this.fs.existsSync(stem)) this.fs.rmSync(stem, { force: true })
@@ -214,7 +216,8 @@ class AudioRepairService {
       const loudnessProof = await this.loudnessProof(output, repair.loudness, signal)
       const separationProof = repair.separation.enabled ? await this.verifySeparation(stemPaths, repair, duration, signal) : { schemaVersion: 1, method: repair.separation.method, verdict: 'not-requested', artifactWarning: repair.separation.artifactWarning }
       this.assertProofs(repairProof, separationProof, loudnessProof, repair)
-      return this.receipt({ output, sourceDuration: duration, actualDuration, decision, repairProof, separationProof, stemPaths: repair.separation.enabled ? stemPaths : [], loudnessProof })
+      const audioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: output, decision, externalAudioPaths: [], signal })
+      return this.receipt({ output, sourceDuration: duration, actualDuration, decision, repairProof, separationProof, stemPaths: repair.separation.enabled ? stemPaths : [], loudnessProof, audioExportQc })
     } finally { if (pcmPath && this.fs.existsSync(pcmPath)) this.fs.rmSync(pcmPath, { force: true }) }
   }
 
@@ -230,9 +233,9 @@ class AudioRepairService {
     return { schemaVersion: 1, method: repair.separation.method, verdict: matched ? 'matched-with-artifact-warning' : 'mismatch', outputs, distinct, artifactWarning: repair.separation.artifactWarning, claims: { professionalAiSeparation: false, mayContainBleed: true } }
   }
 
-  receipt({ output, sourceDuration, actualDuration, decision, repairProof, separationProof, stemPaths, loudnessProof }) {
+  receipt({ output, sourceDuration, actualDuration, decision, repairProof, separationProof, stemPaths, loudnessProof, audioExportQc }) {
     const actions = [decision.audioRepair.denoise.enabled ? '降噪' : '', decision.audioRepair.dcRemoval.enabled ? '去直流' : '', decision.audioRepair.silenceRepair.enabled ? '短静音底噪修复' : '', decision.audioRepair.loudness.enabled ? '响度匹配' : '', decision.audioRepair.separation.enabled ? '基础人声/伴奏分离' : ''].filter(Boolean)
-    return { success: true, outputPath: output, outputs: [output, ...stemPaths], outputBytes: this.fs.statSync(output).size, sourceDurationSeconds: sourceDuration, expectedDurationSeconds: sourceDuration, durationSeconds: Number(actualDuration.toFixed(3)), audioRepair: JSON.parse(JSON.stringify(decision.audioRepair)), audioRepairProof: repairProof, separationProof, loudnessProof, timelineReceipt: [{ operation: actions.join('、'), sourceRange: `00:00.000 → ${sourceDuration.toFixed(3)}秒`, outputRange: `00:00.000 → ${actualDuration.toFixed(3)}秒` }], summary: `已完成${actions.join('、')}，生成 ${Number(actualDuration).toFixed(3)} 秒音频修复版；原文件未改动。${repairProof.silenceRepair?.requested ? `短静音只补连续底噪，不恢复丢失语音（${repairProof.silenceRepair.filledGapCount}/${repairProof.silenceRepair.detectedGapCount}处）` : ''}${decision.audioRepair.separation.enabled ? `；另存基础人声轨与伴奏轨。${separationProof.artifactWarning}` : ''}${loudnessProof.verdict === 'matched' ? `；编码后响度 ${loudnessProof.integratedLufs} LUFS、true peak ${loudnessProof.truePeakDbtp} dBTP` : ''}` }
+    return { success: true, outputPath: output, outputs: [output, ...stemPaths], outputBytes: this.fs.statSync(output).size, sourceDurationSeconds: sourceDuration, expectedDurationSeconds: sourceDuration, durationSeconds: Number(actualDuration.toFixed(3)), audioRepair: JSON.parse(JSON.stringify(decision.audioRepair)), audioRepairProof: repairProof, separationProof, loudnessProof, audioExportQc, timelineReceipt: [{ operation: actions.join('、'), sourceRange: `00:00.000 → ${sourceDuration.toFixed(3)}秒`, outputRange: `00:00.000 → ${actualDuration.toFixed(3)}秒` }], summary: `已完成${actions.join('、')}，生成 ${Number(actualDuration).toFixed(3)} 秒音频修复版；统一声音导出质量门已通过；原文件未改动。${repairProof.silenceRepair?.requested ? `短静音只补连续底噪，不恢复丢失语音（${repairProof.silenceRepair.filledGapCount}/${repairProof.silenceRepair.detectedGapCount}处）` : ''}${decision.audioRepair.separation.enabled ? `；另存基础人声轨与伴奏轨。${separationProof.artifactWarning}` : ''}${loudnessProof.verdict === 'matched' ? `；编码后响度 ${loudnessProof.integratedLufs} LUFS、true peak ${loudnessProof.truePeakDbtp} dBTP` : ''}` }
   }
 }
 
