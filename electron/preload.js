@@ -161,6 +161,11 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     compress: (input) => ipcRenderer.invoke('media:compress', input),
     cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId)
   },
+  personalEditSkills: {
+    plan: (input) => ipcRenderer.invoke('personalEditSkills:plan', input),
+    execute: (input) => ipcRenderer.invoke('personalEditSkills:execute', input),
+    list: () => ipcRenderer.invoke('personalEditSkills:list')
+  },
   guide: {
     annotate: (question) => ipcRenderer.invoke('guide:annotate', question),
     askFrame: (input) => ipcRenderer.invoke('guide:askFrame', input),

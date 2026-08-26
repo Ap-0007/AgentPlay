@@ -93,6 +93,7 @@ const { compileSubtitleLayoutDecision } = require('./subtitle-layout-decision')
 const { SubtitleLayoutService } = require('./subtitle-layout-service')
 const { compileAiAssetBundleDecision } = require('./ai-asset-bundle-decision')
 const { AiAssetBundleService } = require('./ai-asset-bundle-service')
+const { PersonalEditSkillStore, compilePersonalEditSkillCommand } = require('./personal-edit-skill-service')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const { compileRhythmEditRequest, matchesRhythmEditInstruction } = require('./rhythm-edit-decision')
@@ -711,6 +712,7 @@ const semanticEditService = new SemanticEditService({
   inspectMedia: (input) => mediaAutoInspection.inspect(input)
 })
 const mediaEditProjects = new MediaEditProjectStore({ rootDir: path.join(app.getPath('userData'), 'media-edit-projects') })
+const personalEditSkills = new PersonalEditSkillStore({ rootDir: path.join(app.getPath('userData'), 'personal-edit-skills') })
 const projectCapsules = new ProjectCapsuleStore({ rootDir: path.join(app.getPath('userData'), 'project-capsules') })
 const publicLinkService = new PublicLinkService()
 const mediaEditConversation = new MediaEditConversation()
@@ -2887,24 +2889,43 @@ app.whenReady().then(async () => {
     }
   })
 
+  ipcMain.handle('personalEditSkills:plan', (event, input = {}) => {
+    assertTrustedSender(event)
+    return compilePersonalEditSkillCommand(input.instruction)
+  })
+  ipcMain.handle('personalEditSkills:execute', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const planned = compilePersonalEditSkillCommand(input.instruction)
+      if (!planned.matched || !planned.command) return { success: false, matched: false, error: '这句话不是明确的个人编辑Skill管理指令' }
+      return { ...personalEditSkills.execute(planned.command), matched: true }
+    } catch (error) { return { success: false, matched: true, error: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('personalEditSkills:list', (event) => {
+    assertTrustedSender(event)
+    return { success: true, skills: personalEditSkills.list(), active: personalEditSkills.active(), summary: personalEditSkills.describeList() }
+  })
+
   // 明确时间段剪辑：先冻结唯一时间线，再由主进程另存、探测并回执；询问/否定/举例不会进入写文件路径。
   ipcMain.handle('media:edit-plan', async (event, input = {}) => {
     assertTrustedSender(event)
     try {
       let sourcePath = assertAllowedPath(input.sourcePath)
+      const attachPersonalSkill = (decision) => attachEditDecisionList(personalEditSkills.applyDecision(decision, { instruction: input.instruction }))
       const subtitleLayout = compileSubtitleLayoutDecision({ instruction: input.instruction, sourcePath })
-      if (subtitleLayout.matched) return subtitleLayout.decision ? { ...subtitleLayout, decision: attachEditDecisionList(subtitleLayout.decision) } : subtitleLayout
+      if (subtitleLayout.matched) return subtitleLayout.decision ? { ...subtitleLayout, decision: attachPersonalSkill(subtitleLayout.decision) } : subtitleLayout
       const subtitleTransform = compileSubtitleTransformDecision({ instruction: input.instruction, sourcePath })
-      if (subtitleTransform.matched) return subtitleTransform.decision ? { ...subtitleTransform, decision: attachEditDecisionList(subtitleTransform.decision) } : subtitleTransform
+      if (subtitleTransform.matched) return subtitleTransform.decision ? { ...subtitleTransform, decision: attachPersonalSkill(subtitleTransform.decision) } : subtitleTransform
       if (matchesRhythmEditInstruction(input.instruction)) {
-        const request = compileRhythmEditRequest({ instruction: input.instruction, sourcePath })
+        let request = compileRhythmEditRequest({ instruction: input.instruction, sourcePath })
         if (!request || request.review) return request || { matched: false }
+        request = personalEditSkills.applyRhythmRequest(request, { instruction: input.instruction })
         const rhythm = await rhythmEditPlanner.plan(request)
-        return rhythm.decision ? { ...rhythm, decision: attachEditDecisionList(rhythm.decision) } : rhythm
+        return rhythm.decision ? { ...rhythm, decision: attachPersonalSkill(rhythm.decision) } : rhythm
       }
       if (matchesVisualRepairInstruction(input.instruction)) {
         const repair = await visualRepairPlanner.plan({ instruction: input.instruction, sourcePath })
-        return repair.decision ? { ...repair, decision: attachEditDecisionList(repair.decision) } : repair
+        return repair.decision ? { ...repair, decision: attachPersonalSkill(repair.decision) } : repair
       }
       if (matchesSmartReframeInstruction(input.instruction)) {
         let previousDecision = null
@@ -2916,21 +2937,24 @@ app.whenReady().then(async () => {
           userAuthorizedPaths.add(path.resolve(sourcePath))
         }
         const reframe = await smartReframePlanner.plan({ instruction: input.instruction, sourcePath, previousDecision })
-        return reframe.decision ? { ...reframe, decision: attachEditDecisionList(reframe.decision) } : reframe
+        return reframe.decision ? { ...reframe, decision: attachPersonalSkill(reframe.decision) } : reframe
       }
       if (matchesVisualEffectInstruction(input.instruction)) {
         const visual = compileVisualEffectDecision({ instruction: input.instruction, sourcePath })
-        return visual.decision ? { ...visual, decision: attachEditDecisionList(visual.decision) } : visual
+        return visual.decision ? { ...visual, decision: attachPersonalSkill(visual.decision) } : visual
       }
       if (semanticEditService.matches(input.instruction)) {
         const semantic = await semanticEditService.plan({ instruction: input.instruction, sourcePath })
         return semantic.decision
-          ? { ...semantic, decision: attachEditDecisionList(semantic.decision) }
+          ? { ...semantic, decision: attachPersonalSkill(semantic.decision) }
           : semantic.versionPlan
             ? { ...semantic, versionPlan: freezeLongVideoVersionPlan(semantic.versionPlan) }
             : semantic
       }
-      return mediaEditConversation.plan({ instruction: input.instruction, sourcePath, clarificationId: input.clarificationId })
+      const planned = mediaEditConversation.plan({ instruction: input.instruction, sourcePath, clarificationId: input.clarificationId })
+      if (!planned?.decision) return planned
+      const raw = JSON.parse(JSON.stringify(planned.decision)); delete raw.edl
+      return { ...planned, decision: attachPersonalSkill(raw) }
     } catch (error) {
       return { matched: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -2998,6 +3022,7 @@ app.whenReady().then(async () => {
       let decision = null
       if (input.decision) {
         assertEditDecisionList(input.decision)
+        personalEditSkills.assertReceipt(input.decision.personalEditSkill)
         const decisionSource = input.decision.kind === 'media.concat-sources'
           ? input.decision.sources?.[0]?.path
           : input.decision.source?.path
@@ -3008,6 +3033,7 @@ app.whenReady().then(async () => {
         const transformResult = compileSubtitleTransformDecision({ instruction: input.instruction, sourcePath })
         const rawDecision = layoutResult.decision || transformResult.decision || compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioRepairDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
         decision = rawDecision ? attachEditDecisionList(rawDecision) : null
+        if (decision) decision = attachEditDecisionList(personalEditSkills.applyDecision(rawDecision, { instruction: input.instruction }))
       }
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
       const taskType = decision.kind === 'media.concat-sources'

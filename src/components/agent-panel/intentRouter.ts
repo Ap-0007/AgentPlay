@@ -17,6 +17,7 @@ type IntentRouterOptions = {
   runCrossMaterialQuestion: (text: string) => Promise<boolean>
   runVideoGenTask: (text: string) => Promise<void>
   runAiAssetBundleTask: (text: string) => Promise<boolean>
+  runPersonalEditSkillCommand: (text: string) => Promise<boolean>
   runEditHistoryTask: (text: string) => Promise<boolean>
   runTrimTask: (text: string) => Promise<boolean>
   runAudioMixAttachmentTask: (text: string) => Promise<boolean>
@@ -44,7 +45,7 @@ const LIBRARY_INTENTS: Array<[RegExp, string, string]> = [
 export function createIntentRouter(options: IntentRouterOptions) {
   const {
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
-    isVideoGenerationIntent, runBatchTask, runCrossMaterialQuestion, runVideoGenTask, runAiAssetBundleTask, runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
+    isVideoGenerationIntent, runBatchTask, runCrossMaterialQuestion, runVideoGenTask, runAiAssetBundleTask, runPersonalEditSkillCommand, runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
     runCompressTask, runDedupTask, runDocumentTask, runOutcomeWorkflow, setAnalysisFormat,
     runAnalysisTask, send
   } = options
@@ -65,6 +66,7 @@ export function createIntentRouter(options: IntentRouterOptions) {
       return
     }
     if (await runCrossMaterialQuestion(text)) return
+    if (await runPersonalEditSkillCommand(text)) return
     if (await runAiAssetBundleTask(text)) return
     if (attachments.length > 0 && await runAudioMixAttachmentTask(text)) return
     if (attachments.length > 0) {

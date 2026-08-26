@@ -421,7 +421,8 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const tolerance = Math.max(0.05, Number(spec.decision?.verification?.toleranceSeconds) || 0.2)
     const durationOk = expectedDuration > 0 && actualDuration > 0 && Math.abs(actualDuration - expectedDuration) <= tolerance
     const timelineReceipt = Array.isArray(result.timelineReceipt) ? result.timelineReceipt : []
-    const hasTimelineReceipt = timelineReceipt.some((item) => String(item?.sourceRange || '').includes('→') && String(item?.outputRange || '').includes('→'))
+    const selectionExpected = Boolean(spec.decision?.audio?.selection)
+    const hasTimelineReceipt = timelineReceipt.some((item) => (selectionExpected ? String(item?.sourceRange || '').includes('→') : String(item?.sourceRange || '') === '音乐文件全段' || String(item?.sourceRange || '').includes('→')) && String(item?.outputRange || '').includes('→'))
     const audioProof = result.audioProof
     const proofSchemaOk = audioProof?.schemaVersion === 1 && audioProof?.method === 'decoded-pcm-s16le-v1'
     const nonSilent = proofSchemaOk && audioProof.output?.hasAudio === true && audioProof.output?.nonSilent === true

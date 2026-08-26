@@ -202,6 +202,8 @@ test('music edit quality requires decoded audio proof instead of trusting an aud
     }, spec)
     assert.equal(passed.passed, true)
     assert.ok(passed.checks.some((item) => item.id === 'audio-proof' && item.passed))
+    const fullTrack = evaluateTaskResult('media.edit-music', { ...base, timelineReceipt: [{ operation: '添加背景音乐', sourceRange: '音乐文件全段', outputRange: '00:00.000 → 00:12.000' }], audioExportQc: matchedAudioExportQc(), audioProof: { schemaVersion: 1, method: 'decoded-pcm-s16le-v1', verdict: 'matched', output: { hasAudio: true, nonSilent: true, samplePeakDbfs: -1.2, overloadFree: true }, change: { verdict: 'changed', comparedWindows: 3, changedWindows: 3 }, fades: { verdict: 'matched', fadeIn: { verdict: 'matched' }, fadeOut: { verdict: 'matched' } } } }, spec)
+    assert.equal(fullTrack.passed, true, '整首音乐循环铺满必须接受“音乐文件全段”回执')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

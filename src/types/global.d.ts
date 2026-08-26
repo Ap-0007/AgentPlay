@@ -233,11 +233,24 @@ interface AiAssetBundleResultV1 {
   }
 }
 
+interface PersonalEditSkillV1 {
+  id: string
+  name: string
+  enabled: boolean
+  autoApply: boolean
+  revision: number
+  settings: { pace?: 'fast' | 'balanced' | 'restrained'; subtitlePreset?: 'clean' | 'impact' | 'documentary'; targetLufs?: number }
+  createdAt: number
+  updatedAt: number
+  digest: string
+}
+
 interface MediaEditDecisionV1 {
   schemaVersion: 1
   kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.mix-audio' | 'media.repair-audio' | 'media.rhythm-edit' | 'media.visual-effects' | 'media.smart-reframe' | 'media.visual-repair' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues' | 'media.transform-subtitles' | 'media.subtitle-layout-variants'
   instruction: string
   edl: EditDecisionListV1
+  personalEditSkill?: { schemaVersion: 1; id: string; name: string; revision: number; digest: string; fieldsApplied: string[] }
   source?: { path: string; name: string }
   sources?: Array<{ path: string; name: string }>
   effectSources?: Array<{ path: string; name: string }>
@@ -912,6 +925,11 @@ interface AiPlayerAPI {
     runVersionBundle: (input: { sourcePath: string; plan: LongVideoVersionPlanV1; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputs?: string[]; versions?: Array<{ id: string; label: string; outputPath: string; durationSeconds: number; targetSeconds?: number }>; summary?: string; error?: string }>
     compress: (input: { sourcePath: string; targetMb?: number; mode?: 'remux' | 'compress'; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; beforeBytes?: number; afterBytes?: number; mode?: string; error?: string }>
     cancel: (requestId: string) => Promise<boolean>
+  }
+  personalEditSkills?: {
+    plan: (input: { instruction: string }) => Promise<{ matched: boolean; command?: { schemaVersion: 1; action: 'save' | 'list' | 'update' | 'disable' | 'enable'; name?: string; settings?: PersonalEditSkillV1['settings'] } }>
+    execute: (input: { instruction: string }) => Promise<{ success: boolean; matched?: boolean; action?: string; skill?: PersonalEditSkillV1; skills?: PersonalEditSkillV1[]; summary?: string; error?: string }>
+    list: () => Promise<{ success: boolean; skills: PersonalEditSkillV1[]; active: PersonalEditSkillV1 | null; summary: string }>
   }
   guide?: {
     annotate: (question: string) => Promise<{ success: boolean; steps?: Array<{ text: string; mark: unknown }>; annotated?: boolean; error?: string }>
