@@ -15,6 +15,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isAnalysis = runtimeTask.type === 'analysis.run'
       const isOutcome = runtimeTask.type === 'outcome.workflow'
       const isSubtitle = runtimeTask.type === 'subtitle.generate'
+      const isAiAssets = runtimeTask.type === 'creative.asset-bundle'
       const isVideoGeneration = runtimeTask.type === 'creative.video-generate'
       const isRecut = runtimeTask.type === 'creative.recut-short'
       const isCreative = isVideoGeneration || isRecut
@@ -109,6 +110,10 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         retry = { kind: 'outcome', instruction, sourcePath: firstSourcePath }
       } else if (isSubtitle) {
         kind = 'media'; label = '自动翻译字幕'; instruction = `生成${runtimeTask.spec?.targetLang || '目标语言'}字幕`; source = firstSourcePath; retry = null
+      } else if (isAiAssets) {
+        const requested = ((runtimeTask.spec?.decision as { requestedKinds?: string[] } | undefined)?.requestedKinds || []).map((item) => ({ shot: '补镜头', narration: '旁白', voice: '配音', 'sound-effect': '音效' }[item] || item)).join('、')
+        kind = 'creative'; label = `AI素材包${requested ? ` · ${requested}` : ''}`; instruction = String(runtimeTask.spec?.instruction || '生成AI素材包'); source = firstSourcePath
+        retry = { kind: 'ai-assets', instruction, sourcePath: firstSourcePath }
       } else if (isCreative) {
         kind = 'creative'; label = isRecut ? '生成重构短片' : 'AI 生成视频'; instruction = String(runtimeTask.spec?.instruction || runtimeTask.spec?.prompt || '')
         source = isRecut ? String(runtimeTask.spec?.mediaName || '') : ''; retry = isVideoGeneration ? { kind: 'video-gen', instruction } : null
@@ -166,6 +171,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
           : isAnalysis ? '视频解剖完成（已从检查点恢复）'
             : isOutcome ? '视频内容成果包完成（已从检查点恢复）'
             : isSubtitle ? '字幕生成完成（已从检查点恢复）'
+              : isAiAssets ? 'AI素材包完成（已从来源与哈希检查点恢复）'
               : isCreative ? '创作任务完成（已从检查点恢复）'
                 : isBatch ? `批量${batchKind === 'transcribe' ? '转写' : '压缩'}完成（已从检查点恢复）`
                   : isVersionBundle ? '长视频多版本完成（已从共享证据检查点恢复）'
@@ -184,9 +190,10 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
           phase: 'completed', status: '', error: '', outputs: outputPaths, summary: String(runtimeTask.result?.summary || fallbackSummary),
           evidence: deliveryEvidence, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
         })
-        if ((isDownload || isCreative || isTimelineEdit || isVersionBundle || isVisualEffects || isSmartReframe || isVisualRepair) && fromEvent && outputPaths[0] && !surfacedOutputs.has(runtimeTask.id)) {
+        const aiShotPath = isAiAssets ? ((runtimeTask.result?.aiAssetReceipt as { artifacts?: Array<{ kind?: string; path?: string }> } | undefined)?.artifacts || []).find((item) => item.kind === 'shot')?.path : ''
+        if ((isDownload || isCreative || isTimelineEdit || isVersionBundle || isVisualEffects || isSmartReframe || isVisualRepair || Boolean(aiShotPath)) && fromEvent && (aiShotPath || outputPaths[0]) && !surfacedOutputs.has(runtimeTask.id)) {
           surfacedOutputs.add(runtimeTask.id)
-          window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: outputPaths[0] }))
+          window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: aiShotPath || outputPaths[0] }))
         }
         return
       }

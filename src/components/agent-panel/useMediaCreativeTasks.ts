@@ -72,6 +72,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   const pendingLongVersionRef = useRef<PendingLongVersionPlan | null>(null)
   const versionBundleInputRef = useRef<VersionBundleInput | null>(null)
   const videoGenInstructionRef = useRef('')
+  const aiAssetInstructionRef = useRef('')
   const dedupInstructionRef = useRef('')
 
   useEffect(() => {
@@ -161,6 +162,35 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       releaseCancelableRequest(requestId)
       busyRef.current = false
     }
+  }
+
+  const runAiAssetBundleTask = async (text: string, retrying = false): Promise<boolean> => {
+    if (!text || !window.aiPlayer?.studio?.planAssets || !window.aiPlayer?.studio?.generateAssets) return false
+    const current = usePlayerStore.getState().videoSrc
+    const sourcePath = current && !/^(https?|blob):/i.test(current) ? current : ''
+    const plan = await window.aiPlayer.studio.planAssets({ instruction: text, sourcePath })
+    if (!plan?.matched || !plan.decision) return false
+    if (busyRef.current) return true
+    busyRef.current = true
+    aiAssetInstructionRef.current = text
+    if (!retrying) { addMessage('user', text); setInputText('') }
+    const labels: Record<string, string> = { shot: '补镜头', narration: '旁白', voice: '配音', 'sound-effect': '音效' }
+    const requested = plan.decision.requestedKinds.map((kind) => labels[kind] || kind).join('、')
+    executionTaskIdRef.current = startTask({ kind: 'creative', label: `AI素材包 · ${requested}`, phase: 'running', status: '等待本次上云/付费确认…', instruction: text, source: sourcePath, retry: { kind: 'ai-assets', instruction: text, sourcePath } })
+    const requestId = `ai-assets-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    pendingTaskRef.current = 'ai-assets'; bindCancelableRequest(requestId)
+    try {
+      const result = await window.aiPlayer.studio.generateAssets({ instruction: text, sourcePath, decision: plan.decision, requestId, workspaceTaskId: executionTaskIdRef.current })
+      if (!result?.success || !result.outputs?.length) throw new Error(result?.error || 'AI素材包生成失败')
+      completeExecutionTask({ outputs: result.outputs, summary: result.summary || 'AI素材包已完成' })
+      addMessage('agent', `${result.summary || 'AI素材包已完成'}\n补镜头已自动预览；旁白、配音、音效和AI来源清单都在任务结果中，可直接打开或定位。`)
+      const shot = result.aiAssetReceipt?.artifacts.find((item) => item.kind === 'shot')?.path
+      if (shot) window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: shot }))
+    } catch (error) {
+      if (executionWasCancelled()) return true
+      const message = error instanceof Error ? error.message : String(error); failExecutionTask(message); addMessage('agent', `[错误] ${message}`)
+    } finally { releaseCancelableRequest(requestId); busyRef.current = false }
+    return true
   }
 
   const runBatchTask = async (text: string, targetOverride?: AgentAttachment[]) => {
@@ -702,6 +732,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         if (!videoGenInstructionRef.current) return false
         void runVideoGenTask(videoGenInstructionRef.current, true)
         return true
+      case 'ai-assets':
+        if (!aiAssetInstructionRef.current) return false
+        void runAiAssetBundleTask(aiAssetInstructionRef.current, true)
+        return true
       case 'batch':
         if (!batchInputRef.current.instruction || !batchInputRef.current.targets.length) return false
         void runBatchTask(batchInputRef.current.instruction, batchInputRef.current.targets)
@@ -764,6 +798,11 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       void runVideoGenTask(retry.instruction, true)
       return true
     }
+    if (retry.kind === 'ai-assets' && retry.instruction) {
+      if (retry.sourcePath) usePlayerStore.getState().setMedia(retry.sourcePath.split(/[\\/]/).pop() || '待处理视频', retry.sourcePath)
+      void runAiAssetBundleTask(retry.instruction, true)
+      return true
+    }
     if (retry.kind === 'dedup') {
       void runDedupTask(retry.instruction || '重复文件检查', true, retry.directoryPath || '')
       return true
@@ -775,6 +814,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     isVideoGenerationIntent,
     runRecutShort,
     runVideoGenTask,
+    runAiAssetBundleTask,
     runBatchTask,
     runEditHistoryTask,
     runTrimTask,

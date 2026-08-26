@@ -49,6 +49,7 @@ function taskKindForPersistentType(type) {
   if (type === 'analysis.run') return 'analysis'
   if (type === 'project.evidence-qa') return 'cross-material-qa'
   if (type === 'subtitle.generate') return 'subtitle-translation'
+  if (type === 'creative.asset-bundle') return 'creative-assets'
   if (type === 'creative.video-generate') return 'creative-video'
   if (type === 'creative.recut-short') return 'creative-planning'
   return null

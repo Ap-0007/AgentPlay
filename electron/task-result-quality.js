@@ -23,6 +23,7 @@ const HARD_FAILURES = new Set([
   'SUBTITLE_TRANSFORM_MISMATCH', 'SUBTITLE_TRANSFORM_LANGUAGE_MISSING', 'SUBTITLE_TRANSFORM_STYLE_MISSING',
   'SUBTITLE_LAYOUT_FONT_FAILED', 'SUBTITLE_LAYOUT_LINES_FAILED', 'SUBTITLE_LAYOUT_WRAPPING_FAILED', 'SUBTITLE_LAYOUT_OCCLUSION_FAILED', 'SUBTITLE_LAYOUT_POSITION_FAILED',
   'SUBTITLE_PREVIEW_BURN_PARITY_FAILED',
+  'AI_ASSET_RECEIPT_MISSING', 'AI_ASSET_PROVENANCE_MISMATCH', 'AI_ASSET_SOURCE_UPLOAD_VIOLATION', 'AI_ASSET_MEDIA_INVALID', 'AI_ASSET_APPROVAL_MISSING', 'AI_ASSET_RECOVERY_REPEAT',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -665,6 +666,31 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('format', '字幕结构', formatRatio && artifacts.every((item) => item.ext === '.srt' || item.ext === '.vtt') ? 1 : 0, 15, formatFailure || reason('INVALID_FORMAT', '校对成果不是有效的 srt/vtt 字幕', true))
     add('cue-receipt', '条目回执', cueReceiptOk ? 1 : 0, 25, reason('CUE_RECEIPT_MISMATCH', `校对条目回执不一致：期望 ${expectedCueCount || 0} 条，实际 ${cueCount || 0} 条`, true))
     add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+  } else if (taskType === 'creative.asset-bundle') {
+    const receipt = result.aiAssetReceipt
+    const expectedKinds = spec.decision?.requestedKinds || []
+    const artifactEntries = Array.isArray(receipt?.artifacts) ? receipt.artifacts : []
+    const kindsOk = expectedKinds.length > 0 && JSON.stringify(receipt?.requestedKinds) === JSON.stringify(expectedKinds) && artifactEntries.length === expectedKinds.length && artifactEntries.every((item, index) => item.kind === expectedKinds[index])
+    const provenanceOk = receipt?.schemaVersion === 1 && receipt?.kind === 'agentplay.ai-asset-bundle-receipt' && receipt?.verdict === 'matched' && receipt?.model?.local === false && artifactEntries.every((item) => item.aiGenerated === true && /^[a-f0-9]{64}$/i.test(String(item.sha256 || '')) && String(item.generationMethod || '').length > 0)
+    const hashesOk = provenanceOk && artifactEntries.every((item) => { try { return fingerprintArtifact(item.path).sha256 === item.sha256 } catch { return false } })
+    const manifestOk = receipt?.manifest?.path && outputs.includes(path.resolve(String(receipt.manifest.path))) && (() => { try { return fingerprintArtifact(receipt.manifest.path).sha256 === receipt.manifest.sha256 } catch { return false } })()
+    const approvalOk = receipt?.approvalAction === 'paid' && (spec.approvalContract?.action === 'paid' || spec.approval?.action === 'paid')
+    const privacyOk = receipt?.sourceMediaUploaded === false
+    const proof = receipt?.mediaProof || {}
+    const shotOk = !expectedKinds.includes('shot') || (Number(proof.shot?.durationSeconds) > 0 && Number(proof.shot?.width) >= 640 && Number(proof.shot?.height) >= 360)
+    const voiceOk = !expectedKinds.includes('voice') || (Number(proof.voice?.durationSeconds) > 0 && proof.voice?.hasAudio === true && proof.voice?.nonSilent === true && Number(proof.voice?.samplePeakDbfs) > -60)
+    const soundOk = !expectedKinds.includes('sound-effect') || (Number(proof.soundEffect?.durationSeconds) > 0 && proof.soundEffect?.hasAudio === true && proof.soundEffect?.nonSilent === true && Number(proof.soundEffect?.samplePeakDbfs) > -60)
+    const narration = artifactEntries.find((item) => item.kind === 'narration')
+    const narrationOk = !expectedKinds.includes('narration') || (() => { try { return fs.readFileSync(narration.path, 'utf8').trim().length >= 4 } catch { return false } })()
+    const recoveryOk = Number(receipt?.recovery?.repeatedCloudCalls) === 0
+    add('declared-success', '执行状态', success ? 1 : 0, 5, reason('RESULT_FAILED', 'AI素材任务返回失败状态', false))
+    add('artifacts', '四类素材与来源清单', artifactRatio, 15, artifactFailure)
+    add('approval', '统一上云/付费审批', approvalOk ? 1 : 0, 10, reason('AI_ASSET_APPROVAL_MISSING', 'AI素材任务没有绑定本次付费/上云审批', false))
+    add('kinds', '冻结素材种类', kindsOk ? 1 : 0, 10, reason('AI_ASSET_RECEIPT_MISSING', '交付素材种类与冻结请求不一致', true))
+    add('provenance', 'AI生成来源与哈希', provenanceOk && hashesOk && manifestOk ? 1 : 0, 25, reason('AI_ASSET_PROVENANCE_MISMATCH', '至少一项素材缺少AI来源、哈希或来源清单不一致', true))
+    add('media-proof', '真实可用素材', shotOk && narrationOk && voiceOk && soundOk ? 1 : 0, 20, reason('AI_ASSET_MEDIA_INVALID', '补镜头、旁白、配音或音效至少一项不可真实使用', true))
+    add('privacy', '源媒体不上云', privacyOk ? 1 : 0, 10, reason('AI_ASSET_SOURCE_UPLOAD_VIOLATION', '任务错误上传了源视频或没有留下不上云证明', false))
+    add('recovery', '恢复零重复调用', recoveryOk ? 1 : 0, 5, reason('AI_ASSET_RECOVERY_REPEAT', '恢复阶段重复调用了已完成的云端素材步骤', false))
   } else if (taskType === 'creative.recut-short') {
     const blueprint = result.styleBlueprint
     const receipt = result.styleReuseReceipt

@@ -8,6 +8,7 @@ const TYPE_LABELS = Object.freeze({
   'outcome.workflow': '视频内容成果包',
   'project.evidence-qa': '跨素材证据问答',
   'subtitle.generate': '字幕任务',
+  'creative.asset-bundle': 'AI 素材包',
   'creative.video-generate': 'AI 视频创作',
   'creative.recut-short': '视频重构',
   'media.batch': '批量媒体任务',

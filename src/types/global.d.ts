@@ -197,6 +197,42 @@ interface SubtitlePreviewBurnProofV1 {
   final: { path: string; artifactSha256: string; bytes: number; role: 'delivered-artifact' }
 }
 
+interface AiAssetBundleDecisionV1 {
+  schemaVersion: 1
+  kind: 'creative.asset-bundle'
+  strategy: 'ai-generated-asset-bundle-v1'
+  instruction: string
+  requestedKinds: Array<'shot' | 'narration' | 'voice' | 'sound-effect'>
+  source?: { path: string; name: string }
+  shot: { durationSeconds: number; width: number; height: number; motion: 'subtle-push' }
+  soundEffect: { durationSeconds: number }
+  safety: { approvalAction: 'paid'; uploadSourceMedia: false; markAiGeneratedSource: true; overwrite: false }
+  output: { overwrite: false; bundle: true; suffix: string }
+  verification: Record<string, boolean>
+}
+
+interface AiAssetBundleResultV1 {
+  success: boolean
+  requestId?: string
+  cancelled?: boolean
+  outputPath?: string
+  outputs?: string[]
+  summary?: string
+  error?: string
+  aiAssetReceipt?: {
+    schemaVersion: 1
+    kind: 'agentplay.ai-asset-bundle-receipt'
+    verdict: 'matched'
+    approvalAction: 'paid'
+    sourceMediaUploaded: false
+    requestedKinds: AiAssetBundleDecisionV1['requestedKinds']
+    model: { providerId: string; providerName: string; model: string; local: false }
+    artifacts: Array<{ kind: string; path: string; bytes: number; sha256: string; aiGenerated: true; generationMethod: string; providerId: string; model: string }>
+    manifest: { path: string; bytes: number; sha256: string }
+    recovery: { repeatedCloudCalls: 0; resumedFromCheckpoint: boolean }
+  }
+}
+
 interface MediaEditDecisionV1 {
   schemaVersion: 1
   kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.mix-audio' | 'media.repair-audio' | 'media.rhythm-edit' | 'media.visual-effects' | 'media.smart-reframe' | 'media.visual-repair' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues' | 'media.transform-subtitles' | 'media.subtitle-layout-variants'
@@ -795,6 +831,8 @@ interface AiPlayerAPI {
         status: string
       }>
     }>
+    planAssets: (input: { instruction: string; sourcePath?: string }) => Promise<{ matched: boolean; decision?: AiAssetBundleDecisionV1 }>
+    generateAssets: (input: { instruction: string; sourcePath?: string; decision: AiAssetBundleDecisionV1; requestId: string; workspaceTaskId?: string }) => Promise<AiAssetBundleResultV1>
     generateImage: (input: { id: string; prompt: string; model?: string; size?: string }) => Promise<{ success: boolean; outputPath: string; bytes: number }>
     generateVideo: (input: { id?: string; prompt: string; instruction?: string; model?: string; duration?: number; fps?: number; size?: string; imageBase64?: string; requestId: string; workspaceTaskId?: string }) => Promise<{ success: boolean; requestId?: string; cancelled?: boolean; outputPath?: string; outputs?: string[]; bytes?: number; videoId?: string; numFrames?: number; error?: string }>
     planRecut: (input: { reportText?: string; mediaName: string; count?: number; originalGoal?: string }) => Promise<{ success: boolean; blueprint?: Record<string, unknown>; blueprintSha256?: string; protectedFragmentCount?: number; summary?: string; error?: string }>

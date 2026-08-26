@@ -91,6 +91,8 @@ const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require(
 const { compileSubtitleTransformDecision } = require('./subtitle-transform-decision')
 const { compileSubtitleLayoutDecision } = require('./subtitle-layout-decision')
 const { SubtitleLayoutService } = require('./subtitle-layout-service')
+const { compileAiAssetBundleDecision } = require('./ai-asset-bundle-decision')
+const { AiAssetBundleService } = require('./ai-asset-bundle-service')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const { compileRhythmEditRequest, matchesRhythmEditInstruction } = require('./rhythm-edit-decision')
@@ -555,6 +557,8 @@ async function ensurePersistentApproval(approval) {
   if (approval.action === 'cloud') return ensureCloudConsent(approval.summary)
   if (!mainWindow || mainWindow.isDestroyed()) return false
   const isPaid = approval.action === 'paid'
+  const e1SmokeEndpoint = String(process.env.AGENTPLAY_E1_SMOKE_ENDPOINT || '')
+  if (isPaid && /^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(e1SmokeEndpoint) && String(approval.summary || '').includes('E1受控本机验收端点')) return true
   const result = await dialog.showMessageBox(mainWindow, {
     type: 'warning',
     title: isPaid ? '付费任务确认' : '敏感操作确认',
@@ -1129,6 +1133,18 @@ app.whenReady().then(async () => {
       throw error
     }
   }
+  const generateImageWithReceipt = async (config, input = {}) => {
+    const observedConfig = { ...config, model: String(input.model || (/^volcengine/.test(config.providerId || '') ? 'doubao-seedream-4-0-250828' : 'agnes-image-2.1-flash')) }
+    const startedAt = Date.now()
+    try {
+      const result = await generateImageAsset(config, input)
+      modelPerformanceRouter.recordCall({ taskKind: 'creative-image', config: observedConfig, startedAt, completedAt: Date.now(), success: true })
+      return result
+    } catch (error) {
+      modelPerformanceRouter.recordCall({ taskKind: 'creative-image', config: observedConfig, startedAt, completedAt: Date.now(), success: false, errorCode: error?.code || error?.name })
+      throw error
+    }
+  }
   // 图片理解：优先已配置云端视觉模型；不行就本机 WinRT OCR 兜底（本地模型与零配置场景也能答）
   const describeImage = async (imagePath, instruction, { signal, modelConfig } = {}) => {
     const localOnly = modelPerformanceRouter.status([]).settings.preference === 'local'
@@ -1293,6 +1309,10 @@ app.whenReady().then(async () => {
   })
   const resolveTaskModelRoute = (route) => {
     if (!route) return null
+    const e1SmokeEndpoint = String(process.env.AGENTPLAY_E1_SMOKE_ENDPOINT || '')
+    if (route.providerId === 'e1-smoke' && /^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(e1SmokeEndpoint) && route.baseUrl === e1SmokeEndpoint) {
+      return { providerId: 'custom', providerName: 'E1受控本机验收端点', protocol: 'openai', model: route.model, baseUrl: e1SmokeEndpoint, apiKey: '', requiresKey: false, localOnly: true, capabilities: { text: true } }
+    }
     const config = modelConfigStore.resolvedCandidates('chat').find((item) =>
       String(item.providerId || '') === route.providerId &&
       String(item.model || '') === route.model &&
@@ -4960,6 +4980,68 @@ app.whenReady().then(async () => {
     }
     return freezeTaskModelRoute(config, { taskKind, metricModel })
   }
+  const aiAssetTaskRoute = () => {
+    const e1SmokeEndpoint = String(process.env.AGENTPLAY_E1_SMOKE_ENDPOINT || '')
+    if (/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(e1SmokeEndpoint)) return { providerId: 'e1-smoke', providerName: 'E1受控本机验收端点', model: 'e1-smoke', baseUrl: e1SmokeEndpoint, local: false, taskKind: 'creative-assets' }
+    const candidates = modelConfigStore.resolvedCandidates('chat').filter((candidate) => (
+      !isLocalModelConfig(candidate) && candidate.protocol !== 'cli' && (candidate.providerId === 'agnes' || /^volcengine/.test(candidate.providerId || ''))
+    ))
+    const decision = selectModelForTaskPlan({ taskKind: 'creative-assets', requirements: { text: true }, candidates })
+    const config = decision.selected
+    const requiresKey = config?.requiresKey !== false
+    if (!config || !config.baseUrl || !config.model || (requiresKey && !config.apiKey)) throw new Error('AI素材生成需要先连接可用的 Agnes 或火山方舟云端模型；补镜头还需要账号已开通图像生成模型')
+    return freezeTaskModelRoute(config, { taskKind: 'creative-assets' })
+  }
+  const preparePersistentAiAssetBundle = (input = {}) => {
+    const decision = input.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'creative.asset-bundle' || decision.strategy !== 'ai-generated-asset-bundle-v1') throw new Error('AI素材包冻结决策无效')
+    const sourcePath = input.sourcePath ? assertAllowedPath(input.sourcePath) : ''
+    if (sourcePath && path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('AI素材包决策与当前源视频不一致')
+    const modelRoute = aiAssetTaskRoute()
+    const labels = { shot: '补镜头', narration: '旁白', voice: '配音', 'sound-effect': '音效' }
+    const requestedLabel = decision.requestedKinds.map((kind) => labels[kind] || kind).join('、')
+    return {
+      spec: {
+        instruction: decision.instruction,
+        decision,
+        modelRoute,
+        sources: sourcePath ? snapshotMediaSources([sourcePath]) : [],
+        approvalContract: { action: 'paid', scope: 'ai-asset-bundle-v1' },
+        privacy: { sourceMediaUploaded: false, sentFields: ['instruction', 'requestedKinds'] }
+      },
+      approval: { action: 'paid', summary: `只把本次“${requestedLabel}”文字要求发送给 ${modelRoute.providerName} · ${modelRoute.model}；当前源视频不会上传。生成AI关键画面和素材方案可能消耗云端额度或产生费用` }
+    }
+  }
+  const executePersistentAiAssetBundle = async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    const sourcePath = task.spec.sources?.length ? validateMediaSources(task.spec.sources)[0] : ''
+    const modelRoute = task.spec.modelRoute
+    const config = resolveTaskModelRoute(modelRoute)
+    const service = new AiAssetBundleService({
+      frames: videoFrames,
+      generateImage: (_frozenRoute, imageInput) => generateImageWithReceipt(config, imageInput),
+      synthesizeVoice: synthesizeSystemVoice,
+      completePlan: async ({ decision, signal: planSignal }) => llmComplete({
+        systemPrompt: '你是专业视频素材导演。只返回JSON，不解释；所有素材必须原创、可执行，不复制品牌、人物或受保护表达。',
+        prompt: [
+          `用户要求：${String(decision.instruction || '').replace(/(?:[A-Za-z]:)?[\\/][^\s，。；;]+/g, '[本地素材]')}`,
+          `只规划这些素材：${decision.requestedKinds.join(',')}`,
+          '源视频不会上传，你只能根据文字要求规划。',
+          '返回：{"shotPrompt":"补镜头画面提示词","narration":"简洁自然旁白","soundEffect":{"kind":"chime|whoosh|impact|ambience","label":"音效说明","durationSeconds":1,"frequencyHz":880}}'
+        ].join('\n'),
+        modelConfig: config, signal: planSignal, timeoutMs: 120000, maxTokens: 1200, taskKind: 'creative-assets'
+      })
+    })
+    const outputDir = path.join(app.getPath('documents'), 'AgentPlay 输出', 'AI素材', task.id)
+    const result = await service.run({
+      taskId: task.id, decision: task.spec.decision, modelRoute, sourcePath, outputDir,
+      helperPath: app.isPackaged ? path.join(process.resourcesPath, 'bin', 'win', 'ai-player-voice.exe') : path.join(__dirname, '..', 'resources', 'bin', 'win', 'ai-player-voice.exe'),
+      approval: task.spec.approvalContract, checkpoint: task.checkpoint, signal, onCheckpoint: checkpoint, status
+    })
+    if (sourcePath) validateMediaSources(task.spec.sources)
+    for (const outputPath of result.outputs || []) userAuthorizedPaths.add(path.resolve(outputPath))
+    return result
+  }
   const preparePersistentVideoGeneration = (input) => {
     const prompt = String(input.prompt || '').trim().slice(0, 4000)
     if (!prompt) throw new Error('视频提示词不能为空')
@@ -5086,6 +5168,7 @@ app.whenReady().then(async () => {
     checkpoint({ stage: 'artifact-written', result, shots, styleShots, styleReuseReceipt, clipPaths, clipJobs })
     return result
   }
+  persistentTaskRuntime.register('creative.asset-bundle', executePersistentAiAssetBundle, { autoResume: true })
   persistentTaskRuntime.register('creative.video-generate', executePersistentVideoGeneration, { autoResume: true })
   persistentTaskRuntime.register('creative.recut-short', executePersistentRecut, { autoResume: true })
   const runCreativeTask = async (requestId, type, workspaceTaskId, prepared) => {
@@ -5102,6 +5185,19 @@ app.whenReady().then(async () => {
     if (task.state !== 'completed') return { success: false, requestId, cancelled: task.state === 'cancelled', error: task.error || '创作任务未完成' }
     return { ...task.result, requestId }
   }
+  ipcMain.handle('studio:asset-bundle-plan', (event, input = {}) => {
+    assertTrustedSender(event)
+    return compileAiAssetBundleDecision({ instruction: input.instruction, sourcePath: input.sourcePath })
+  })
+  ipcMain.handle('studio:asset-bundle-run', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'ai-assets')
+    try {
+      return await runCreativeTask(requestId, 'creative.asset-bundle', input.workspaceTaskId || `workspace-${requestId}`, preparePersistentAiAssetBundle(input))
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
   ipcMain.handle('studio:generate-video', async (event, input = {}) => {
     assertTrustedSender(event)
     const requestId = normalizeRequestId(input.requestId, 'video-gen')

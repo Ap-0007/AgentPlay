@@ -80,6 +80,7 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
       case 'trim':
       case 'versions':
       case 'video-gen':
+      case 'ai-assets':
       case 'recut':
         if (!retryActiveMediaCreative()) addMessage('agent', '[错误] 当前任务缺少可安全重试的输入，请从原素材重新发起。')
     }
@@ -115,6 +116,7 @@ export function createTaskCommandDispatcher(options: TaskCommandOptions) {
           cancelled = await window.aiPlayer?.mediaTools?.cancel(requestId) || false
           break
         case 'video-gen':
+        case 'ai-assets':
         case 'recut':
           cancelled = await window.aiPlayer?.studio?.cancelTask(requestId) || false
           break

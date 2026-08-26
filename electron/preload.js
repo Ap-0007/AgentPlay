@@ -245,6 +245,8 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     exportProject: (project) => ipcRenderer.invoke('studio:export-project', project),
     render: (input) => ipcRenderer.invoke('studio:render', input),
     creativePlan: (input) => ipcRenderer.invoke('studio:creative-plan', input),
+    planAssets: (input) => ipcRenderer.invoke('studio:asset-bundle-plan', input),
+    generateAssets: (input) => ipcRenderer.invoke('studio:asset-bundle-run', input),
     generateImage: (input) => ipcRenderer.invoke('studio:generate-image', input),
     generateVideo: (input) => ipcRenderer.invoke('studio:generate-video', input),
     planRecut: (input) => ipcRenderer.invoke('studio:recut-style-plan', input),
