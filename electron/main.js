@@ -89,6 +89,8 @@ const { assertLongVideoVersionPlan, freezeLongVideoVersionPlan, planLongVideoVer
 const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require('./visual-effect-decision')
 const { compileSubtitleTransformDecision } = require('./subtitle-transform-decision')
+const { compileSubtitleLayoutDecision } = require('./subtitle-layout-decision')
+const { SubtitleLayoutService } = require('./subtitle-layout-service')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const { compileRhythmEditRequest, matchesRhythmEditInstruction } = require('./rhythm-edit-decision')
@@ -688,6 +690,7 @@ const videoFrames = new VideoFrameService({
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
 const mediaEditService = new MediaEditService({ frames: videoFrames, transcription: transcriptionService })
+const subtitleLayoutService = new SubtitleLayoutService({ frames: videoFrames })
 const visualExportQuality = new VisualExportQualityGate({ frames: videoFrames })
 const smartReframePlanner = new SmartReframePlanner({ frames: videoFrames })
 const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
@@ -1236,7 +1239,7 @@ app.whenReady().then(async () => {
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).isFile()) fs.rmSync(outputPath, { force: true })
       }
       action = type === 'media.smart-reframe' ? '清理不合格的三比例构图成果并从冻结主体轨迹重新执行' : type === 'media.audio-repair' ? '清理不合格的音频修复/分离成果并从冻结音频决策重新执行' : '清理不合格的修复/对比成果并从冻结画面修复决策重新执行'
-    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.rhythm-edit' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues' || type === 'media.transform-subtitles') {
+    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.rhythm-edit' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues' || type === 'media.transform-subtitles' || type === 'media.subtitle-layout-variants') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
       const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
@@ -2748,6 +2751,27 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.subtitle-layout-variants', async ({ task, signal, checkpoint, status }) => {
+    const [sourcePath, subtitlePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision; const profiles = decision?.subtitleLayout?.profiles || []
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.subtitle-layout-variants' || decision.subtitleLayout?.strategy !== 'responsive-ass-layout-v1' || !profiles.length) throw new Error('冻结的响应式字幕布局决策无效')
+    assertEditDecisionList(decision)
+    if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath) || path.resolve(String(decision.subtitle?.path || '')) !== path.resolve(subtitlePath)) throw new Error('字幕布局决策与视频/字幕快照不一致')
+    const outputPaths = profiles.map((profile, index) => validatePlannedMediaOutput(task.spec.plannedOutputs?.[index], subtitlePath, `字幕布局-${profile.id}`, '.ass', task.id, index))
+    status(`正在生成${profiles.length}个横屏/竖屏/方形响应式字幕布局`)
+    let result
+    if (outputPaths.every((item) => fs.existsSync(item))) {
+      const layoutProof = await subtitleLayoutService.verifyLayouts({ sourcePath, subtitlePath, outputPaths, decision, signal })
+      result = { success: true, outputPath: outputPaths[0], outputs: outputPaths, profileCount: profiles.length, layoutProof, summary: `已从冻结合同恢复并核验${profiles.length}个响应式字幕布局` }
+    } else result = await subtitleLayoutService.exportLayouts({ sourcePath, subtitlePath, outputPaths, decision, signal })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath: subtitlePath, outputPath: outputPaths[0], decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    outputPaths.forEach((item) => userAuthorizedPaths.add(path.resolve(item)))
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.dedup', async ({ task, signal, checkpoint, status }) => {
     const root = validateFrozenDirectoryRoot(task.spec.root)
     const hashCache = task.checkpoint?.hashCache && typeof task.checkpoint.hashCache === 'object' ? { ...task.checkpoint.hashCache } : {}
@@ -2847,6 +2871,8 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       let sourcePath = assertAllowedPath(input.sourcePath)
+      const subtitleLayout = compileSubtitleLayoutDecision({ instruction: input.instruction, sourcePath })
+      if (subtitleLayout.matched) return subtitleLayout.decision ? { ...subtitleLayout, decision: attachEditDecisionList(subtitleLayout.decision) } : subtitleLayout
       const subtitleTransform = compileSubtitleTransformDecision({ instruction: input.instruction, sourcePath })
       if (subtitleTransform.matched) return subtitleTransform.decision ? { ...subtitleTransform, decision: attachEditDecisionList(subtitleTransform.decision) } : subtitleTransform
       if (matchesRhythmEditInstruction(input.instruction)) {
@@ -2957,8 +2983,9 @@ app.whenReady().then(async () => {
         if (path.resolve(String(decisionSource || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑方案与当前视频不一致')
         decision = JSON.parse(JSON.stringify(input.decision))
       } else {
+        const layoutResult = compileSubtitleLayoutDecision({ instruction: input.instruction, sourcePath })
         const transformResult = compileSubtitleTransformDecision({ instruction: input.instruction, sourcePath })
-        const rawDecision = transformResult.decision || compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioRepairDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+        const rawDecision = layoutResult.decision || transformResult.decision || compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioRepairDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
         decision = rawDecision ? attachEditDecisionList(rawDecision) : null
       }
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
@@ -2980,6 +3007,8 @@ app.whenReady().then(async () => {
              ? 'media.edit-audio-mix'
            : decision.kind === 'media.add-music'
             ? 'media.edit-music'
+             : decision.kind === 'media.subtitle-layout-variants'
+               ? 'media.subtitle-layout-variants'
              : decision.kind === 'media.transform-subtitles'
                ? 'media.transform-subtitles'
              : decision.kind === 'media.burn-subtitles'
@@ -2994,7 +3023,9 @@ app.whenReady().then(async () => {
                       ? 'media.shift-subtitles'
                       : decision.kind === 'media.remove-segment' ? 'media.edit-remove' : 'media.edit-trim'
       if (taskType !== 'media.shift-subtitles' && taskType !== 'media.translate-subtitles' && taskType !== 'media.edit-subtitle-cues' && taskType !== 'media.transform-subtitles' && !videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
-      const allSourcePaths = decision.kind === 'media.visual-effects'
+      const allSourcePaths = decision.kind === 'media.subtitle-layout-variants'
+        ? [sourcePath, assertAllowedPath(decision.subtitle?.path || '')]
+        : decision.kind === 'media.visual-effects'
         ? [sourcePath, ...(decision.effectSources || []).map((item) => assertAllowedPath(item.path))]
         : decision.kind === 'media.concat-sources'
         ? decision.sources.map((item) => assertAllowedPath(item?.path || ''))
@@ -3048,6 +3079,8 @@ app.whenReady().then(async () => {
           outputPath: plannedMediaOutput(outputAnchor, decision.output.suffix, outputExtension, requestId),
           ...(decision.kind === 'media.smart-reframe'
             ? { plannedOutputs: decision.reframe.outputs.map((item, index) => plannedMediaOutput(outputAnchor, item.suffix, '.mp4', requestId, index)) }
+            : decision.kind === 'media.subtitle-layout-variants'
+              ? { plannedOutputs: decision.subtitleLayout.profiles.map((item, index) => plannedMediaOutput(decision.subtitle.path, `字幕布局-${item.id}`, '.ass', requestId, index)) }
             : decision.kind === 'media.visual-repair'
               ? { plannedOutputs: [plannedMediaOutput(outputAnchor, '画面修复版', '.mp4', requestId, 0), plannedMediaOutput(outputAnchor, '修复前后对比', '.mp4', requestId, 1)] }
               : decision.kind === 'media.repair-audio'

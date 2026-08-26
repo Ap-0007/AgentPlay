@@ -322,7 +322,8 @@ function buildEditDecisionList(decision) {
     'media.shift-subtitles': ['shift-subtitles', decision.shift],
     'media.translate-subtitles': ['translate-subtitles', decision.translate],
     'media.edit-subtitle-cues': ['edit-subtitle-cues', decision.cueEdit],
-    'media.transform-subtitles': ['transform-subtitles', decision.subtitleTransform]
+    'media.transform-subtitles': ['transform-subtitles', decision.subtitleTransform],
+    'media.subtitle-layout-variants': ['subtitle-layout-variants', decision.subtitleLayout]
   }
   if (subtitleOperations[decision.kind]) {
     const [type, rawParameters] = subtitleOperations[decision.kind]

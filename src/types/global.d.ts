@@ -184,7 +184,7 @@ interface AudioExportQualityReceiptV1 {
 
 interface MediaEditDecisionV1 {
   schemaVersion: 1
-  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.mix-audio' | 'media.repair-audio' | 'media.rhythm-edit' | 'media.visual-effects' | 'media.smart-reframe' | 'media.visual-repair' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues' | 'media.transform-subtitles'
+  kind: 'media.trim' | 'media.remove-segment' | 'media.concat-segments' | 'media.add-music' | 'media.mix-audio' | 'media.repair-audio' | 'media.rhythm-edit' | 'media.visual-effects' | 'media.smart-reframe' | 'media.visual-repair' | 'media.concat-sources' | 'media.burn-subtitles' | 'media.shift-subtitles' | 'media.mux-subtitles' | 'media.translate-subtitles' | 'media.edit-subtitle-cues' | 'media.transform-subtitles' | 'media.subtitle-layout-variants'
   instruction: string
   edl: EditDecisionListV1
   source?: { path: string; name: string }
@@ -231,6 +231,7 @@ interface MediaEditDecisionV1 {
   translate?: { targetLang: '英文' | '中文' | 'auto'; mode: 'translated' | 'bilingual' }
   cueEdit?: { operation: 'delete'; startIndex: number; endIndex: number } | { operation: 'replace'; index: number; text: string }
   subtitleTransform?: { schemaVersion: 1; strategy: 'ordered-subtitle-transform-v1'; replacements: Array<{ index: number; text: string }>; merges: Array<{ startIndex: number; endIndex: number; separator: string }>; splits: Array<{ index: number; atSeconds: number; parts: [string, string] }>; shift?: { direction: 'earlier' | 'later'; offsetSeconds: number }; translate?: { targetLang: '中文' | '英文' | 'auto'; mode: 'translated' | 'bilingual' }; style?: { preset: 'clean' | 'impact' | 'documentary' }; operationKinds: Array<'replace' | 'merge' | 'split' | 'shift' | 'translate' | 'style'> }
+  subtitleLayout?: { schemaVersion: 1; strategy: 'responsive-ass-layout-v1'; position: 'auto' | 'top' | 'middle' | 'bottom'; stylePreset: 'clean' | 'impact' | 'documentary'; profiles: Array<{ id: string; label: string; aspect: '16:9' | '9:16' | '1:1'; width: number; height: number; maximumLines: 2 }> }
   audio?: { path: string; volume: number; fadeInSeconds: number; fadeOutSeconds: number; duck: boolean; loop: boolean; selection?: { startSeconds: number; endSeconds: number; durationSeconds: number }; loudness?: { enabled: boolean; targetLufs: number; targetTruePeakDbtp: number; maxTruePeakDbtp: number; lra: number; toleranceLufs: number } }
   audioMix?: {
     schemaVersion: 1

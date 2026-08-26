@@ -59,9 +59,9 @@ test('0.9.0 reports strict closure separately from implementation coverage again
 
 test('0.9.1 records completed semantic and professional visual groups without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*72%（18\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 18)
-  assert.equal(checkboxCount(content, false), 7)
+  assert.match(content, /功能交付完成率：\*\*76%（19\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 19)
+  assert.equal(checkboxCount(content, false), 6)
   assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
@@ -189,7 +189,7 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /声画起点差0\.023秒\/终点差0秒/)
   assert.match(content, /959 tests、959 pass、0 fail、0 skip/)
   assert.match(content, /C组5\/5闭环，0\.9\.1更新为15\/25=60%/)
-  assert.match(content, /#### D\. 专业字幕与包装（3\/5）/)
+  assert.match(content, /#### D\. 专业字幕与包装（4\/5）/)
   assert.match(content, /第二十四个纵向切片（D1闭环并正式勾选）/)
   assert.match(content, /acoustic-speaker-karaoke-v1/)
   assert.match(content, /说话人序列`0,1,0,1`/)
@@ -205,6 +205,11 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /改字1、合并1、拆分1、整体提前0\.5秒、本机英译中和强调风格/)
   assert.match(content, /981 tests、981 pass、0 fail、0 skip/)
   assert.match(content, /D组更新为3\/5，0\.9\.1更新为18\/25=72%/)
+  assert.match(content, /第二十七个纵向切片（D4闭环并正式勾选）/)
+  assert.match(content, /responsive-ass-layout-v1/)
+  assert.match(content, /像素差依次0\.0369\/0\.0313\/0\.0497\/0\.0448\/0\.0791\/0\.0665/)
+  assert.match(content, /986 tests、986 pass、0 fail、0 skip/)
+  assert.match(content, /D组更新为4\/5，0\.9\.1更新为19\/25=76%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

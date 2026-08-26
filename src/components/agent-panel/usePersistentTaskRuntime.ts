@@ -31,6 +31,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isSubtitleTranslate = runtimeTask.type === 'media.translate-subtitles'
       const isSubtitleCueEdit = runtimeTask.type === 'media.edit-subtitle-cues'
       const isSubtitleTransform = runtimeTask.type === 'media.transform-subtitles'
+      const isSubtitleLayout = runtimeTask.type === 'media.subtitle-layout-variants'
       const isDedup = runtimeTask.type === 'media.dedup'
       const isDownload = String(runtimeTask.type || '').startsWith('download.')
       const dedupRoot = runtimeTask.spec?.root as { path?: string } | undefined
@@ -146,6 +147,9 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       } else if (isSubtitleTransform) {
         kind = 'media'; label = '批量字幕变换'; instruction = String(runtimeTask.spec?.instruction || '批量处理字幕'); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
+      } else if (isSubtitleLayout) {
+        kind = 'media'; label = '多比例字幕布局'; instruction = String(runtimeTask.spec?.instruction || '生成响应式字幕布局'); source = firstSourcePath
+        retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isCompress) {
         kind = 'media'; label = compressMode === 'remux' ? '转码为 MP4' : `压缩到 ${Number(runtimeTask.spec?.targetMb) || 25}MB`
         instruction = compressMode === 'remux' ? '转码成 mp4' : `压缩到 ${Number(runtimeTask.spec?.targetMb) || 25}MB`; source = firstSourcePath
@@ -172,6 +176,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
                       : isSubtitleTranslate ? '字幕翻译完成（已从冻结决策恢复）'
                         : isSubtitleCueEdit ? '字幕校对完成（已从冻结决策恢复）'
                           : isSubtitleTransform ? '批量字幕变换完成（已从冻结合同恢复）'
+                            : isSubtitleLayout ? '多比例字幕布局完成（已从冻结布局恢复）'
                         : isCompress ? `${compressMode === 'remux' ? '转码' : '压缩'}完成（已从检查点恢复）`
                     : isDedup ? '重复文件检查完成（已从哈希检查点恢复）' : '视频下载完成（已从检查点恢复）'
         store.updateTask(runtimeTask.workspaceTaskId, {

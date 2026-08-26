@@ -116,12 +116,12 @@ test('renderer presents remove-segment as a recoverable edit with every timeline
   const tasks = read('src/components/agent-panel/useMediaCreativeTasks.ts')
   const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts')
   const types = read('src/types/global.d.ts')
-  assert.match(tasks, /\['media\.trim', 'media\.remove-segment', 'media\.concat-segments', 'media\.add-music', 'media\.mix-audio', 'media\.repair-audio', 'media\.rhythm-edit', 'media\.visual-effects', 'media\.smart-reframe', 'media\.visual-repair', 'media\.concat-sources', 'media\.burn-subtitles', 'media\.shift-subtitles', 'media\.mux-subtitles', 'media\.translate-subtitles', 'media\.edit-subtitle-cues', 'media\.transform-subtitles'\]\.includes\(decision\.kind\)/)
+  assert.match(tasks, /\['media\.trim', 'media\.remove-segment', 'media\.concat-segments', 'media\.add-music', 'media\.mix-audio', 'media\.repair-audio', 'media\.rhythm-edit', 'media\.visual-effects', 'media\.smart-reframe', 'media\.visual-repair', 'media\.concat-sources', 'media\.burn-subtitles', 'media\.shift-subtitles', 'media\.mux-subtitles', 'media\.translate-subtitles', 'media\.edit-subtitle-cues', 'media\.transform-subtitles', 'media\.subtitle-layout-variants'\]\.includes\(decision\.kind\)/)
   assert.match(tasks, /decision\.kind === 'media\.remove-segment' \? 'remove'/)
   assert.match(tasks, /timelineReceipt \|\| \[\]\)\.map/)
   assert.match(tasks, /start_remove_video_segment/)
   assert.match(runtime, /isRhythmEdit \|\| runtimeTask\.type === 'media\.edit-trim' \|\| runtimeTask\.type === 'media\.edit-remove' \|\| runtimeTask\.type === 'media\.edit-concat' \|\| runtimeTask\.type === 'media\.edit-music' \|\| runtimeTask\.type === 'media\.edit-audio-mix' \|\| runtimeTask\.type === 'media\.audio-repair'/)
-  assert.match(types, /kind: 'media\.trim' \| 'media\.remove-segment' \| 'media\.concat-segments' \| 'media\.add-music' \| 'media\.mix-audio' \| 'media\.repair-audio' \| 'media\.rhythm-edit' \| 'media\.visual-effects' \| 'media\.smart-reframe' \| 'media\.visual-repair' \| 'media\.concat-sources' \| 'media\.burn-subtitles' \| 'media\.shift-subtitles' \| 'media\.mux-subtitles' \| 'media\.translate-subtitles' \| 'media\.edit-subtitle-cues' \| 'media\.transform-subtitles'/)
+  assert.match(types, /kind: 'media\.trim' \| 'media\.remove-segment' \| 'media\.concat-segments' \| 'media\.add-music' \| 'media\.mix-audio' \| 'media\.repair-audio' \| 'media\.rhythm-edit' \| 'media\.visual-effects' \| 'media\.smart-reframe' \| 'media\.visual-repair' \| 'media\.concat-sources' \| 'media\.burn-subtitles' \| 'media\.shift-subtitles' \| 'media\.mux-subtitles' \| 'media\.translate-subtitles' \| 'media\.edit-subtitle-cues' \| 'media\.transform-subtitles' \| 'media\.subtitle-layout-variants'/)
 })
 
 test('concat decisions run as their own persistent task and repair from the same frozen timeline', () => {

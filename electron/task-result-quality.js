@@ -21,6 +21,7 @@ const HARD_FAILURES = new Set([
   'SPEAKER_EVIDENCE_MISSING', 'WORD_TIMING_MISSING', 'KARAOKE_PROOF_MISSING', 'KEYWORD_EMPHASIS_MISSING', 'SUBTITLE_SAFE_AREA_FAILED',
   'BRAND_TITLE_MISSING', 'BRAND_CHAPTERS_MISSING', 'BRAND_PERSON_MISSING', 'BRAND_CORNER_MISSING', 'BRAND_OUTRO_MISSING',
   'SUBTITLE_TRANSFORM_MISMATCH', 'SUBTITLE_TRANSFORM_LANGUAGE_MISSING', 'SUBTITLE_TRANSFORM_STYLE_MISSING',
+  'SUBTITLE_LAYOUT_FONT_FAILED', 'SUBTITLE_LAYOUT_LINES_FAILED', 'SUBTITLE_LAYOUT_WRAPPING_FAILED', 'SUBTITLE_LAYOUT_OCCLUSION_FAILED', 'SUBTITLE_LAYOUT_POSITION_FAILED',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -548,6 +549,25 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       add('keyword-emphasis', '关键词强调', keywordOk ? 1 : 0, 10, reason('KEYWORD_EMPHASIS_MISSING', '关键词没有绑定到真实逐词时间并产生强调', true))
       add('subtitle-safe-area', '字幕安全区避让', safeAreaOk ? 1 : 0, 10, reason('SUBTITLE_SAFE_AREA_FAILED', '字幕像素没有落在真实画面分析选择的安全区', true))
     }
+  } else if (taskType === 'media.subtitle-layout-variants') {
+    const proof = result.layoutProof; const expected = spec.decision?.subtitleLayout?.profiles || []; const profiles = Array.isArray(proof?.profiles) ? proof.profiles : []
+    const contractOk = proof?.schemaVersion === 1 && proof?.method === 'subtitle-layout-pixel-proof-v1' && proof?.verdict === 'matched' && profiles.length === expected.length && expected.every((item, index) => profiles[index]?.id === item.id && Number(profiles[index]?.width) === Number(item.width) && Number(profiles[index]?.height) === Number(item.height))
+    const fontPassed = contractOk && profiles.every((item) => Number(item.fontRatio) >= 0.045 && Number(item.fontRatio) <= 0.06)
+    const linesPassed = contractOk && profiles.every((item) => Number(item.maximumObservedLines) >= 1 && Number(item.maximumObservedLines) <= 2)
+    const wrappingPassed = contractOk && profiles.every((item) => item.wrappingMatched === true)
+    const occlusionPassed = contractOk && profiles.every((item) => item.occlusionSafe === true)
+    const positionPassed = contractOk && profiles.every((item) => item.positionMatched === true && Number(item.pixelDifference) >= 0.004)
+    const projectCapsule = result.projectCapsule; const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && outputs.includes(String(projectCapsule.currentPath || ''))
+    add('declared-success', '执行状态', success ? 1 : 0, 5, reason('RESULT_FAILED', '响应式字幕布局任务返回失败', false))
+    add('artifacts', '布局成果', outputs.length === expected.length ? artifactRatio : 0, 15, artifactFailure || reason('ARTIFACT_MISSING', '没有交付全部字幕布局文件', true))
+    add('formats', 'ASS格式', formatRatio && artifacts.every((item) => item.ext === '.ass') ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '响应式字幕布局不是ASS格式', true))
+    add('layout-contract', '画幅与分辨率合同', contractOk ? 1 : 0, 10, reason('SUBTITLE_LAYOUT_WRAPPING_FAILED', '布局成果与冻结画幅/分辨率不一致', true))
+    add('layout-font', '字号比例', fontPassed ? 1 : 0, 11, reason('SUBTITLE_LAYOUT_FONT_FAILED', '至少一个布局的字号比例不合格', true))
+    add('layout-lines', '两行上限', linesPassed ? 1 : 0, 11, reason('SUBTITLE_LAYOUT_LINES_FAILED', '至少一个布局超过两行或没有字幕行', true))
+    add('layout-wrapping', '自然断句', wrappingPassed ? 1 : 0, 11, reason('SUBTITLE_LAYOUT_WRAPPING_FAILED', '至少一个布局断句超出行宽', true))
+    add('layout-occlusion', '遮挡避让', occlusionPassed ? 1 : 0, 11, reason('SUBTITLE_LAYOUT_OCCLUSION_FAILED', '至少一个布局没有选择较安全的画面区域', true))
+    add('layout-position', '移动位置像素', positionPassed ? 1 : 0, 11, reason('SUBTITLE_LAYOUT_POSITION_FAILED', '至少一个布局的字幕像素没有落在冻结位置', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '字幕布局成果没有进入可撤销项目', true))
   } else if (taskType === 'media.transform-subtitles') {
     const proof = result.transformProof
     const expectedKinds = spec.decision?.verification?.expectedOperationKinds || []
