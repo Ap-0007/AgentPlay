@@ -20,6 +20,7 @@ const HARD_FAILURES = new Set([
   'BEAT_EVIDENCE_MISSING', 'BEAT_CUT_NOT_VISIBLE', 'HIGHLIGHT_DENSITY_MISMATCH', 'MUSIC_ALIGNMENT_MISSING', 'TAIL_FADE_MISSING',
   'SPEAKER_EVIDENCE_MISSING', 'WORD_TIMING_MISSING', 'KARAOKE_PROOF_MISSING', 'KEYWORD_EMPHASIS_MISSING', 'SUBTITLE_SAFE_AREA_FAILED',
   'BRAND_TITLE_MISSING', 'BRAND_CHAPTERS_MISSING', 'BRAND_PERSON_MISSING', 'BRAND_CORNER_MISSING', 'BRAND_OUTRO_MISSING',
+  'SUBTITLE_TRANSFORM_MISMATCH', 'SUBTITLE_TRANSFORM_LANGUAGE_MISSING', 'SUBTITLE_TRANSFORM_STYLE_MISSING',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -547,6 +548,26 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       add('keyword-emphasis', '关键词强调', keywordOk ? 1 : 0, 10, reason('KEYWORD_EMPHASIS_MISSING', '关键词没有绑定到真实逐词时间并产生强调', true))
       add('subtitle-safe-area', '字幕安全区避让', safeAreaOk ? 1 : 0, 10, reason('SUBTITLE_SAFE_AREA_FAILED', '字幕像素没有落在真实画面分析选择的安全区', true))
     }
+  } else if (taskType === 'media.transform-subtitles') {
+    const proof = result.transformProof
+    const expectedKinds = spec.decision?.verification?.expectedOperationKinds || []
+    const contractOk = proof?.schemaVersion === 1 && proof?.method === 'subtitle-transform-proof-v1' && proof?.verdict === 'matched' && JSON.stringify(proof.operationKinds) === JSON.stringify(expectedKinds)
+    const structureOk = contractOk && proof.exactStructure === true && Number(proof.sourceCueCount) > 0 && Number(proof.outputCueCount) > 0 && Number(proof.outputCueCount) === Number(result.outputCueCount)
+    const countsOk = Number(proof?.replacementsApplied) === Number(spec.decision?.subtitleTransform?.replacements?.length || 0) && Number(proof?.mergesApplied) === Number(spec.decision?.subtitleTransform?.merges?.length || 0) && Number(proof?.splitsApplied) === Number(spec.decision?.subtitleTransform?.splits?.length || 0)
+    const languageExpected = expectedKinds.includes('translate'); const languageOk = !languageExpected || (proof?.translation?.matched === true && ['中文', '英文'].includes(String(proof?.translation?.targetLang || '')))
+    const styleExpected = expectedKinds.includes('style'); const styleOk = !styleExpected || (proof?.style?.matched === true && proof?.style?.preset === spec.decision?.subtitleTransform?.style?.preset)
+    const projectCapsule = result.projectCapsule
+    const hasProjectCapsule = projectCapsule?.schemaVersion === 1 && String(projectCapsule.projectId || '').startsWith('edit-') && projectCapsule.canUndo === true && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    const expectedExt = spec.decision?.output?.container === 'ass' ? '.ass' : '.srt'
+    add('declared-success', '执行状态', success ? 1 : 0, 5, reason('RESULT_FAILED', '批量字幕任务返回失败状态', false))
+    add('artifacts', '字幕成果', artifactRatio, 15, artifactFailure)
+    add('format', '字幕格式', formatRatio && artifacts.every((item) => item.ext === expectedExt) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', `批量字幕成果不是${expectedExt}格式`, true))
+    add('transform-contract', '冻结操作清单', contractOk ? 1 : 0, 15, reason('SUBTITLE_TRANSFORM_MISMATCH', '执行回执与冻结批量字幕操作不一致', true))
+    add('transform-structure', '条目与时间结构', structureOk ? 1 : 0, 20, reason('SUBTITLE_TRANSFORM_MISMATCH', '合并、拆分或调时后的条目结构不一致', true))
+    add('transform-counts', '改字/合并/拆分计数', countsOk ? 1 : 0, 10, reason('SUBTITLE_TRANSFORM_MISMATCH', '实际变换次数与冻结合同不一致', true))
+    add('transform-language', '目标语言', languageOk ? 1 : 0, 10, reason('SUBTITLE_TRANSFORM_LANGUAGE_MISSING', '批量字幕成果没有形成请求的目标语言', true))
+    add('transform-style', '目标样式', styleOk ? 1 : 0, 10, reason('SUBTITLE_TRANSFORM_STYLE_MISSING', '批量字幕成果没有形成冻结样式', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, 5, reason('PROJECT_CAPSULE_MISSING', '批量字幕成果没有进入可撤销项目', true))
   } else if (taskType === 'media.shift-subtitles') {
     const cueCount = Number(result.cueCount)
     const sourceCueCount = Number(result.sourceCueCount)

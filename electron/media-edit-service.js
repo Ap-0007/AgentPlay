@@ -250,6 +250,67 @@ function renderSubtitleCuesAuto(cues, format) {
   return format === 'vtt' ? renderVttCues(cues) : renderSrtCues(cues)
 }
 
+function assSubtitleTime(valueMs) {
+  const centiseconds = Math.max(0, Math.round(Number(valueMs) / 10)); const hours = Math.floor(centiseconds / 360000); const minutes = Math.floor((centiseconds % 360000) / 6000); const seconds = Math.floor((centiseconds % 6000) / 100)
+  return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(centiseconds % 100).padStart(2, '0')}`
+}
+function parseAssSubtitleTime(value) {
+  const match = /^(\d+):(\d{2}):(\d{2})\.(\d{2})$/.exec(String(value || '').trim())
+  return match ? (((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * 1000 + Number(match[4]) * 10) : NaN
+}
+function escapeSubtitleAssText(value) { return String(value || '').replace(/\\/g, '＼').replace(/\{/g, '｛').replace(/\}/g, '｝').replace(/\r?\n/g, '\\N') }
+function renderStyledSubtitleAss(cues, preset) {
+  const presets = { clean: { style: 'Clean', size: 28, primary: '&H00FFFFFF', back: '&H78000000', border: 1 }, impact: { style: 'Impact', size: 34, primary: '&H004DFFFF', back: '&HC0101010', border: 3 }, documentary: { style: 'Documentary', size: 28, primary: '&H00FFFFFF', back: '&HA0181818', border: 3 } }
+  const item = presets[preset] || presets.clean
+  const style = `Style: ${item.style},Microsoft YaHei,${item.size},${item.primary},&H00FFFFFF,&H00000000,${item.back},-1,0,0,0,100,100,0,0,${item.border},2,0,2,48,48,40,1`
+  const dialogues = cues.map((cue) => `Dialogue: 0,${assSubtitleTime(cue.startMs)},${assSubtitleTime(cue.endMs)},${item.style},,0,0,0,,${escapeSubtitleAssText(cue.text)}`).join('\n')
+  return `[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n${style}\n\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n${dialogues}\n`
+}
+function parseStyledSubtitleAss(content) {
+  return String(content || '').split(/\r?\n/).filter((line) => line.startsWith('Dialogue:')).map((line) => {
+    const fields = line.slice('Dialogue:'.length).split(','); const text = fields.slice(9).join(',').replace(/\{[^}]*\}/g, '').replace(/\\N/g, '\n')
+    return { startMs: parseAssSubtitleTime(fields[1]), endMs: parseAssSubtitleTime(fields[2]), text }
+  }).filter((cue) => Number.isFinite(cue.startMs) && Number.isFinite(cue.endMs) && cue.endMs > cue.startMs)
+}
+
+function applyLocalSubtitleTransform(sourceCues, transform) {
+  const originals = sourceCues.map((cue) => ({ ...cue })); const replacements = new Map((transform.replacements || []).map((item) => [Number(item.index), String(item.text || '').trim()])); const merges = new Map(); const mergedIndexes = new Set(); const splits = new Map((transform.splits || []).map((item) => [Number(item.index), item]))
+  for (const merge of transform.merges || []) {
+    const start = Number(merge.startIndex); const end = Number(merge.endIndex)
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end <= start || end > originals.length) throw new Error(`合并第${start}到第${end}条超出字幕范围`)
+    for (let index = start; index <= end; index += 1) { if (mergedIndexes.has(index) || splits.has(index)) throw new Error(`第${index}条存在重叠结构操作`); mergedIndexes.add(index) }
+    merges.set(start, merge)
+  }
+  for (const [index, split] of splits) {
+    if (!Number.isInteger(index) || index < 1 || index > originals.length || mergedIndexes.has(index)) throw new Error(`拆分第${index}条超出范围或与合并冲突`)
+    if (!Array.isArray(split.parts) || split.parts.length !== 2 || split.parts.some((item) => !String(item || '').trim())) throw new Error(`拆分第${index}条缺少两段明确文本`)
+  }
+  for (const [index, text] of replacements) if (!Number.isInteger(index) || index < 1 || index > originals.length || !text) throw new Error(`改字第${index}条无效`)
+  const output = []
+  for (let index = 1; index <= originals.length; index += 1) {
+    if (mergedIndexes.has(index) && !merges.has(index)) continue
+    if (merges.has(index)) {
+      const merge = merges.get(index); const last = originals[Number(merge.endIndex) - 1]
+      const texts = []
+      for (let item = index; item <= Number(merge.endIndex); item += 1) texts.push(replacements.get(item) || originals[item - 1].text)
+      output.push({ startMs: originals[index - 1].startMs, endMs: last.endMs, text: texts.join(String(merge.separator || ' ')) }); continue
+    }
+    const cue = { ...originals[index - 1], text: replacements.get(index) || originals[index - 1].text }
+    if (splits.has(index)) {
+      const split = splits.get(index); const atMs = Math.round(Number(split.atSeconds) * 1000)
+      if (!(atMs >= cue.startMs + 80 && atMs <= cue.endMs - 80)) throw new Error(`第${index}条拆分秒点必须位于${(cue.startMs / 1000).toFixed(3)}到${(cue.endMs / 1000).toFixed(3)}秒之间`)
+      output.push({ startMs: cue.startMs, endMs: atMs, text: String(split.parts[0]).trim() }, { startMs: atMs, endMs: cue.endMs, text: String(split.parts[1]).trim() }); continue
+    }
+    output.push(cue)
+  }
+  const shift = transform.shift
+  if (!shift) return output
+  const offset = Math.round(Number(shift.offsetSeconds) * 1000) * (shift.direction === 'earlier' ? -1 : 1)
+  const shifted = output.map((cue) => ({ ...cue, startMs: cue.startMs + offset, endMs: cue.endMs + offset })).filter((cue) => cue.endMs > 0).map((cue) => ({ ...cue, startMs: Math.max(0, cue.startMs) }))
+  if (!shifted.length) throw new Error('批量调时会移除全部字幕，没有可交付成果')
+  return shifted
+}
+
 class MediaEditService {
   constructor({ frames, fsImpl = fs, transcription = null } = {}) {
     if (!frames) throw new Error('媒体剪辑服务缺少 FFmpeg 执行器')
@@ -1513,6 +1574,81 @@ class MediaEditService {
       }],
       summary: `已把字幕《${subtitleName}》共 ${cueCount} 条整体${direction} ${offsetSeconds.toFixed(3)} 秒（出现更${direction === '提前' ? '早' : '晚'}）${droppedCueCount > 0 ? `，${droppedCueCount} 条完全移出 0 点之前已丢弃` : ''}；原字幕文件与视频均未改动`
     }
+  }
+
+  verifySubtitleTransformOutput({ source, output, decision, engineLabel = '', signal } = {}) {
+    if (signal?.aborted) throw new Error('已取消')
+    const transform = decision?.subtitleTransform
+    if (decision?.kind !== 'media.transform-subtitles' || transform?.strategy !== 'ordered-subtitle-transform-v1') throw new Error('批量字幕变换决策无效')
+    const sourceCues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source)))
+    if (!sourceCues.length) throw new Error('源字幕没有有效SRT条目')
+    const expectedCues = applyLocalSubtitleTransform(sourceCues, transform)
+    const content = this.fs.readFileSync(output, 'utf8'); const styled = transform.style?.preset
+    const outputCues = styled ? parseStyledSubtitleAss(content) : parseSrtCues(content)
+    if (outputCues.length !== expectedCues.length || outputCues.some((cue, index) => cue.startMs !== expectedCues[index].startMs || cue.endMs !== expectedCues[index].endMs || !String(cue.text || '').trim())) throw new Error('批量字幕成果条数或时间结构与冻结决策不一致')
+    const translation = transform.translate
+    let targetLang = ''
+    let translationMatched = true
+    if (translation) {
+      const entries = expectedCues.map((cue, index) => ({ index: index + 1, start: msToSrtTime(cue.startMs), end: msToSrtTime(cue.endMs), text: cue.text }))
+      targetLang = translation.targetLang === 'auto' ? chooseOppositeTarget(entries) : translation.targetLang
+      const sample = outputCues.slice(0, 30).map((cue) => cue.text).join('\n')
+      translationMatched = targetLang === '英文' ? /[A-Za-z]/.test(sample) : /[一-鿿]/.test(sample)
+      if (translation.mode === 'bilingual') translationMatched = translationMatched && expectedCues.every((cue, index) => outputCues[index].text.includes(cue.text))
+      if (!translationMatched) throw new Error(`批量字幕成果没有形成可信${targetLang}译文`)
+    } else if (outputCues.some((cue, index) => cue.text !== expectedCues[index].text)) throw new Error('未请求翻译，但批量字幕文本与冻结结构不一致')
+    const styleMatched = !styled || (content.includes('[V4+ Styles]') && content.includes(`Style: ${styled === 'impact' ? 'Impact' : styled === 'documentary' ? 'Documentary' : 'Clean'}`) && (content.match(/^Dialogue:/gm) || []).length === expectedCues.length)
+    if (!styleMatched) throw new Error('批量字幕样式与冻结预设不一致')
+    const operationKinds = Array.isArray(transform.operationKinds) ? transform.operationKinds : []
+    if (JSON.stringify(operationKinds) !== JSON.stringify(decision.verification?.expectedOperationKinds || [])) throw new Error('批量字幕操作清单与冻结验证合同不一致')
+    const proof = {
+      schemaVersion: 1, method: 'subtitle-transform-proof-v1', verdict: 'matched', operationKinds,
+      sourceCueCount: sourceCues.length, outputCueCount: outputCues.length,
+      replacementsApplied: transform.replacements?.length || 0, mergesApplied: transform.merges?.length || 0, splitsApplied: transform.splits?.length || 0,
+      shift: { applied: Boolean(transform.shift), ...(transform.shift || {}) },
+      translation: translation ? { targetLang, mode: translation.mode, matched: translationMatched, engine: engineLabel } : { targetLang: '', mode: '', matched: true, engine: '' },
+      style: styled ? { preset: styled, matched: styleMatched } : { preset: '', matched: true }, exactStructure: true
+    }
+    return { sourceCues, expectedCues, outputCues, proof }
+  }
+
+  async transformSubtitles({ sourcePath, outputPath, decision, engine, signal, onProgress } = {}) {
+    const source = path.resolve(String(sourcePath || '')); const output = path.resolve(String(outputPath || '')); const transform = decision?.subtitleTransform
+    if (decision?.kind !== 'media.transform-subtitles' || transform?.strategy !== 'ordered-subtitle-transform-v1' || path.resolve(String(decision.subtitle?.path || '')) !== source) throw new Error('批量字幕变换决策与源字幕不一致')
+    if (path.extname(source).toLowerCase() !== '.srt') throw new Error('批量字幕变换目前只支持标准SRT输入')
+    if (!this.fs.existsSync(source) || !this.fs.statSync(source).isFile()) throw new Error('字幕文件不存在')
+    const sourceStat = this.fs.statSync(source)
+    if (sourceStat.size <= 0 || sourceStat.size > 20 * 1024 * 1024) throw new Error('字幕文件为空或超过20MB安全上限')
+    if (source === output || this.fs.existsSync(output)) throw new Error(source === output ? '禁止覆盖源字幕文件' : '成果文件已存在，为避免覆盖已停止')
+    const sourceCues = parseSrtCues(decodeSubtitleText(this.fs.readFileSync(source))); const localCues = applyLocalSubtitleTransform(sourceCues, transform)
+    let finalCues = localCues; let engineLabel = ''
+    if (transform.translate) {
+      if (!engine || typeof engine.complete !== 'function') throw new Error('批量字幕翻译缺少冻结翻译引擎')
+      const entries = localCues.map((cue, index) => ({ index: index + 1, start: msToSrtTime(cue.startMs), end: msToSrtTime(cue.endMs), text: cue.text }))
+      const targetLang = transform.translate.targetLang === 'auto' ? chooseOppositeTarget(entries) : transform.translate.targetLang
+      const { translations, failed } = await translateEntries(entries, engine.complete, { targetLang, signal, onProgress })
+      if (failed > 0 || translations.size !== entries.length) throw new Error(`批量字幕有${failed || entries.length - translations.size}条未可靠翻译，已拒绝半成品`)
+      finalCues = localCues.map((cue, index) => ({ ...cue, text: transform.translate.mode === 'bilingual' ? `${cue.text}\n${translations.get(index + 1)}` : String(translations.get(index + 1) || '') }))
+      engineLabel = String(engine.label || '')
+    }
+    const rendered = transform.style ? renderStyledSubtitleAss(finalCues, transform.style.preset) : renderSrtCues(finalCues)
+    const tempPath = `${output}.agentplay-transform-${process.pid}-${Date.now()}.tmp`
+    try {
+      this.fs.writeFileSync(tempPath, rendered, 'utf8')
+      const sourceAfter = this.fs.statSync(source)
+      if (sourceStat.size !== sourceAfter.size || Math.trunc(sourceStat.mtimeMs) !== Math.trunc(sourceAfter.mtimeMs)) throw new Error('批量字幕处理期间源文件发生变化')
+      const verified = this.verifySubtitleTransformOutput({ source, output: tempPath, decision, engineLabel, signal })
+      this.fs.renameSync(tempPath, output)
+      const proof = verified.proof; const labels = { replace: '改字', merge: '合并', split: '拆分', shift: '调时', translate: '换语言', style: '换风格' }
+      return { success: true, outputPath: output, outputs: [output], outputBytes: this.fs.statSync(output).size, sourceCueCount: proof.sourceCueCount, outputCueCount: proof.outputCueCount, transformProof: proof, timelineReceipt: proof.operationKinds.map((kind) => ({ operation: `字幕${labels[kind]}`, sourceRange: `${proof.sourceCueCount}条`, outputRange: `${proof.outputCueCount}条` })), summary: `已在一个任务中完成${proof.operationKinds.map((kind) => labels[kind]).join('、')}，生成${transform.style ? '带样式ASS' : 'SRT'}字幕；结构与语言逐项复核通过，原字幕和视频均未改动` }
+    } catch (error) { if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true }); throw error }
+  }
+
+  async verifyTransformSubtitles({ sourcePath, outputPath, decision, signal } = {}) {
+    const source = path.resolve(String(sourcePath || '')); const output = path.resolve(String(outputPath || ''))
+    if (!this.fs.existsSync(output) || this.fs.statSync(output).size <= 0) throw new Error('批量字幕成果不存在或不完整')
+    const verified = this.verifySubtitleTransformOutput({ source, output, decision, signal }); const proof = verified.proof
+    return { success: true, outputPath: output, outputs: [output], outputBytes: this.fs.statSync(output).size, sourceCueCount: proof.sourceCueCount, outputCueCount: proof.outputCueCount, transformProof: proof, summary: `已从冻结合同恢复并核验${proof.operationKinds.length}类批量字幕变换，原字幕未改动` }
   }
 
   async visualEffects({ sourcePath, outputPath, decision, signal } = {}) {

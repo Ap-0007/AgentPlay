@@ -88,6 +88,7 @@ const { reviewSemanticTranscript, reviewTopicSelection } = require('./semantic-t
 const { assertLongVideoVersionPlan, freezeLongVideoVersionPlan, planLongVideoVersions } = require('./long-video-version-service')
 const { reviewSemanticCandidateVisuals } = require('./semantic-visual-review')
 const { compileVisualEffectDecision, matchesVisualEffectInstruction } = require('./visual-effect-decision')
+const { compileSubtitleTransformDecision } = require('./subtitle-transform-decision')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const { compileRhythmEditRequest, matchesRhythmEditInstruction } = require('./rhythm-edit-decision')
@@ -1235,7 +1236,7 @@ app.whenReady().then(async () => {
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).isFile()) fs.rmSync(outputPath, { force: true })
       }
       action = type === 'media.smart-reframe' ? '清理不合格的三比例构图成果并从冻结主体轨迹重新执行' : type === 'media.audio-repair' ? '清理不合格的音频修复/分离成果并从冻结音频决策重新执行' : '清理不合格的修复/对比成果并从冻结画面修复决策重新执行'
-    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.rhythm-edit' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues') {
+    } else if (type === 'media.edit-trim' || type === 'media.edit-remove' || type === 'media.edit-concat' || type === 'media.edit-music' || type === 'media.edit-audio-mix' || type === 'media.rhythm-edit' || type === 'media.edit-visual-effects' || type === 'media.edit-concat-sources' || type === 'media.edit-burn-subtitles' || type === 'media.edit-mux-subtitles' || type === 'media.shift-subtitles' || type === 'media.translate-subtitles' || type === 'media.edit-subtitle-cues' || type === 'media.transform-subtitles') {
       const frozenValue = String(task.spec?.outputPath || '')
       const actualValue = String(result?.outputPath || result?.outputs?.[0] || '')
       const frozenOutput = frozenValue ? path.resolve(frozenValue) : ''
@@ -2715,6 +2716,38 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  persistentTaskRuntime.register('media.transform-subtitles', async ({ task, signal, checkpoint, status }) => {
+    const [subtitlePath] = validateMediaSources(task.spec.sources)
+    const decision = task.spec.decision
+    if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.transform-subtitles' || decision.subtitleTransform?.strategy !== 'ordered-subtitle-transform-v1') throw new Error('冻结的批量字幕变换决策无效')
+    assertEditDecisionList(decision)
+    if (path.resolve(String(decision.subtitle?.path || '')) !== path.resolve(subtitlePath)) throw new Error('冻结的批量字幕决策与源文件不一致')
+    assertAllowedPath(decision.subtitle?.path || '')
+    const outputExtension = decision.output?.container === 'ass' ? '.ass' : '.srt'
+    const outputPath = validatePlannedMediaOutput(task.spec.outputPath, subtitlePath, decision.output.suffix, outputExtension, task.id)
+    let engine = null
+    if (decision.subtitleTransform.translate) {
+      const engineChoice = String(task.spec.engineChoice || '')
+      if (engineChoice === 'offline') {
+        if (!offlineTranslate.availability().available) throw new Error('本地离线翻译组件已不可用，请重新安装或改配云端模型')
+        engine = { complete: (input) => offlineTranslate.jsonComplete(input), label: '本地离线翻译' }
+      } else if (engineChoice === 'cloud') {
+        const routeConfig = resolveTaskModelRoute(task.spec.modelRoute)
+        engine = { complete: ({ systemPrompt, prompt, signal: callSignal, timeoutMs }) => llmComplete({ systemPrompt, prompt, signal: callSignal, timeoutMs, modelConfig: routeConfig, taskKind: 'subtitle-translation' }), label: `${routeConfig.providerName} · ${routeConfig.model}` }
+      } else throw new Error('冻结的批量字幕翻译引擎无效')
+    }
+    status(`正在批量处理字幕《${path.basename(subtitlePath)}》：${decision.subtitleTransform.operationKinds.join('、')}`)
+    const result = fs.existsSync(outputPath)
+      ? await mediaEditService.verifyTransformSubtitles({ sourcePath: subtitlePath, outputPath, decision, signal })
+      : await mediaEditService.transformSubtitles({ sourcePath: subtitlePath, outputPath, decision, engine, signal, onProgress: ({ done, total }) => status(`正在翻译 ${done}/${total} 条`) })
+    validateMediaSources(task.spec.sources)
+    const projectCapsule = mediaEditProjects.recordEdit({ taskId: task.id, sourcePath: subtitlePath, outputPath, decision, repairing: task.checkpoint?.stage === 'quality-repair' })
+    const completed = { ...result, projectCapsule }
+    checkpoint({ stage: 'artifact-written', result: completed })
+    userAuthorizedPaths.add(path.resolve(outputPath))
+    return completed
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.dedup', async ({ task, signal, checkpoint, status }) => {
     const root = validateFrozenDirectoryRoot(task.spec.root)
     const hashCache = task.checkpoint?.hashCache && typeof task.checkpoint.hashCache === 'object' ? { ...task.checkpoint.hashCache } : {}
@@ -2814,6 +2847,8 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       let sourcePath = assertAllowedPath(input.sourcePath)
+      const subtitleTransform = compileSubtitleTransformDecision({ instruction: input.instruction, sourcePath })
+      if (subtitleTransform.matched) return subtitleTransform.decision ? { ...subtitleTransform, decision: attachEditDecisionList(subtitleTransform.decision) } : subtitleTransform
       if (matchesRhythmEditInstruction(input.instruction)) {
         const request = compileRhythmEditRequest({ instruction: input.instruction, sourcePath })
         if (!request || request.review) return request || { matched: false }
@@ -2922,7 +2957,8 @@ app.whenReady().then(async () => {
         if (path.resolve(String(decisionSource || '')) !== path.resolve(sourcePath)) throw new Error('冻结的剪辑方案与当前视频不一致')
         decision = JSON.parse(JSON.stringify(input.decision))
       } else {
-        const rawDecision = compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioRepairDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
+        const transformResult = compileSubtitleTransformDecision({ instruction: input.instruction, sourcePath })
+        const rawDecision = transformResult.decision || compileConcatSourcesDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioMixDecisionList({ instruction: input.instruction, sourcePath }) || compileAudioRepairDecisionList({ instruction: input.instruction, sourcePath }) || compileMusicDecisionList({ instruction: input.instruction, sourcePath }) || compileBurnSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileMuxSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileTranslateSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileCueEditDecisionList({ instruction: input.instruction, sourcePath }) || compileShiftSubtitlesDecisionList({ instruction: input.instruction, sourcePath }) || compileEditDecisionList({ instruction: input.instruction, sourcePath })
         decision = rawDecision ? attachEditDecisionList(rawDecision) : null
       }
       if (!decision) return { success: false, matched: false, error: '这句话还不能形成唯一剪辑时间线，请明确说“保留第4秒到第20秒”“删除第4秒到第8秒”或“把第8秒到第12秒放前面，再接第0秒到第4秒”' }
@@ -2944,7 +2980,9 @@ app.whenReady().then(async () => {
              ? 'media.edit-audio-mix'
            : decision.kind === 'media.add-music'
             ? 'media.edit-music'
-            : decision.kind === 'media.burn-subtitles'
+             : decision.kind === 'media.transform-subtitles'
+               ? 'media.transform-subtitles'
+             : decision.kind === 'media.burn-subtitles'
               ? 'media.edit-burn-subtitles'
               : decision.kind === 'media.mux-subtitles'
                 ? 'media.edit-mux-subtitles'
@@ -2955,7 +2993,7 @@ app.whenReady().then(async () => {
                     : decision.kind === 'media.shift-subtitles'
                       ? 'media.shift-subtitles'
                       : decision.kind === 'media.remove-segment' ? 'media.edit-remove' : 'media.edit-trim'
-      if (taskType !== 'media.shift-subtitles' && taskType !== 'media.translate-subtitles' && taskType !== 'media.edit-subtitle-cues' && !videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
+      if (taskType !== 'media.shift-subtitles' && taskType !== 'media.translate-subtitles' && taskType !== 'media.edit-subtitle-cues' && taskType !== 'media.transform-subtitles' && !videoFrames.availability().available) return { success: false, error: '缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载' }
       const allSourcePaths = decision.kind === 'media.visual-effects'
         ? [sourcePath, ...(decision.effectSources || []).map((item) => assertAllowedPath(item.path))]
         : decision.kind === 'media.concat-sources'
@@ -2968,20 +3006,21 @@ app.whenReady().then(async () => {
           ? [sourcePath, assertAllowedPath(decision.audio?.path || '')]
           : decision.kind === 'media.burn-subtitles' || decision.kind === 'media.mux-subtitles'
             ? [sourcePath, assertAllowedPath(decision.subtitle?.path || '')]
-         : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'
+         : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues' || decision.kind === 'media.transform-subtitles'
             ? [assertAllowedPath(decision.subtitle?.path || '')]
             : [sourcePath]
-      const outputExtension = decision.output?.container === 'vtt' ? '.vtt' : decision.output?.container === 'srt' ? '.srt' : '.mp4'
-      const outputAnchor = decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues' ? allSourcePaths[0] : sourcePath
+      const outputExtension = decision.output?.container === 'vtt' ? '.vtt' : decision.output?.container === 'srt' ? '.srt' : decision.output?.container === 'ass' ? '.ass' : '.mp4'
+      const outputAnchor = decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues' || decision.kind === 'media.transform-subtitles' ? allSourcePaths[0] : sourcePath
       // 字幕翻译：在入队前冻结引擎与模型路由；云端先过原生同意框，拒绝则回退本地离线组件（仅英译中）
       let engineChoice = ''
       let modelRoute = null
-      if (decision.kind === 'media.translate-subtitles') {
+      if (decision.kind === 'media.translate-subtitles' || (decision.kind === 'media.transform-subtitles' && decision.subtitleTransform?.translate)) {
         const subtitleText = decodeSubtitleText(fs.readFileSync(allSourcePaths[0]))
         const cueCount = parseSrtCues(subtitleText).length
         if (!cueCount) return { success: false, matched: true, error: '字幕文件里没有可识别的有效条目（需要标准 srt 时间轴）' }
         const entries = parseSrt(subtitleText)
-        const targetLang = decision.translate?.targetLang === 'auto' || !decision.translate?.targetLang ? chooseOppositeTarget(entries) : decision.translate.targetLang
+        const translation = decision.kind === 'media.transform-subtitles' ? decision.subtitleTransform.translate : decision.translate
+        const targetLang = translation?.targetLang === 'auto' || !translation?.targetLang ? chooseOppositeTarget(entries) : translation.targetLang
         const engine = pickTranslateEngine(entries, targetLang, 'auto')
         if (!engine) return { success: false, matched: true, error: `没有可用的${targetLang}翻译方式：请配置云端模型，或到模型接入中心下载本地离线翻译组件（支持英译中）` }
         if (engine.offline) {

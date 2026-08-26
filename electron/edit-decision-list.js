@@ -321,7 +321,8 @@ function buildEditDecisionList(decision) {
     'media.mux-subtitles': ['mux-subtitles', {}],
     'media.shift-subtitles': ['shift-subtitles', decision.shift],
     'media.translate-subtitles': ['translate-subtitles', decision.translate],
-    'media.edit-subtitle-cues': ['edit-subtitle-cues', decision.cueEdit]
+    'media.edit-subtitle-cues': ['edit-subtitle-cues', decision.cueEdit],
+    'media.transform-subtitles': ['transform-subtitles', decision.subtitleTransform]
   }
   if (subtitleOperations[decision.kind]) {
     const [type, rawParameters] = subtitleOperations[decision.kind]
