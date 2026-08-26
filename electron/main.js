@@ -2596,6 +2596,7 @@ app.whenReady().then(async () => {
   }, { autoResume: true })
 
   persistentTaskRuntime.register('media.edit-burn-subtitles', async ({ task, signal, checkpoint, status }) => {
+    // D5: 预览与最终烧录使用同一冻结成果；播放器不再用另一套渲染器重建“预览版”。
     const [sourcePath, frozenSubtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.burn-subtitles') throw new Error('冻结的烧录字幕决策无效')
@@ -2604,7 +2605,7 @@ app.whenReady().then(async () => {
     const subtitlePath = assertAllowedPath(decision.subtitle?.path || '')
     if (!frozenSubtitlePath || path.resolve(subtitlePath).toLowerCase() !== path.resolve(frozenSubtitlePath).toLowerCase()) throw new Error('冻结的烧录字幕任务缺少字幕文件快照或路径不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
-    status(`正在把字幕《${path.basename(String(decision.subtitle?.path || ''))}》烧录进画面`)
+    status(`正在把字幕《${path.basename(String(decision.subtitle?.path || ''))}》按同一冻结成果完成预览与最终烧录逐条对齐`)
     const result = fs.existsSync(outputPath)
       ? await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
       : await mediaEditService.burnSubtitles({ sourcePath, outputPath, decision, signal })

@@ -91,7 +91,7 @@ function compileBurnSubtitlesDecisionList({ instruction, sourcePath } = {}) {
       overwrite: false,
       suffix: `${professional ? '专业动态字幕版' : '硬字幕版'}${style?.fontSize === 'large' ? '-大字' : style?.fontSize === 'small' ? '-小字' : ''}${style?.alignment === 'top' ? '-顶部' : ''}${style?.color ? `-${style.color}` : ''}`
     },
-    verification: { toleranceSeconds: 0.2, ...(professional ? { requireProfessionalSubtitleProof: true } : {}) }
+    verification: { toleranceSeconds: 0.2, requirePreviewBurnParity: true, ...(professional ? { requireProfessionalSubtitleProof: true } : {}) }
   }
 }
 

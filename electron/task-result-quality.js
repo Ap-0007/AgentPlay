@@ -22,6 +22,7 @@ const HARD_FAILURES = new Set([
   'BRAND_TITLE_MISSING', 'BRAND_CHAPTERS_MISSING', 'BRAND_PERSON_MISSING', 'BRAND_CORNER_MISSING', 'BRAND_OUTRO_MISSING',
   'SUBTITLE_TRANSFORM_MISMATCH', 'SUBTITLE_TRANSFORM_LANGUAGE_MISSING', 'SUBTITLE_TRANSFORM_STYLE_MISSING',
   'SUBTITLE_LAYOUT_FONT_FAILED', 'SUBTITLE_LAYOUT_LINES_FAILED', 'SUBTITLE_LAYOUT_WRAPPING_FAILED', 'SUBTITLE_LAYOUT_OCCLUSION_FAILED', 'SUBTITLE_LAYOUT_POSITION_FAILED',
+  'SUBTITLE_PREVIEW_BURN_PARITY_FAILED',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -528,6 +529,24 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       && projectCapsule.canUndo === true
       && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
     const professionalRequired = taskType === 'media.edit-burn-subtitles' && spec.decision?.subtitle?.professional?.enabled === true
+    const parityRequired = taskType === 'media.edit-burn-subtitles' && spec.decision?.verification?.requirePreviewBurnParity === true
+    const parityProof = result.subtitlePreviewBurnProof
+    const parityCues = Array.isArray(parityProof?.cues) ? parityProof.cues : []
+    const parityOutput = outputs[0] ? path.resolve(outputs[0]) : ''
+    const parityOk = !parityRequired || (
+      parityProof?.schemaVersion === 1
+      && parityProof?.method === 'single-render-subtitle-preview-burn-v1'
+      && parityProof?.verdict === 'matched'
+      && parityProof?.sameArtifact === true
+      && Number(parityProof?.cueCount) > 0
+      && parityCues.length === Number(parityProof.cueCount)
+      && parityCues.every((item) => item?.matched === true && /^[a-f0-9]{64}$/i.test(String(item?.previewCueSha256 || '')) && item.previewCueSha256 === item.finalCueSha256)
+      && path.resolve(String(parityProof?.preview?.path || '')) === parityOutput
+      && path.resolve(String(parityProof?.final?.path || '')) === parityOutput
+      && /^[a-f0-9]{64}$/i.test(String(parityProof?.preview?.artifactSha256 || ''))
+      && parityProof.preview.artifactSha256 === parityProof.final.artifactSha256
+      && /^[a-f0-9]{64}$/i.test(String(parityProof?.cueLedgerSha256 || ''))
+    )
     const professionalPlan = result.professionalSubtitle
     const professionalProof = result.professionalSubtitleProof
     const speakerOk = professionalProof?.schemaVersion === 1 && professionalProof?.method === 'professional-subtitle-render-proof-v1' && professionalProof?.verdict === 'matched' && professionalProof.speakerEvidence?.method === 'decoded-pcm-acoustic-cluster-v1' && Number(professionalProof.speakerEvidence?.speakerCount) >= 1 && Number(professionalProof.speakerEvidence?.speakerCount) <= 4 && professionalProof.speakerEvidence?.anonymousLabels === true
@@ -535,13 +554,14 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     const karaokeOk = professionalProof?.karaokeEvidence?.mode === 'ass-kf' && Number(professionalProof.karaokeEvidence?.tagCount) === Number(professionalProof.wordTimingEvidence?.wordCount) && Number(professionalProof.karaokeEvidence?.matchedWordCount) === Number(professionalProof.wordTimingEvidence?.wordCount)
     const keywordOk = Array.isArray(professionalProof?.keywordEvidence?.terms) && professionalProof.keywordEvidence.terms.length > 0 && Number(professionalProof.keywordEvidence?.emphasisCount) >= 1
     const safeAreaOk = professionalProof?.safeArea?.strategy === 'frame-band-complexity-v1' && professionalProof.safeArea?.subtitleInChosenZone === true && Number(professionalProof.safeArea?.sampledFrames) > 0 && professionalProof.safeArea?.chosenZone === professionalPlan?.safeArea?.chosenZone
-    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '剪辑视频', artifactRatio, professionalRequired ? 10 : requiresFrameProof ? 20 : 25, artifactFailure)
-    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, professionalRequired ? 5 : 10, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
-    add('duration-receipt', '成品时长', durationOk ? 1 : 0, professionalRequired ? 10 : 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
-    add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, professionalRequired ? 5 : 10, timelineFailure)
+    add('declared-success', '执行状态', success ? 1 : 0, parityRequired ? 5 : 10, reason('RESULT_FAILED', '任务返回失败状态', false))
+    add('artifacts', '剪辑视频', artifactRatio, parityRequired ? (professionalRequired ? 5 : 15) : professionalRequired ? 10 : requiresFrameProof ? 20 : 25, artifactFailure)
+    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, parityRequired ? 5 : professionalRequired ? 5 : 10, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
+    add('duration-receipt', '成品时长', durationOk ? 1 : 0, parityRequired ? (professionalRequired ? 5 : 10) : professionalRequired ? 10 : 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
+    add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, parityRequired ? (professionalRequired ? 5 : 10) : professionalRequired ? 5 : 10, timelineFailure)
     if (requiresFrameProof) add('frame-proof', '帧边界证明', frameProofRatio, 10, frameProofFailure, frameProofDetail)
-    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, professionalRequired ? 10 : requiresFrameProof ? 20 : 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, parityRequired ? (professionalRequired ? 5 : 10) : professionalRequired ? 10 : requiresFrameProof ? 20 : 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+    if (parityRequired) add('subtitle-preview-burn-parity', '字幕预览与最终烧录逐条一致', parityOk ? 1 : 0, professionalRequired ? 20 : 45, reason('SUBTITLE_PREVIEW_BURN_PARITY_FAILED', '预览与最终烧录不是同一冻结成果，或至少一条字幕的文字、时间、换行、样式、位置不一致', true), parityOk ? `${parityProof.cueCount}条字幕；同一成果SHA-256 ${String(parityProof.final.artifactSha256).slice(0, 12)}…` : '')
     if (professionalRequired) {
       add('speaker-evidence', '匿名说话人声纹聚类', speakerOk ? 1 : 0, 10, reason('SPEAKER_EVIDENCE_MISSING', '缺少真实PCM声纹聚类证据，不能猜测说话人', true))
       add('word-timing', '真实逐词时间', wordTimingOk ? 1 : 0, 10, reason('WORD_TIMING_MISSING', '逐词时间未与字幕逐字对齐或不是Whisper DTW证据', true))

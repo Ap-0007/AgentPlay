@@ -133,7 +133,8 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
         const removesSegment = runtimeTask.type === 'media.edit-remove'
         const concatenatesSegments = runtimeTask.type === 'media.edit-concat'
         const segmentCount = trimDecision?.timeline?.segments?.length || 0
-        kind = 'media'; label = isRhythmEdit ? '节拍剪辑与高潮对齐' : concatenatesSegments ? `拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'} ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || (isRhythmEdit ? '按真实节拍切镜、高潮对齐并自然收束片尾' : concatenatesSegments ? `按顺序拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'}第${start}秒到第${end}秒`)); source = firstSourcePath
+        const burnsSubtitles = runtimeTask.type === 'media.edit-burn-subtitles'
+        kind = 'media'; label = burnsSubtitles ? '字幕预览与最终烧录逐条一致' : isRhythmEdit ? '节拍剪辑与高潮对齐' : concatenatesSegments ? `拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'} ${start}–${end} 秒`; instruction = String(runtimeTask.spec?.instruction || (burnsSubtitles ? '预览并烧录字幕' : isRhythmEdit ? '按真实节拍切镜、高潮对齐并自然收束片尾' : concatenatesSegments ? `按顺序拼接 ${segmentCount} 个片段` : `${removesSegment ? '删除' : '保留'}第${start}秒到第${end}秒`)); source = firstSourcePath
         retry = { kind: 'trim', instruction, sourcePath: firstSourcePath }
       } else if (isSubtitleShift) {
         kind = 'media'; label = '字幕时间调移'; instruction = String(runtimeTask.spec?.instruction || '字幕时间调移'); source = firstSourcePath

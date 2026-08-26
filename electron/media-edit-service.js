@@ -9,6 +9,7 @@ const { RhythmEditService } = require('./rhythm-edit-service')
 const { AudioExportQualityGate } = require('./audio-export-quality')
 const { ProfessionalSubtitleService } = require('./professional-subtitle-service')
 const { BrandPackageService } = require('./brand-package-service')
+const { SubtitlePreviewBurnParityService } = require('./subtitle-preview-burn-parity-service')
 const { parseSignalStatsLog, shakeScoreFromTransforms } = require('./visual-repair-service')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
@@ -322,6 +323,7 @@ class MediaEditService {
     this.rhythmEditService = new RhythmEditService({ frames, fsImpl, exportQuality: this.exportQuality })
     this.professionalSubtitleService = transcription ? new ProfessionalSubtitleService({ frames, transcription, fsImpl }) : null
     this.brandPackageService = new BrandPackageService({ frames, fsImpl })
+    this.subtitlePreviewBurnParityService = new SubtitlePreviewBurnParityService({ fsImpl })
   }
 
   async mixAudio(input = {}) { return this.audioMixService.mix(input) }
@@ -1192,9 +1194,11 @@ class MediaEditService {
     const escapedSubtitle = subtitleToBurn.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''")
     const forceStyle = burnForceStyle(decision.subtitle?.style)
     const subtitleFilter = `subtitles='${escapedSubtitle}'${forceStyle && !professionalSubtitle ? `:force_style='${forceStyle}'` : ''}`
+    const parityFrozen = await this.subtitlePreviewBurnParityService.freeze({ subtitlePath: subtitleToBurn, renderFilter: subtitleFilter })
     const sourceBefore = this.fs.statSync(source)
     const subtitleBefore = this.fs.statSync(subtitle)
     const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-edit-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
+    let renamedOutput = false
     try {
       await this.frames.run([
         '-hide_banner', '-nostdin', '-i', source,
@@ -1220,9 +1224,12 @@ class MediaEditService {
         ? await this.professionalSubtitleService.verifyRender({ sourcePath: source, outputPath: tempPath, plan: professionalSubtitle, signal })
         : null
       this.fs.renameSync(tempPath, output)
-      return this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle, professionalSubtitleProof })
+      renamedOutput = true
+      const subtitlePreviewBurnProof = await this.subtitlePreviewBurnParityService.finalize({ subtitlePath: subtitleToBurn, outputPath: output, renderFilter: subtitleFilter, frozen: parityFrozen })
+      return this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle, professionalSubtitleProof, subtitlePreviewBurnProof })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
+      if (renamedOutput && this.fs.existsSync(output)) this.fs.rmSync(output, { force: true })
       throw error
     } finally { if (this.fs.existsSync(generatedAssPath)) this.fs.rmSync(generatedAssPath, { force: true }) }
   }
@@ -2025,13 +2032,25 @@ class MediaEditService {
     }
     let professionalSubtitle = null
     let professionalSubtitleProof = null
+    let subtitlePreviewBurnProof = null
     if (isBurnSubtitles && decision.subtitle?.professional?.enabled) {
       if (!this.professionalSubtitleService) throw new Error('专业动态字幕所需逐词转写服务不可用')
       const assPath = path.join(path.dirname(output), `.${path.parse(output).name}.agentplay-professional-verify-${process.pid}-${Date.now()}.ass`)
       try {
         professionalSubtitle = await this.professionalSubtitleService.prepare({ sourcePath: source, subtitlePath: decision.subtitle.path, outputAssPath: assPath, decision, signal })
         professionalSubtitleProof = await this.professionalSubtitleService.verifyRender({ sourcePath: source, outputPath: output, plan: professionalSubtitle, signal })
+        const escaped = assPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''")
+        const filter = `subtitles='${escaped}'`
+        const frozen = await this.subtitlePreviewBurnParityService.freeze({ subtitlePath: assPath, renderFilter: filter })
+        subtitlePreviewBurnProof = await this.subtitlePreviewBurnParityService.finalize({ subtitlePath: assPath, outputPath: output, renderFilter: filter, frozen })
       } finally { if (this.fs.existsSync(assPath)) this.fs.rmSync(assPath, { force: true }) }
+    } else if (isBurnSubtitles) {
+      const subtitle = path.resolve(String(decision.subtitle?.path || ''))
+      const escaped = subtitle.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''")
+      const forceStyle = burnForceStyle(decision.subtitle?.style)
+      const filter = `subtitles='${escaped}'${forceStyle ? `:force_style='${forceStyle}'` : ''}`
+      const frozen = await this.subtitlePreviewBurnParityService.freeze({ subtitlePath: subtitle, renderFilter: filter })
+      subtitlePreviewBurnProof = await this.subtitlePreviewBurnParityService.finalize({ subtitlePath: subtitle, outputPath: output, renderFilter: filter, frozen })
     }
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
@@ -2042,7 +2061,7 @@ class MediaEditService {
           : isMusic
             ? this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof: musicAudioProof, loudnessProof: musicLoudnessProof, audioExportQc: musicAudioExportQc })
           : isBurnSubtitles
-            ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle, professionalSubtitleProof })
+            ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle, professionalSubtitleProof, subtitlePreviewBurnProof })
             : isMuxSubtitles
               ? this.muxSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
               : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof: editFrameProof })
@@ -2178,7 +2197,7 @@ class MediaEditService {
     }
   }
 
-  burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle = null, professionalSubtitleProof = null }) {
+  burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle = null, professionalSubtitleProof = null, subtitlePreviewBurnProof = null }) {
     const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
     const fullRange = `${formatTimestamp(0)} → ${formatTimestamp(sourceDuration)}`
     const style = decision.subtitle?.style
@@ -2194,14 +2213,15 @@ class MediaEditService {
       expectedDurationSeconds: sourceDuration,
       durationSeconds: Number(actualDuration.toFixed(3)),
       ...(professionalSubtitle ? { professionalSubtitle, professionalSubtitleProof } : {}),
+      ...(subtitlePreviewBurnProof ? { subtitlePreviewBurnProof, previewPath: output } : {}),
       timelineReceipt: [{
         operation: `烧录字幕（${subtitleName}）${styleText}`,
         sourceRange: fullRange,
         outputRange: fullRange
       }],
       summary: professionalSubtitle
-        ? `已把字幕《${subtitleName}》生成专业动态字幕：匿名声纹聚类 ${professionalSubtitle.speakers.speakerCount} 位说话人、${professionalSubtitle.wordTiming.wordCount} 个真实逐词高亮/卡拉OK标签、${professionalSubtitle.keywords.emphasisCount} 次关键词强调，并自动避让到${professionalSubtitle.safeArea.chosenZone === 'top' ? '顶部' : '底部'}安全区；生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
-        : `已把字幕《${subtitleName}》逐条烧录进画面${styleText}，生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
+        ? `已把字幕《${subtitleName}》生成专业动态字幕：匿名声纹聚类 ${professionalSubtitle.speakers.speakerCount} 位说话人、${professionalSubtitle.wordTiming.wordCount} 个真实逐词高亮/卡拉OK标签、${professionalSubtitle.keywords.emphasisCount} 次关键词强调，并自动避让到${professionalSubtitle.safeArea.chosenZone === 'top' ? '顶部' : '底部'}安全区；${subtitlePreviewBurnProof ? `${subtitlePreviewBurnProof.cueCount} 条字幕的预览与最终烧录使用同一冻结成果；` : ''}生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
+        : `已把字幕《${subtitleName}》逐条烧录进画面${styleText}；${subtitlePreviewBurnProof ? `${subtitlePreviewBurnProof.cueCount} 条字幕的预览与最终烧录使用同一冻结成果；` : ''}生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
     }
   }
 

@@ -17,9 +17,12 @@ if (!fs.existsSync(sourceVideo) || !fs.existsSync(subtitleFile)) throw new Error
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-packaged-burn-'))
 const installedFfmpeg = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ai-player', 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
 const stagedFfmpeg = path.join(profileDir, 'yt-dlp', 'ffmpeg-8.0.1-essentials_build')
-const evidenceDir = path.join(root, 'artifacts', 'acceptance', 'media-burn-subtitles-packaged')
+const evidenceDir = path.resolve(valueArg('--evidence-dir') || path.join(root, 'artifacts', 'acceptance', 'media-burn-subtitles-packaged'))
 const directInstruction = `把字幕 ${subtitleFile} 烧进视频`
 const vagueInstruction = '把字幕烧进视频'
+const expectedCueCount = (fs.readFileSync(subtitleFile, 'utf8').match(/-->/g) || []).length
+function srtSeconds(value) { const match = /^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})$/.exec(String(value || '').trim()); return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / 1000 : Number.NaN }
+const cueMidpoints = [...fs.readFileSync(subtitleFile, 'utf8').matchAll(/(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})/g)].map((match) => Number(((srtSeconds(match[1]) + srtSeconds(match[2])) / 2).toFixed(3)))
 
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 
@@ -165,8 +168,11 @@ try {
       const video = document.querySelector('video[data-ai-player-video="true"]')
       return input && video && video.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0 ? { duration: video.duration } : null
     }, '本地视频与对话框就绪', 60000)
+    // 模拟用户在统一入口打开/拖入字幕，先建立主进程路径授权，再把路径写进自然语言指令。
+    window.aiPlayer.menu.confirmOpenFile?.(${JSON.stringify(subtitleFile)})
+    await wait(150)
     const directPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(directInstruction)}, sourcePath: ${JSON.stringify(sourceVideo)} })
-    if (!directPlan.matched || directPlan.decision?.kind !== 'media.burn-subtitles' || !directPlan.decision.subtitle?.path) throw new Error('安装态烧录字幕计划不合格：' + JSON.stringify(directPlan).slice(0, 300))
+    if (!directPlan.matched || directPlan.decision?.kind !== 'media.burn-subtitles' || !directPlan.decision.subtitle?.path || directPlan.decision.verification?.requirePreviewBurnParity !== true) throw new Error('安装态烧录字幕计划不合格：' + JSON.stringify(directPlan).slice(0, 300))
     const vaguePlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(vagueInstruction)}, sourcePath: ${JSON.stringify(sourceVideo)} })
     if (vaguePlan.clarification?.reason !== 'missing-subtitle') throw new Error('安装态缺字幕追问不合格：' + JSON.stringify(vaguePlan).slice(0, 300))
     const resolvedPlan = await window.aiPlayer.mediaTools.planEdit({ instruction: ${JSON.stringify(subtitleFile)}, sourcePath: ${JSON.stringify(sourceVideo)}, clarificationId: vaguePlan.clarification.id })
@@ -203,13 +209,15 @@ try {
     }, '自动预览硬字幕成片', 30000)
     if (task.result?.projectCapsule?.versionCount !== 2 || task.result?.projectCapsule?.canUndo !== true) throw new Error('烧录字幕没有生成可撤销项目胶囊')
     if (!Array.isArray(task.result?.timelineReceipt) || task.result.timelineReceipt.length !== 1) throw new Error('烧录字幕没有返回时间线回执')
+    const parity = task.result?.subtitlePreviewBurnProof
+    if (parity?.method !== 'single-render-subtitle-preview-burn-v1' || parity?.verdict !== 'matched' || parity?.sameArtifact !== true || parity?.cueCount !== ${expectedCueCount} || parity?.cues?.length !== ${expectedCueCount} || parity.cues.some((cue) => cue.matched !== true || cue.previewCueSha256 !== cue.finalCueSha256) || parity.preview?.path !== task.result.outputPath || parity.final?.path !== task.result.outputPath || parity.preview?.artifactSha256 !== parity.final?.artifactSha256 || task.result.previewPath !== task.result.outputPath) throw new Error('D5预览/烧录逐条一致性证据不合格：' + JSON.stringify(parity).slice(0, 1800))
     const bodyText = document.body.innerText
     return {
       version: window.aiPlayer.version,
       initialDuration: initial.duration,
       task,
       preview,
-      uiReceiptVisible: bodyText.includes('原文件与字幕文件均未改动') && bodyText.includes('烧录字幕（')
+      uiReceiptVisible: bodyText.includes('原文件与字幕文件均未改动') && bodyText.includes('烧录字幕（') && bodyText.includes('预览与最终烧录使用同一冻结成果')
     }
   })()`, true)
   const screenshot = await session.command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
@@ -236,18 +244,24 @@ try {
     await runExecutable(ffmpegPath, ['-hide_banner', '-nostdin', '-ss', String(seconds), '-i', file, '-frames:v', '1', '-vf', 'scale=32:32,format=gray', '-f', 'rawvideo', '-y', target])
     return fs.readFileSync(target)
   }
-  const activeDiff = meanAbsDiff(await readGray(sourceVideo, 2, 'src-active'), await readGray(outputPath, 2, 'out-active'))
   const quietDiff = meanAbsDiff(await readGray(sourceVideo, 3.9, 'src-quiet'), await readGray(outputPath, 3.9, 'out-quiet'))
-  if (!(activeDiff > 0.8 && activeDiff > quietDiff * 2)) throw new Error(`安装态字幕烧录帧校验失败：活跃 ${activeDiff} / 安静 ${quietDiff}`)
-  const frameProofPath = path.join(evidenceDir, 'burned-frame-2s.png')
-  await runExecutable(ffmpegPath, ['-hide_banner', '-nostdin', '-ss', '2', '-i', outputPath, '-frames:v', '1', '-y', frameProofPath])
-  for (const name of ['src-active', 'out-active', 'src-quiet', 'out-quiet']) fs.rmSync(path.join(evidenceDir, `${name}.gray`), { force: true })
+  const cueFrameDiffs = []
+  for (let index = 0; index < cueMidpoints.length; index += 1) {
+    const seconds = cueMidpoints[index]
+    const difference = meanAbsDiff(await readGray(sourceVideo, seconds, `src-cue-${index + 1}`), await readGray(outputPath, seconds, `out-cue-${index + 1}`))
+    cueFrameDiffs.push({ index: index + 1, seconds, difference })
+  }
+  const weakCue = cueFrameDiffs.find((item) => !(item.difference > 0.3 && item.difference > quietDiff * 2))
+  if (weakCue) throw new Error(`安装态第${weakCue.index}条字幕像素校验失败：活跃 ${weakCue.difference} / 安静 ${quietDiff}`)
+  const frameProofPath = path.join(evidenceDir, `burned-frame-cue-1-${cueMidpoints[0]}s.png`)
+  await runExecutable(ffmpegPath, ['-hide_banner', '-nostdin', '-ss', String(cueMidpoints[0]), '-i', outputPath, '-frames:v', '1', '-y', frameProofPath])
+  for (const name of ['src-quiet', 'out-quiet', ...cueMidpoints.flatMap((_, index) => [`src-cue-${index + 1}`, `out-cue-${index + 1}`])]) fs.rmSync(path.join(evidenceDir, `${name}.gray`), { force: true })
   const persistedOutputPath = path.join(evidenceDir, 'packaged-burn-subtitles-4s.mp4')
   fs.copyFileSync(outputPath, persistedOutputPath)
-  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceVideo, subtitleFile, videoBefore, videoAfter, srtBefore, srtAfter, outputBytes: fs.statSync(outputPath).size, outputDuration, frameEvidence: { activeDiff, quietDiff }, frameProofPath, persistedOutputPath, screenshotPath, pageResult }
+  const receipt = { passed: true, checkedAt: new Date().toISOString(), executable, sourceVideo, subtitleFile, expectedCueCount, videoBefore, videoAfter, srtBefore, srtAfter, outputBytes: fs.statSync(outputPath).size, outputDuration, frameEvidence: { cueFrameDiffs, quietDiff }, frameProofPath, persistedOutputPath, screenshotPath, pageResult }
   const receiptPath = path.join(evidenceDir, 'receipt.json')
   fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
-  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, outputDuration, activeDiff, quietDiff, qualityScore: pageResult.task.quality?.score, persistedOutputPath, frameProofPath }, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify({ passed: true, receiptPath, screenshotPath, outputDuration, cueFrameDiffs, quietDiff, cueCount: pageResult.task.result?.subtitlePreviewBurnProof?.cueCount, sameArtifact: pageResult.task.result?.subtitlePreviewBurnProof?.sameArtifact, qualityScore: pageResult.task.quality?.score, persistedOutputPath, frameProofPath }, null, 2)}\n`)
 } finally {
   if (session) await closeSession(session)
   cleanup()

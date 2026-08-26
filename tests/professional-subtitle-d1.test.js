@@ -175,6 +175,12 @@ test('D1 quality is 100 only when all five professional subtitle proofs are pres
     success: true, outputs: [output], expectedDurationSeconds: 5.5, durationSeconds: 5.52,
     timelineReceipt: [{ sourceRange: '00:00.000 → 00:05.500', outputRange: '00:00.000 → 00:05.500' }],
     professionalSubtitle, professionalSubtitleProof: proof,
+    subtitlePreviewBurnProof: {
+      schemaVersion: 1, method: 'single-render-subtitle-preview-burn-v1', verdict: 'matched', sameArtifact: true,
+      cueCount: 1, cueLedgerSha256: 'b'.repeat(64),
+      preview: { path: output, artifactSha256: 'c'.repeat(64) }, final: { path: output, artifactSha256: 'c'.repeat(64) },
+      cues: [{ index: 1, startMs: 500, endMs: 1500, previewCueSha256: 'a'.repeat(64), finalCueSha256: 'a'.repeat(64), matched: true }]
+    },
     projectCapsule: { schemaVersion: 1, projectId: 'edit-d1', versionId: 'version-d1', currentPath: output, versionCount: 2, cursor: 1, canUndo: true }
   }
   const passed = evaluateTaskResult('media.edit-burn-subtitles', result, { decision })
