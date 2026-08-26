@@ -25,7 +25,8 @@ const HARD_FAILURES = new Set([
   'SUBTITLE_PREVIEW_BURN_PARITY_FAILED',
   'AI_ASSET_RECEIPT_MISSING', 'AI_ASSET_PROVENANCE_MISMATCH', 'AI_ASSET_SOURCE_UPLOAD_VIOLATION', 'AI_ASSET_MEDIA_INVALID', 'AI_ASSET_APPROVAL_MISSING', 'AI_ASSET_RECOVERY_REPEAT',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
-  'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
+  'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE',
+  'BATCH_EDIT_RECEIPT_MISSING', 'BATCH_EDIT_ISOLATION_FAILED'
 ])
 
 function uniqueOutputs(result = {}) {
@@ -113,6 +114,24 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
     add('declared-success', '执行状态', success ? 1 : 0, 20, reason('RESULT_FAILED', '任务返回失败状态', false))
     add('scan-count', '扫描计数', Number.isFinite(Number(result.filesScanned)) && Number(result.filesScanned) >= 0 ? 1 : 0, 40, reason('SCAN_COUNT_MISSING', '缺少扫描文件计数', true))
     add('duplicate-list', '重复结果结构', Array.isArray(result.duplicates) ? 1 : 0, 40, reason('DUPLICATE_LIST_MISSING', '缺少重复文件结果列表', true))
+  } else if (taskType === 'media.batch-edit') {
+    const receipt = result.batchEditReceipt
+    const items = Array.isArray(receipt?.items) ? receipt.items : []
+    const expected = Array.isArray(spec.items) ? spec.items.length : 0
+    const successes = items.filter((item) => item?.state === 'succeeded')
+    const failures = items.filter((item) => item?.state === 'failed')
+    const terminal = expected >= 2 && items.length === expected && receipt?.everyItemTerminal === true && Number(receipt?.total) === expected
+    const countsMatch = Number(receipt?.successCount) === successes.length && Number(receipt?.failureCount) === failures.length && successes.length + failures.length === expected
+    const successPaths = new Set(successes.map((item) => path.resolve(String(item?.outputPath || ''))))
+    const outputMatch = outputs.length === successes.length && outputs.every((outputPath) => successPaths.has(path.resolve(outputPath)))
+    const successOk = successes.every((item) => Number(item?.qualityScore) === 100 && /^[a-f0-9]+$/i.test(String(item?.sourceFingerprint || '')) && inspectArtifact(item.outputPath).formatOk)
+    const failuresIsolated = failures.every((item) => item?.failure?.code && item?.failure?.message && !item?.outputPath)
+    const receiptOk = receipt?.schemaVersion === 1 && receipt?.method === 'independent-media-edit-batch-v1' && receipt?.planDigest === spec.planDigest && ['matched', 'complete-with-isolated-failures'].includes(receipt?.verdict)
+    add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '批量编辑返回失败状态', false))
+    add('batch-edit-receipt', '批量编辑冻结回执', receiptOk ? 1 : 0, 20, reason('BATCH_EDIT_RECEIPT_MISSING', '缺少有效的批量编辑冻结回执', false))
+    add('terminal-items', '逐条终态与计数', terminal && countsMatch ? 1 : 0, 20, reason('BATCH_EDIT_ISOLATION_FAILED', '批量编辑没有逐条进入独立终态', false))
+    add('successful-artifacts', '成功项逐条质量', successOk && outputMatch && successes.length > 0 ? 1 : 0, 30, reason('BATCH_EDIT_ISOLATION_FAILED', '成功项的成果、来源指纹或质量分不完整', false))
+    add('failed-isolation', '失败项隔离', failuresIsolated ? 1 : 0, 20, reason('BATCH_EDIT_ISOLATION_FAILED', '失败项仍携带成果或缺少稳定失败原因', false))
   } else if (taskType === 'media.batch') {
     const results = Array.isArray(result.results) ? result.results : []
     const expected = Math.max(results.length, Array.isArray(spec.sources) ? spec.sources.length : 0)
@@ -743,6 +762,7 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
 
 function classifyTaskFailure(error) {
   const message = error instanceof Error ? error.message : String(error || '任务执行失败')
+  if (/超出.*(?:时长|范围)|结束时间.*(?:超出|大于)|out of (?:bounds|range)/i.test(message)) return { code: 'MEDIA_RANGE_OUT_OF_BOUNDS', message, retryable: false }
   if (/context size|context length|上下文|token.*(?:exceed|limit)|exceed.*token/i.test(message)) return { code: 'MODEL_CONTEXT_EXCEEDED', message: '模型上下文容量不足，请减少内容或切换大上下文模型', retryable: true }
   if (/源.*(?:变化|不存在|移动)|source.*(?:changed|missing)|fingerprint/i.test(message)) return { code: 'SOURCE_CHANGED', message: '源文件已变化或不存在，请重新选择后执行', retryable: false }
   if (/ffmpeg|ffprobe|whisper|组件.*(?:缺少|未安装)|component.*missing/i.test(message)) return { code: 'COMPONENT_MISSING', message: '所需本地组件未安装或不可用，请先完成组件安装', retryable: true }

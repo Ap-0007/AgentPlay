@@ -159,7 +159,9 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     navigateHistory: (input) => ipcRenderer.invoke('media:edit-history', input),
     trim: (input) => ipcRenderer.invoke('media:trim', input),
     compress: (input) => ipcRenderer.invoke('media:compress', input),
-    cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId)
+    cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId),
+    planBatchEdit: (input) => ipcRenderer.invoke('media:batch-edit-plan', input),
+    runBatchEdit: (input) => ipcRenderer.invoke('media:batch-edit-run', input)
   },
   personalEditSkills: {
     plan: (input) => ipcRenderer.invoke('personalEditSkills:plan', input),

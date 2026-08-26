@@ -286,7 +286,7 @@ export default function AgentPanel() {
     isVideoGenerationIntent,
     runRecutShort,
     runVideoGenTask, runAiAssetBundleTask, runPersonalEditSkillCommand,
-    runBatchTask,
+    runBatchTask, runBatchEditTask,
     runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
     runCompressTask,
     runDedupTask,
@@ -314,7 +314,7 @@ export default function AgentPanel() {
 
   const routeTextSend = createIntentRouter({
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
-    isVideoGenerationIntent, runBatchTask, runCrossMaterialQuestion, runVideoGenTask, runAiAssetBundleTask, runPersonalEditSkillCommand, runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
+    isVideoGenerationIntent, runBatchTask, runBatchEditTask, runCrossMaterialQuestion, runVideoGenTask, runAiAssetBundleTask, runPersonalEditSkillCommand, runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
     runCompressTask, runDedupTask, runDocumentTask: runDocTask, runOutcomeWorkflow, setAnalysisFormat,
     runAnalysisTask, send
   })

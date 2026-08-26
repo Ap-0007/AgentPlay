@@ -20,6 +20,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isRecut = runtimeTask.type === 'creative.recut-short'
       const isCreative = isVideoGeneration || isRecut
       const isBatch = runtimeTask.type === 'media.batch'
+      const isBatchEdit = runtimeTask.type === 'media.batch-edit'
       const isCompress = runtimeTask.type === 'media.compress'
       const isVersionBundle = runtimeTask.type === 'media.version-bundle'
       const isVisualEffects = runtimeTask.type === 'media.edit-visual-effects'
@@ -36,9 +37,12 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       const isDedup = runtimeTask.type === 'media.dedup'
       const isDownload = String(runtimeTask.type || '').startsWith('download.')
       const dedupRoot = runtimeTask.spec?.root as { path?: string } | undefined
+      const batchEditSourceNames = Array.isArray(runtimeTask.spec?.items)
+        ? (runtimeTask.spec.items as Array<{ sourceName?: string }>).map((item) => String(item?.sourceName || '')).filter(Boolean)
+        : []
       const sourceNames = Array.isArray(runtimeTask.spec?.sources)
         ? runtimeTask.spec.sources.map((item) => String(item?.path || '').split(/[\\/]/).pop() || '').filter(Boolean)
-        : []
+        : batchEditSourceNames
       const firstSourcePath = Array.isArray(runtimeTask.spec?.sources) ? String(runtimeTask.spec.sources[0]?.path || '') : ''
       const allOutputPaths = Array.isArray(runtimeTask.result?.outputs)
         ? runtimeTask.result.outputs.map(String)
@@ -118,6 +122,10 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
       } else if (isCreative) {
         kind = 'creative'; label = isRecut ? '生成重构短片' : 'AI 生成视频'; instruction = String(runtimeTask.spec?.instruction || runtimeTask.spec?.prompt || '')
         source = isRecut ? String(runtimeTask.spec?.mediaName || '') : ''; retry = isVideoGeneration ? { kind: 'video-gen', instruction } : null
+      } else if (isBatchEdit) {
+        const receipt = runtimeTask.result?.batchEditReceipt as { total?: number; successCount?: number; failureCount?: number } | undefined
+        kind = 'media'; label = `批量编辑 ${Number(receipt?.total) || sourceNames.length} 个视频`
+        instruction = String(runtimeTask.spec?.instruction || '批量编辑'); source = sourceNames.join('、'); retry = null
       } else if (isBatch) {
         kind = 'media'; label = batchKind === 'transcribe' ? `批量转写 ${sourceNames.length} 个文件` : `批量压缩 ${sourceNames.length} 个视频`
         instruction = batchKind === 'transcribe' ? '全部转写' : '全部压缩'; source = sourceNames.join('、'); retry = null
@@ -175,6 +183,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
             : isSubtitle ? '字幕生成完成（已从检查点恢复）'
               : isAiAssets ? 'AI素材包完成（已从来源与哈希检查点恢复）'
               : isCreative ? '创作任务完成（已从检查点恢复）'
+                : isBatchEdit ? '批量编辑完成（成功项已交付，失败项已隔离）'
                 : isBatch ? `批量${batchKind === 'transcribe' ? '转写' : '压缩'}完成（已从检查点恢复）`
                   : isVersionBundle ? '长视频多版本完成（已从共享证据检查点恢复）'
                   : isSmartReframe ? '三比例主体跟踪完成（已从冻结关键帧恢复）'
@@ -193,7 +202,7 @@ export default function usePersistentTaskRuntime(requestIdRef: CurrentRef<string
           evidence: deliveryEvidence, quality: runtimeTask.quality || null, repairHistory: runtimeTask.repairHistory || [], failure: runtimeTask.failure || null
         })
         const aiShotPath = isAiAssets ? ((runtimeTask.result?.aiAssetReceipt as { artifacts?: Array<{ kind?: string; path?: string }> } | undefined)?.artifacts || []).find((item) => item.kind === 'shot')?.path : ''
-        if ((isDownload || isCreative || isTimelineEdit || isVersionBundle || isVisualEffects || isSmartReframe || isVisualRepair || Boolean(aiShotPath)) && fromEvent && (aiShotPath || outputPaths[0]) && !surfacedOutputs.has(runtimeTask.id)) {
+        if ((isDownload || isCreative || isTimelineEdit || isBatchEdit || isVersionBundle || isVisualEffects || isSmartReframe || isVisualRepair || Boolean(aiShotPath)) && fromEvent && (aiShotPath || outputPaths[0]) && !surfacedOutputs.has(runtimeTask.id)) {
           surfacedOutputs.add(runtimeTask.id)
           window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: aiShotPath || outputPaths[0] }))
         }

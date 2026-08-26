@@ -12,6 +12,7 @@ const TYPE_LABELS = Object.freeze({
   'creative.video-generate': 'AI 视频创作',
   'creative.recut-short': '视频重构',
   'media.batch': '批量媒体任务',
+  'media.batch-edit': '批量视频编辑',
   'media.compress': '视频压缩'
 })
 

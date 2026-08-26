@@ -67,7 +67,7 @@ export interface WorkspaceTaskFailure {
 }
 
 export interface WorkspaceTaskRetry {
-  kind: 'doc' | 'analysis' | 'outcome' | 'cross-qa' | 'download' | 'link-analysis' | 'compress' | 'trim' | 'versions' | 'video-gen' | 'ai-assets' | 'batch' | 'dedup' | 'recut'
+  kind: 'doc' | 'analysis' | 'outcome' | 'cross-qa' | 'download' | 'link-analysis' | 'compress' | 'trim' | 'versions' | 'video-gen' | 'ai-assets' | 'batch' | 'batch-edit' | 'dedup' | 'recut'
   instruction?: string
   url?: string
   sourcePath?: string

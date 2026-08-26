@@ -94,6 +94,8 @@ const { SubtitleLayoutService } = require('./subtitle-layout-service')
 const { compileAiAssetBundleDecision } = require('./ai-asset-bundle-decision')
 const { AiAssetBundleService } = require('./ai-asset-bundle-service')
 const { PersonalEditSkillStore, compilePersonalEditSkillCommand } = require('./personal-edit-skill-service')
+const { compileBatchEditPlan, assertBatchEditPlan } = require('./batch-edit-plan')
+const { BatchEditService } = require('./batch-edit-service')
 const { SmartReframePlanner, matchesSmartReframeInstruction } = require('./smart-reframe-service')
 const { VisualRepairPlanner, matchesVisualRepairInstruction } = require('./visual-repair-service')
 const { compileRhythmEditRequest, matchesRhythmEditInstruction } = require('./rhythm-edit-decision')
@@ -2742,6 +2744,55 @@ app.whenReady().then(async () => {
     return completed
   }, { autoResume: true })
 
+  const batchEditService = new BatchEditService({
+    executeItem: async ({ item, task, signal, index }) => {
+      const sourcePaths = validateMediaSources(item.sources)
+      const [sourcePath, ...dependencyPaths] = sourcePaths
+      const decision = item.decision
+      assertEditDecisionList(decision)
+      personalEditSkills.assertReceipt(decision.personalEditSkill)
+      if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的批量编辑决策与源视频不一致')
+      const outputPath = validatePlannedMediaOutput(item.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id, index)
+      let result
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+        result = await mediaEditService.verify({ sourcePath, outputPath, decision, signal })
+      } else if (decision.kind === 'media.trim') {
+        result = await mediaEditService.trim({ sourcePath, outputPath, decision, signal })
+      } else if (decision.kind === 'media.remove-segment') {
+        result = await mediaEditService.removeSegment({ sourcePath, outputPath, decision, signal })
+      } else if (decision.kind === 'media.add-music') {
+        const audioPath = assertAllowedPath(decision.audio?.path || '')
+        if (dependencyPaths.length !== 1 || path.resolve(audioPath).toLowerCase() !== path.resolve(dependencyPaths[0]).toLowerCase()) throw new Error('批量配乐依赖快照不一致')
+        result = await mediaEditService.addMusic({ sourcePath, outputPath, decision: { ...decision, audio: { ...decision.audio, path: audioPath } }, signal })
+      } else if (decision.kind === 'media.visual-effects') {
+        const expected = (decision.effectSources || []).map((entry) => path.resolve(String(entry?.path || '')).toLowerCase())
+        if (expected.length !== dependencyPaths.length || expected.some((entry, dependencyIndex) => entry !== path.resolve(dependencyPaths[dependencyIndex]).toLowerCase())) throw new Error('批量视觉效果依赖快照不一致')
+        result = await mediaEditService.visualEffects({ sourcePath, outputPath, decision, signal })
+        const visualQc = await visualExportQuality.inspect({ sourcePath, artifacts: [{ path: outputPath, role: 'visual-effects', expectedDimensions: result.effectReceipt?.outputDimensions, allowBlackBars: decision.effects.some((entry) => entry.type === 'scale' && Number(entry.factor) < 1) }], profile: 'e3-batch-visual-effects', signal })
+        if (!visualQc.passed) throw new Error(`统一视觉导出质量门失败：${visualQc.failures.map((entry) => entry.code).join('、')}`)
+        result = { ...result, visualQc }
+      } else {
+        throw new Error(`不支持批量执行 ${decision.kind}`)
+      }
+      validateMediaSources(item.sources)
+      const projectCapsule = mediaEditProjects.recordEdit({ taskId: `${task.id}:${item.id}`, sourcePath, outputPath, decision, repairing: false })
+      const completed = { ...result, outputs: [outputPath], projectCapsule }
+      userAuthorizedPaths.add(path.resolve(outputPath))
+      return completed
+    },
+    evaluateItem: evaluateTaskResult,
+    classifyFailure: classifyTaskFailure,
+    cleanupOutput: async (outputPath) => {
+      const resolved = path.resolve(String(outputPath || ''))
+      if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) fs.rmSync(resolved, { force: true })
+    }
+  })
+  persistentTaskRuntime.register('media.batch-edit', async ({ task, signal, checkpoint, status }) => {
+    if (task.checkpoint?.stage === 'artifact-written' && task.checkpoint?.result && outputsStillExist(task.checkpoint.result)) return task.checkpoint.result
+    assertBatchEditPlan(task.spec.plan)
+    return batchEditService.run({ task, signal, checkpoint, status })
+  }, { autoResume: true })
+
   persistentTaskRuntime.register('media.transform-subtitles', async ({ task, signal, checkpoint, status }) => {
     const [subtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
@@ -2886,6 +2937,56 @@ app.whenReady().then(async () => {
       return { ...task.result, requestId }
     } catch (error) {
       return { success: false, requestId, error: error instanceof Error ? error.message : String(error), results: [], kind }
+    }
+  })
+
+  ipcMain.handle('media:batch-edit-plan', (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      const tokens = Array.isArray(input.tokens) ? input.tokens.slice(0, 20).map(String) : []
+      const sourcePaths = tokens.length
+        ? tokens.map(documentSelectionFromToken)
+        : (Array.isArray(input.sourcePaths) ? input.sourcePaths.slice(0, 20).map((item) => assertAllowedPath(item)) : [])
+      return compileBatchEditPlan({
+        instruction: input.instruction,
+        sourcePaths,
+        applyDecision: (decision) => attachEditDecisionList(personalEditSkills.applyDecision(decision, { instruction: input.instruction }))
+      })
+    } catch (error) {
+      return { matched: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.handle('media:batch-edit-run', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'media-batch-edit')
+    try {
+      const plan = JSON.parse(JSON.stringify(input.plan || {}))
+      assertBatchEditPlan(plan)
+      if (!videoFrames.availability().available) throw new Error('缺少 ffmpeg 组件（随 yt-dlp 组件包提供），请先在模型接入中心下载')
+      const items = plan.items.map((entry, index) => {
+        const sourcePath = assertAllowedPath(entry.sourcePath)
+        const dependencies = (entry.dependencies || []).map((dependency) => assertAllowedPath(dependency))
+        assertEditDecisionList(entry.decision)
+        personalEditSkills.assertReceipt(entry.decision.personalEditSkill)
+        return {
+          ...entry,
+          sourceName: path.basename(sourcePath),
+          sources: snapshotMediaSources([sourcePath, ...dependencies]),
+          outputPath: plannedMediaOutput(sourcePath, entry.decision.output.suffix, '.mp4', requestId, index)
+        }
+      })
+      persistentTaskRuntime.enqueue({
+        id: requestId,
+        type: 'media.batch-edit',
+        workspaceTaskId: input.workspaceTaskId,
+        spec: { instruction: plan.instruction, plan, planDigest: plan.digest, items }
+      })
+      const task = await persistentTaskRuntime.run(requestId)
+      if (task.state !== 'completed') return { ...(task.checkpoint?.result || {}), success: false, requestId, cancelled: task.state === 'cancelled', error: task.failure?.message || task.error || '批量编辑未完成' }
+      return { ...task.result, requestId }
+    } catch (error) {
+      return { success: false, requestId, error: error instanceof Error ? error.message : String(error) }
     }
   })
 

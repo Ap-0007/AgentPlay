@@ -14,6 +14,7 @@ type IntentRouterOptions = {
   setLinkChoice: (choice: LinkChoice | null) => void
   isVideoGenerationIntent: (text: string) => boolean
   runBatchTask: (text: string) => Promise<void>
+  runBatchEditTask: (text: string) => Promise<boolean>
   runCrossMaterialQuestion: (text: string) => Promise<boolean>
   runVideoGenTask: (text: string) => Promise<void>
   runAiAssetBundleTask: (text: string) => Promise<boolean>
@@ -45,7 +46,7 @@ const LIBRARY_INTENTS: Array<[RegExp, string, string]> = [
 export function createIntentRouter(options: IntentRouterOptions) {
   const {
     inputText, attachments, agentMode, addMessage, setInputText, setLinkChoice,
-    isVideoGenerationIntent, runBatchTask, runCrossMaterialQuestion, runVideoGenTask, runAiAssetBundleTask, runPersonalEditSkillCommand, runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
+    isVideoGenerationIntent, runBatchTask, runBatchEditTask, runCrossMaterialQuestion, runVideoGenTask, runAiAssetBundleTask, runPersonalEditSkillCommand, runEditHistoryTask, runTrimTask, runAudioMixAttachmentTask,
     runCompressTask, runDedupTask, runDocumentTask, runOutcomeWorkflow, setAnalysisFormat,
     runAnalysisTask, send
   } = options
@@ -64,6 +65,9 @@ export function createIntentRouter(options: IntentRouterOptions) {
     if (attachments.length > 0 && BATCH_SCOPE_INTENT.test(text) && BATCH_ACTION_INTENT.test(text) && window.aiPlayer?.mediaBatch) {
       await runBatchTask(text)
       return
+    }
+    if (attachments.filter((file) => /\.(?:mp4|mkv|mov|webm|ts|m4v|wmv|flv|avi)$/i.test(file.ext)).length >= 2 && BATCH_SCOPE_INTENT.test(text)) {
+      if (await runBatchEditTask(text)) return
     }
     if (await runCrossMaterialQuestion(text)) return
     if (await runPersonalEditSkillCommand(text)) return

@@ -7,6 +7,7 @@ import type { AgentAttachment, PendingTaskKind } from './types'
 type CurrentRef<T> = { current: T }
 type RecutOffer = { reportText: string; mediaName: string }
 type BatchInput = { instruction: string; targets: AgentAttachment[] }
+type BatchEditInput = { instruction: string; targets: AgentAttachment[] }
 type CompressInput = {
   instruction: string
   sourcePath: string
@@ -65,6 +66,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
   } = options
   const recutInputRef = useRef<RecutOffer | null>(null)
   const batchInputRef = useRef<BatchInput>({ instruction: '', targets: [] })
+  const batchEditInputRef = useRef<BatchEditInput>({ instruction: '', targets: [] })
   const compressInputRef = useRef<CompressInput>({ instruction: '', sourcePath: '', targetMb: 25, mode: 'compress' })
   const trimInputRef = useRef<TrimInput>({ instruction: '', sourcePath: '', startSeconds: 0, endSeconds: 0 })
   const pendingEditClarificationRef = useRef<MediaEditClarification | null>(null)
@@ -247,6 +249,52 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
       releaseCancelableRequest(requestId)
       busyRef.current = false
     }
+  }
+
+  const runBatchEditTask = async (text: string, targetOverride?: AgentAttachment[]): Promise<boolean> => {
+    if (busyRef.current) return false
+    if (!text || !window.aiPlayer?.mediaTools?.planBatchEdit || !window.aiPlayer?.mediaTools?.runBatchEdit) return false
+    const targets = targetOverride || attachments.filter((file) => VIDEO_EXTENSIONS.has(file.ext))
+    if (targets.length < 2) return false
+    const planned = await window.aiPlayer.mediaTools.planBatchEdit({ instruction: text, tokens: targets.map((file) => file.token) })
+    if (!planned?.matched || !planned.plan) {
+      addMessage('user', text)
+      setInputText('')
+      addMessage('agent', `[错误] ${planned?.error || '这句话还不能形成同一套批量编辑方案'}`)
+      return true
+    }
+    busyRef.current = true
+    batchEditInputRef.current = { instruction: text, targets: [...targets] }
+    if (!targetOverride) {
+      addMessage('user', text)
+      setInputText('')
+    }
+    executionTaskIdRef.current = startTask({
+      kind: 'media', label: `批量编辑 ${targets.length} 个视频`, phase: 'running', status: '正在冻结统一方案…', instruction: text,
+      source: targets.map((file) => file.name).join('、'), retry: { kind: 'batch-edit', instruction: text }
+    })
+    const requestId = `batch-edit-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    pendingTaskRef.current = 'batch-edit'
+    bindCancelableRequest(requestId)
+    try {
+      const result = await window.aiPlayer.mediaTools.runBatchEdit({ plan: planned.plan, requestId, workspaceTaskId: executionTaskIdRef.current })
+      if (!result?.success) throw new Error(result?.error || '批量编辑失败')
+      const succeeded = (result.results || []).filter((item) => item.state === 'succeeded')
+      const failed = (result.results || []).filter((item) => item.state === 'failed')
+      const outputs = succeeded.map((item) => item.outputPath).filter(Boolean) as string[]
+      completeExecutionTask({ outputs, summary: result.summary || `批量编辑完成：成功 ${succeeded.length}/${targets.length}` })
+      addMessage('agent', `${result.summary || `批量编辑完成：成功 ${succeeded.length}/${targets.length}`}${failed.length ? `\n失败项：${failed.map((item) => `${item.sourceName}（${item.failure?.message || '未完成'}）`).join('；')}` : ''}`)
+      if (outputs[0]) window.dispatchEvent(new CustomEvent('ai-player-play-file', { detail: outputs[0] }))
+    } catch (error) {
+      if (executionWasCancelled()) return true
+      const message = error instanceof Error ? error.message : String(error)
+      failExecutionTask(message)
+      addMessage('agent', `[错误] ${message}`)
+    } finally {
+      releaseCancelableRequest(requestId)
+      busyRef.current = false
+    }
+    return true
   }
 
   const runEditHistoryTask = async (text: string): Promise<boolean> => {
@@ -752,6 +800,10 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
         if (!batchInputRef.current.instruction || !batchInputRef.current.targets.length) return false
         void runBatchTask(batchInputRef.current.instruction, batchInputRef.current.targets)
         return true
+      case 'batch-edit':
+        if (!batchEditInputRef.current.instruction || batchEditInputRef.current.targets.length < 2) return false
+        void runBatchEditTask(batchEditInputRef.current.instruction, batchEditInputRef.current.targets)
+        return true
       case 'compress':
         if (!compressInputRef.current.sourcePath) return false
         void runCompressTask(compressInputRef.current.instruction, compressInputRef.current)
@@ -829,6 +881,7 @@ export default function useMediaCreativeTasks(options: MediaCreativeTaskOptions)
     runAiAssetBundleTask,
     runPersonalEditSkillCommand,
     runBatchTask,
+    runBatchEditTask,
     runEditHistoryTask,
     runTrimTask,
     runAudioMixAttachmentTask,
