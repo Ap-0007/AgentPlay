@@ -20,10 +20,10 @@ import usePersistentTaskRuntime from './agent-panel/usePersistentTaskRuntime'
 import useContinueTask from './agent-panel/useContinueTask'
 import useCrossMaterialQaTasks from './agent-panel/useCrossMaterialQaTasks'
 import useTaskNotificationNavigation from './agent-panel/useTaskNotificationNavigation'
+import useLicensedMusicReady from './agent-panel/useLicensedMusicReady'
 import { selectDocumentPreviewPath, selectPrimaryPreviewPath } from '../document-preview-routing.mjs'
 export default function AgentPanel() {
-  const { messages, inputText, setInputText, send, cancel, thinking, listening, toggleListening, setListening, addMessage } =
-    useAgentStore()
+  const { messages, inputText, setInputText, send, cancel, thinking, listening, toggleListening, setListening, addMessage } = useAgentStore()
   const focusNonce = useAgentStore((s) => s.focusNonce)
   const agentMode = useAgentStore((s) => s.agentMode)
   const setAgentMode = useAgentStore((s) => s.setAgentMode)
@@ -43,7 +43,7 @@ export default function AgentPanel() {
   const startTask = useAgentStore((s) => s.startTask)
   const tasks = useAgentStore((s) => s.tasks)
   const selectTask = useAgentStore((s) => s.selectTask)
-  useTaskNotificationNavigation({ selectTask, openTaskCenter: () => setShowTaskCenter(true) })
+  useTaskNotificationNavigation({ selectTask, openTaskCenter: () => setShowTaskCenter(true) }); useLicensedMusicReady()
   const executionTaskIdRef = useRef('')
   const docRequestIdRef = useRef('')
   usePersistentTaskRuntime(docRequestIdRef)
@@ -172,6 +172,7 @@ export default function AgentPanel() {
     window.addEventListener('ai-player-link-analysis', handler)
     return () => window.removeEventListener('ai-player-link-analysis', handler)
   }, [])
+
 
   const { handleDropFiles, handlePasteFiles } = useIncomingFiles({
     addMessage,

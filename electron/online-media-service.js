@@ -15,6 +15,89 @@ const COLLECTIONS = {
 }
 const MEDIATYPE = { movie: 'movies', audio: 'audio', book: 'texts' }
 
+// C4 的“一键可商用配乐”只放行允许商业使用且允许改编的录音许可证。
+// 音乐与画面同步在 CC 规则中属于改编，因此 NC、ND、SA 和未知许可证都故障关闭。
+const MUSIC_LICENSES = Object.freeze({
+  'publicdomain/mark/1.0': {
+    id: 'Public-Domain-Mark-1.0', name: 'Public Domain Mark 1.0', publicDomain: true,
+    attributionRequired: false, canonicalUrl: 'https://creativecommons.org/publicdomain/mark/1.0/'
+  },
+  'publicdomain/zero/1.0': {
+    id: 'CC0-1.0', name: 'CC0 1.0', publicDomain: true,
+    attributionRequired: false, canonicalUrl: 'https://creativecommons.org/publicdomain/zero/1.0/'
+  },
+  'licenses/by/3.0': {
+    id: 'CC-BY-3.0', name: 'CC BY 3.0', publicDomain: false,
+    attributionRequired: true, canonicalUrl: 'https://creativecommons.org/licenses/by/3.0/'
+  },
+  'licenses/by/4.0': {
+    id: 'CC-BY-4.0', name: 'CC BY 4.0', publicDomain: false,
+    attributionRequired: true, canonicalUrl: 'https://creativecommons.org/licenses/by/4.0/'
+  }
+})
+
+function normalizeMusicLicense(rawUrl) {
+  let parsed
+  try {
+    parsed = new URL(String(rawUrl || '').trim())
+  } catch {
+    throw new Error('录音没有可核验许可证，不进入一键商用曲库')
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname.toLowerCase() !== 'creativecommons.org') {
+    throw new Error('录音许可证来源不受支持，不进入一键商用曲库')
+  }
+  const key = parsed.pathname.toLowerCase().replace(/^\/+|\/+$/g, '')
+  const policy = MUSIC_LICENSES[key]
+  if (!policy) throw new Error('该录音许可证含未知、非商用、禁止改编或相同方式共享条件，不进入一键商用曲库')
+  const usageScope = Object.freeze({
+    commercialUse: true,
+    adaptationAllowed: true,
+    videoSyncAllowed: true,
+    attributionRequired: policy.attributionRequired,
+    shareAlike: false,
+    notice: policy.attributionRequired
+      ? '可用于商业视频并可改编；发布时须署名、附许可证链接并说明是否修改。'
+      : '可用于商业视频并可改编；建议保留曲目、表演者与来源信息。'
+  })
+  return Object.freeze({
+    id: policy.id,
+    name: policy.name,
+    url: policy.canonicalUrl,
+    publicDomain: policy.publicDomain,
+    commercialUse: true,
+    adaptationAllowed: true,
+    shareAlike: false,
+    attributionRequired: policy.attributionRequired,
+    usageScope
+  })
+}
+
+function scalar(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean).join('、')
+  return String(value || '').trim()
+}
+
+function musicLicenseQuery() {
+  const values = Object.values(MUSIC_LICENSES).flatMap((license) => {
+    const httpUrl = license.canonicalUrl.replace(/^https:/, 'http:')
+    return [`\"${license.canonicalUrl}\"`, `\"${httpUrl}\"`]
+  })
+  return `licenseurl:(${values.join(' OR ')})`
+}
+
+function literalSearchQuery(value) {
+  return String(value || '').trim().split(/\s+/).filter(Boolean).slice(0, 12)
+    .map((term) => `\"${term.replace(/[\\\"]/g, '\\$&')}\"`).join(' AND ')
+}
+
+function recordingSource(metadata = {}) {
+  return scalar(metadata.source) || scalar(metadata.collection) || `Internet Archive 条目 ${scalar(metadata.identifier) || '未知'}`
+}
+
+function attributionText({ track, performer, license, sourcePageUrl }) {
+  return [track, performer, license.name, license.url, sourcePageUrl].filter(Boolean).join(' · ')
+}
+
 async function fetchWithTimeout(url, options = {}, { timeoutMs = FETCH_TIMEOUT_MS, fetchImpl = globalThis.fetch } = {}) {
   const controller = new AbortController()
   let timedOut = false
@@ -48,8 +131,14 @@ async function fetchJson(url, { timeoutMs = FETCH_TIMEOUT_MS, attempts = 2, fetc
       if (response.status < 500) throw lastError
     } catch (error) {
       lastError = error
-      if (!/超时|5\d\d/.test(String(error.message))) throw error
+      const message = String(error?.message || error)
+      const retryable = /超时|5\d\d|fetch failed|network|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|socket/i.test(message)
+      if (!retryable) throw error
+      if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)))
     }
+  }
+  if (/fetch failed|network|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|socket/i.test(String(lastError?.message || lastError))) {
+    throw new Error('Internet Archive 网络连接暂时失败，请稍后重试', { cause: lastError })
   }
   throw lastError
 }
@@ -73,6 +162,39 @@ async function searchMedia(query, kind = 'movie', { page = 1, rows = 24, timeout
       downloads: Number(doc.downloads) || 0
     }))
   }
+}
+
+async function searchLicensedMusic(query, { page = 1, rows = 24, timeoutMs, attempts, fetchImpl = globalThis.fetch } = {}) {
+  const q = literalSearchQuery(query)
+  if (!q) return { items: [], total: 0 }
+  const boundedRows = Math.max(1, Math.min(24, Number(rows) || 24))
+  const boundedPage = Math.max(1, Number(page) || 1)
+  const fullQuery = `(${q}) AND mediatype:audio AND ${musicLicenseQuery()}`
+  const fields = ['identifier', 'title', 'year', 'creator', 'downloads', 'source', 'collection', 'licenseurl']
+    .map((field) => `fl[]=${encodeURIComponent(field)}`).join('&')
+  const url = `${SEARCH_URL}?q=${encodeURIComponent(fullQuery)}&${fields}&rows=${boundedRows}&page=${boundedPage}&output=json`
+  const data = await fetchJson(url, { timeoutMs, attempts, fetchImpl })
+  const docs = data?.response?.docs || []
+  const items = []
+  for (const doc of docs) {
+    try {
+      const license = normalizeMusicLicense(doc.licenseurl)
+      items.push({
+        identifier: scalar(doc.identifier),
+        title: scalar(doc.title) || scalar(doc.identifier),
+        track: scalar(doc.title) || scalar(doc.identifier),
+        year: scalar(doc.year).slice(0, 4),
+        creator: scalar(doc.creator),
+        performer: scalar(doc.creator),
+        downloads: Number(doc.downloads) || 0,
+        recordingSource: recordingSource(doc),
+        sourcePageUrl: `${DOWNLOAD_BASE.replace('/download/', '/details/')}${encodeURIComponent(scalar(doc.identifier))}`,
+        license,
+        usageScope: license.usageScope
+      })
+    } catch { /* Archive 搜索索引可能滞后；未知或已变更许可证不展示。 */ }
+  }
+  return { items, total: items.length }
 }
 
 const VIDEO_EXTS = ['.mp4', '.ogv', '.webm', '.mkv', '.avi', '.mov', '.mpeg', '.mpg']
@@ -127,6 +249,69 @@ async function listPlayableFiles(identifier, kind = 'movie', { timeoutMs, attemp
   return { identifier: id, title, files }
 }
 
+async function listLicensedMusicFiles(identifier, { timeoutMs, attempts, fetchImpl = globalThis.fetch } = {}) {
+  const id = String(identifier || '').trim()
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('条目编号无效')
+  const data = await fetchJson(`${METADATA_URL}${encodeURIComponent(id)}`, { timeoutMs, attempts, fetchImpl })
+  const metadata = { ...(data?.metadata || {}), identifier: id }
+  const license = normalizeMusicLicense(metadata.licenseurl)
+  const itemTitle = scalar(metadata.title) || id
+  const itemPerformer = scalar(metadata.creator)
+  const itemRecordingSource = recordingSource(metadata)
+  const sourcePageUrl = `https://archive.org/details/${encodeURIComponent(id)}`
+  const files = (data?.files || [])
+    .filter((file) => isPlayableFile(file.name, 'audio'))
+    .map((file) => {
+      const track = scalar(file.title) || pathTitle(file.name)
+      const performer = scalar(file.artist) || itemPerformer
+      const fileSource = scalar(file.source)
+      return {
+        name: String(file.name),
+        size: Number(file.size) || 0,
+        url: `${DOWNLOAD_BASE}${encodeURIComponent(id)}/${String(file.name).split('/').map(encodeURIComponent).join('/')}`,
+        format: scalar(file.format),
+        track,
+        trackNumber: scalar(file.track),
+        performer,
+        recordingSource: /^(original|derivative)$/i.test(fileSource) ? itemRecordingSource : fileSource || itemRecordingSource,
+        sourcePageUrl,
+        license,
+        usageScope: license.usageScope,
+        attributionText: attributionText({ track, performer, license, sourcePageUrl })
+      }
+    })
+    .sort((a, b) => fileScore(b.name, b.size, 'audio') - fileScore(a.name, a.size, 'audio'))
+  return { identifier: id, title: itemTitle, creator: itemPerformer, license, usageScope: license.usageScope, sourcePageUrl, files }
+}
+
+function pathTitle(fileName) {
+  const name = String(fileName || '').split('/').pop() || ''
+  return name.replace(/\.[^.]+$/, '')
+}
+
+function buildLicensedMusicReceipt({ identifier, title, file, outputPath, bytes, sha256, downloadedAt = new Date().toISOString() } = {}) {
+  if (!file?.license || !file?.usageScope) throw new Error('缺少已核验的音乐许可证')
+  if (!/^[a-f0-9]{64}$/i.test(String(sha256 || ''))) throw new Error('下载文件哈希无效')
+  return {
+    schemaVersion: 1,
+    kind: 'agentplay.licensed-music-receipt',
+    downloadedAt,
+    provider: { name: 'Internet Archive', identifier: String(identifier || ''), itemTitle: String(title || ''), sourcePageUrl: file.sourcePageUrl },
+    track: { title: file.track, number: file.trackNumber || '' },
+    recording: { performer: file.performer, source: file.recordingSource },
+    license: { id: file.license.id, name: file.license.name, url: file.license.url, publicDomain: file.license.publicDomain },
+    usageScope: { ...file.usageScope },
+    attributionText: file.attributionText,
+    file: {
+      name: file.name,
+      localName: String(outputPath || '').split(/[\\/]/).pop() || file.name,
+      bytes: Number(bytes) || 0,
+      sha256: String(sha256).toLowerCase()
+    },
+    disclaimer: '许可证元数据来自条目下载时的 Internet Archive 记录；发布前仍应复核来源页及可能存在的表演权、人格权等其他权利。'
+  }
+}
+
 // 仅允许 archive.org 的 https 直链进入播放器/下载器（域名白名单，防任意 URL 注入）
 function assertArchiveUrl(url) {
   let parsed
@@ -162,9 +347,13 @@ async function listBookFiles(identifier, { timeoutMs, attempts, fetchImpl } = {}
 
 module.exports = {
   searchMedia,
+  searchLicensedMusic,
   listPlayableFiles,
+  listLicensedMusicFiles,
   listBookFiles,
   assertArchiveUrl,
+  normalizeMusicLicense,
+  buildLicensedMusicReceipt,
   COLLECTIONS,
-  __test: { fetchWithTimeout }
+  __test: { fetchWithTimeout, musicLicenseQuery, literalSearchQuery }
 }

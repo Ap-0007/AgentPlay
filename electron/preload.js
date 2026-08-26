@@ -380,8 +380,10 @@ contextBridge.exposeInMainWorld('aiPlayer', {
   onlineMedia: {
     search: (input) => ipcRenderer.invoke('onlineMedia:search', input),
     files: (input) => ipcRenderer.invoke('onlineMedia:files', input),
+    licensedMusicFiles: (input) => ipcRenderer.invoke('onlineMedia:licensedMusicFiles', input),
     bookFiles: (input) => ipcRenderer.invoke('onlineMedia:bookFiles', input),
     download: (input) => ipcRenderer.invoke('onlineMedia:download', input),
+    downloadLicensedMusic: (input) => ipcRenderer.invoke('onlineMedia:downloadLicensedMusic', input),
     cancel: (requestId) => ipcRenderer.invoke('onlineMedia:cancel', requestId),
     onProgress: (callback) => {
       const handler = (_event, data) => callback(data)

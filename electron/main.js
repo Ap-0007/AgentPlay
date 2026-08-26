@@ -22,7 +22,7 @@ const { previewDocx, previewXlsx } = require('./office-preview')
 const { searchSubtitle, downloadSubtitle } = require('./subtitle-service')
 const { DlnaReceiver } = require('./dlna-receiver')
 const log = require('./logger')
-const { analyzeDir, analyzeDirAsync, clusterByTag, findDuplicates, suggestClip } = require('./media-service')
+const { analyzeDir, analyzeDirAsync, clusterByTag, findDuplicates, suggestClip, hashFile } = require('./media-service')
 const { DlnaServer } = require('./dlna-server')
 const { PluginSkillService, PLUGIN_DIR } = require('./plugin-service')
 const { replacePluginContributions } = require('./agent-tool-registry')
@@ -3952,7 +3952,9 @@ app.whenReady().then(async () => {
     assertTrustedSender(event)
     try {
       const kind = ['audio', 'book'].includes(input.kind) ? input.kind : 'movie'
-      const result = await onlineMedia.searchMedia(input.query, kind, { page: input.page || 1 })
+      const result = kind === 'audio'
+        ? await onlineMedia.searchLicensedMusic(input.query, { page: input.page || 1 })
+        : await onlineMedia.searchMedia(input.query, kind, { page: input.page || 1 })
       // 书籍：合并维基文库中文公版书（IA 公版书以英文为主，中文书走维基文库）
       if (kind === 'book') {
         try {
@@ -3971,6 +3973,14 @@ app.whenReady().then(async () => {
     try {
       const kind = input.kind === 'audio' ? 'audio' : 'movie'
       return { success: true, ...(await onlineMedia.listPlayableFiles(input.identifier, kind)) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error), files: [] }
+    }
+  })
+  ipcMain.handle('onlineMedia:licensedMusicFiles', async (event, input = {}) => {
+    assertTrustedSender(event)
+    try {
+      return { success: true, ...(await onlineMedia.listLicensedMusicFiles(input.identifier)) }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error), files: [] }
     }
@@ -3994,6 +4004,49 @@ app.whenReady().then(async () => {
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     } finally {
+      activeAiRequests.delete(requestId)
+    }
+  })
+  ipcMain.handle('onlineMedia:downloadLicensedMusic', async (event, input = {}) => {
+    assertTrustedSender(event)
+    const requestId = normalizeRequestId(input.requestId, 'licensed-music')
+    const controller = new AbortController()
+    activeAiRequests.get(requestId)?.abort()
+    activeAiRequests.set(requestId, controller)
+    let receiptTempPath = ''
+    try {
+      // 不信任渲染器带回的许可证或直链：下载前从 Archive 元数据重新核验许可证与文件名。
+      const details = await onlineMedia.listLicensedMusicFiles(input.identifier)
+      const file = details.files.find((candidate) => candidate.name === String(input.fileName || ''))
+      if (!file) throw new Error('该录音文件已变化或不再符合一键商用条件，请重新搜索')
+      const url = onlineMedia.assertArchiveUrl(file.url)
+      const result = await downloadRemoteMedia(url, {
+        destDir: path.join(app.getPath('music'), 'AgentPlay 授权音乐'),
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('onlineMedia:progress', { requestId, ...progress })
+        }
+      })
+      const sha256 = await hashFile(result.outputPath, { signal: controller.signal })
+      const receipt = onlineMedia.buildLicensedMusicReceipt({
+        identifier: details.identifier,
+        title: details.title,
+        file,
+        outputPath: result.outputPath,
+        bytes: result.bytes,
+        sha256
+      })
+      const receiptPath = `${result.outputPath}.license.json`
+      receiptTempPath = `${receiptPath}.${process.pid}.tmp`
+      fs.writeFileSync(receiptTempPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8')
+      fs.renameSync(receiptTempPath, receiptPath)
+      receiptTempPath = ''
+      userAuthorizedPaths.add(path.resolve(result.outputPath))
+      return { success: true, ...result, receiptPath, receipt }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      if (receiptTempPath && fs.existsSync(receiptTempPath)) fs.rmSync(receiptTempPath, { force: true })
       activeAiRequests.delete(requestId)
     }
   })
