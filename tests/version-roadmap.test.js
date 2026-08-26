@@ -59,9 +59,9 @@ test('0.9.0 reports strict closure separately from implementation coverage again
 
 test('0.9.1 records completed semantic and professional visual groups without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*60%（15\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 15)
-  assert.equal(checkboxCount(content, false), 10)
+  assert.match(content, /功能交付完成率：\*\*64%（16\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 16)
+  assert.equal(checkboxCount(content, false), 9)
   assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
@@ -189,6 +189,12 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /声画起点差0\.023秒\/终点差0秒/)
   assert.match(content, /959 tests、959 pass、0 fail、0 skip/)
   assert.match(content, /C组5\/5闭环，0\.9\.1更新为15\/25=60%/)
+  assert.match(content, /#### D\. 专业字幕与包装（1\/5）/)
+  assert.match(content, /第二十四个纵向切片（D1闭环并正式勾选）/)
+  assert.match(content, /acoustic-speaker-karaoke-v1/)
+  assert.match(content, /说话人序列`0,1,0,1`/)
+  assert.match(content, /29个DTW词对应29个卡拉OK标签/)
+  assert.match(content, /D组更新为1\/5，0\.9\.1更新为16\/25=64%/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

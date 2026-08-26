@@ -52,6 +52,7 @@ const DEFAULT_MUSIC_LOUDNESS = Object.freeze({
 
 // 硬字幕烧录：用户本地 .srt/.vtt/.ass/.ssa 逐条烧进画面；只说"烧字幕"不给文件时只追问唯一一项
 const SUBTITLE_BURN_PATTERN = /(?:烧进|烧录|烧到|压进|嵌入|合成到视频|硬字幕)/
+const PROFESSIONAL_SUBTITLE_PATTERN = /(?:专业动态字幕|动态字幕|逐词高亮|卡拉\s*OK|卡拉OK|说话人识别|声纹聚类|关键词强调|字幕安全区)/i
 const SUBTITLE_PATH_PATTERN = /["'“”‘’]?((?:[A-Za-z]:)?[\\/][^"'“”‘’，。；]+?\.(?:srt|vtt|ass|ssa))["'“”‘’]?/i
 
 function extractSubtitlePath(text) {
@@ -62,22 +63,35 @@ function extractSubtitlePath(text) {
 function compileBurnSubtitlesDecisionList({ instruction, sourcePath } = {}) {
   const text = String(instruction || '').trim()
   const source = String(sourcePath || '').trim()
-  if (!SUBTITLE_BURN_PATTERN.test(text)) return null
+  const professionalRequested = PROFESSIONAL_SUBTITLE_PATTERN.test(text)
+  if ((!SUBTITLE_BURN_PATTERN.test(text) && !professionalRequested) || CONSULTATION_PATTERN.test(text) || EXAMPLE_PATTERN.test(text) || NEGATION_PATTERN.test(text)) return null
   const subtitle = extractSubtitlePath(text)
   if (!source || !subtitle) return null
   const style = extractBurnSubtitleStyle(text)
+  const keywordMatch = /关键词(?:是|为|：|:)?\s*([^；;。]{1,80})/.exec(text)
+  const explicitKeywords = keywordMatch ? keywordMatch[1].split(/[、,，/\s]+/).map((item) => item.trim()).filter(Boolean).slice(0, 8) : []
+  const professional = professionalRequested ? {
+    schemaVersion: 1,
+    strategy: 'acoustic-speaker-karaoke-v1',
+    enabled: true,
+      speakers: { enabled: true, method: 'decoded-pcm-acoustic-cluster-v1', maximumSpeakers: 4, distanceThreshold: 0.18, anonymousLabels: true },
+    wordHighlight: { enabled: true, method: 'whisper.cpp-dtw-v1', minimumConfidence: 0.15, exactCueAlignmentRequired: true },
+    karaoke: { enabled: true, mode: 'ass-kf', assTag: 'kf' },
+    keywords: { enabled: true, explicit: explicitKeywords, autoWhenEmpty: true },
+    safeArea: { enabled: true, strategy: 'frame-band-complexity-v1', candidateZones: ['top', 'bottom'], maximumLines: 2 }
+  } : null
   return {
     schemaVersion: 1,
     kind: 'media.burn-subtitles',
     instruction: text,
     source: { path: source, name: portableBasename(source) },
-    subtitle: { path: subtitle, name: portableBasename(subtitle), ...(style ? { style } : {}) },
+    subtitle: { path: subtitle, name: portableBasename(subtitle), ...(style ? { style } : {}), ...(professional ? { professional } : {}) },
     output: {
       container: 'mp4',
       overwrite: false,
-      suffix: `硬字幕版${style?.fontSize === 'large' ? '-大字' : style?.fontSize === 'small' ? '-小字' : ''}${style?.alignment === 'top' ? '-顶部' : ''}${style?.color ? `-${style.color}` : ''}`
+      suffix: `${professional ? '专业动态字幕版' : '硬字幕版'}${style?.fontSize === 'large' ? '-大字' : style?.fontSize === 'small' ? '-小字' : ''}${style?.alignment === 'top' ? '-顶部' : ''}${style?.color ? `-${style.color}` : ''}`
     },
-    verification: { toleranceSeconds: 0.2 }
+    verification: { toleranceSeconds: 0.2, ...(professional ? { requireProfessionalSubtitleProof: true } : {}) }
   }
 }
 

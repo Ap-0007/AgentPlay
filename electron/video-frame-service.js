@@ -273,7 +273,7 @@ class VideoFrameService {
   // 读取一个有界的单声道 PCM 窗口，用于声音结果核验；s16le 是样本值，不代表 LUFS 或 true peak。
   async readPcmWindow(sourcePath, seconds, { durationSeconds = 0.3, sampleRateHz = 16000, signal } = {}) {
     const start = Math.max(0, Number(seconds) || 0)
-    const duration = Math.max(0.05, Math.min(2, Number(durationSeconds) || 0.3))
+    const duration = Math.max(0.05, Math.min(4, Number(durationSeconds) || 0.3))
     const sampleRate = Math.max(8000, Math.min(48000, Math.round(Number(sampleRateHz) || 16000)))
     const buffer = await this.readRawFrameBuffer([
       '-v', 'error', '-ss', start.toFixed(3), '-i', sourcePath,

@@ -18,6 +18,7 @@ const HARD_FAILURES = new Set([
   'MULTITRACK_PROOF_MISSING', 'TRACK_ALIGNMENT_MISMATCH', 'TRACK_AUTOMATION_MISSING', 'DUCKING_RECEIPT_MISSING',
   'AUDIO_REPAIR_PROOF_MISSING', 'DENOISE_NOT_IMPROVED', 'DC_NOT_IMPROVED', 'SILENCE_REPAIR_MISMATCH', 'SEPARATION_PROOF_MISSING', 'SEPARATION_WARNING_MISSING',
   'BEAT_EVIDENCE_MISSING', 'BEAT_CUT_NOT_VISIBLE', 'HIGHLIGHT_DENSITY_MISMATCH', 'MUSIC_ALIGNMENT_MISSING', 'TAIL_FADE_MISSING',
+  'SPEAKER_EVIDENCE_MISSING', 'WORD_TIMING_MISSING', 'KARAOKE_PROOF_MISSING', 'KEYWORD_EMPHASIS_MISSING', 'SUBTITLE_SAFE_AREA_FAILED',
   'DELIVERY_RECEIPT_MISSING', 'DELIVERY_RECEIPT_MISMATCH', 'SOURCE_RECEIPT_MISSING',
   'BUNDLE_INCOMPLETE', 'BUNDLE_INCONSISTENT', 'WORKFLOW_RECEIPT_INCOMPLETE'
 ])
@@ -498,13 +499,28 @@ function evaluateTaskResult(type, result = {}, spec = {}) {
       && Number(projectCapsule.cursor) >= 1
       && projectCapsule.canUndo === true
       && outputs.some((outputPath) => path.resolve(outputPath) === path.resolve(String(projectCapsule.currentPath || '')))
+    const professionalRequired = taskType === 'media.edit-burn-subtitles' && spec.decision?.subtitle?.professional?.enabled === true
+    const professionalPlan = result.professionalSubtitle
+    const professionalProof = result.professionalSubtitleProof
+    const speakerOk = professionalProof?.schemaVersion === 1 && professionalProof?.method === 'professional-subtitle-render-proof-v1' && professionalProof?.verdict === 'matched' && professionalProof.speakerEvidence?.method === 'decoded-pcm-acoustic-cluster-v1' && Number(professionalProof.speakerEvidence?.speakerCount) >= 1 && Number(professionalProof.speakerEvidence?.speakerCount) <= 4 && professionalProof.speakerEvidence?.anonymousLabels === true
+    const wordTimingOk = professionalProof?.wordTimingEvidence?.method === 'whisper.cpp-dtw-v1' && professionalProof.wordTimingEvidence?.exactCueAlignment === true && Number(professionalProof.wordTimingEvidence?.wordCount) > 0 && Number(professionalProof.wordTimingEvidence?.minimumConfidence) >= 0.15
+    const karaokeOk = professionalProof?.karaokeEvidence?.mode === 'ass-kf' && Number(professionalProof.karaokeEvidence?.tagCount) === Number(professionalProof.wordTimingEvidence?.wordCount) && Number(professionalProof.karaokeEvidence?.matchedWordCount) === Number(professionalProof.wordTimingEvidence?.wordCount)
+    const keywordOk = Array.isArray(professionalProof?.keywordEvidence?.terms) && professionalProof.keywordEvidence.terms.length > 0 && Number(professionalProof.keywordEvidence?.emphasisCount) >= 1
+    const safeAreaOk = professionalProof?.safeArea?.strategy === 'frame-band-complexity-v1' && professionalProof.safeArea?.subtitleInChosenZone === true && Number(professionalProof.safeArea?.sampledFrames) > 0 && professionalProof.safeArea?.chosenZone === professionalPlan?.safeArea?.chosenZone
     add('declared-success', '执行状态', success ? 1 : 0, 10, reason('RESULT_FAILED', '任务返回失败状态', false))
-    add('artifacts', '剪辑视频', artifactRatio, requiresFrameProof ? 20 : 25, artifactFailure)
-    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, 10, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
-    add('duration-receipt', '成品时长', durationOk ? 1 : 0, 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
-    add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, 10, timelineFailure)
+    add('artifacts', '剪辑视频', artifactRatio, professionalRequired ? 10 : requiresFrameProof ? 20 : 25, artifactFailure)
+    add('format', '视频格式', formatRatio && artifacts.every((item) => VIDEO_EXTENSIONS.has(item.ext)) ? 1 : 0, professionalRequired ? 5 : 10, formatFailure || reason('INVALID_FORMAT', '剪辑成果不是受支持的视频格式', true))
+    add('duration-receipt', '成品时长', durationOk ? 1 : 0, professionalRequired ? 10 : 20, reason('DURATION_MISMATCH', `成品时长与决策不一致：期望 ${expectedDuration || 0} 秒，实际 ${actualDuration || 0} 秒`, true))
+    add('timeline-receipt', '时间线回执', hasTimelineReceipt ? 1 : 0, professionalRequired ? 5 : 10, timelineFailure)
     if (requiresFrameProof) add('frame-proof', '帧边界证明', frameProofRatio, 10, frameProofFailure, frameProofDetail)
-    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, requiresFrameProof ? 20 : 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+    add('project-capsule', '可撤销项目', hasProjectCapsule ? 1 : 0, professionalRequired ? 10 : requiresFrameProof ? 20 : 25, reason('PROJECT_CAPSULE_MISSING', '缺少可撤销的编辑项目版本回执', true))
+    if (professionalRequired) {
+      add('speaker-evidence', '匿名说话人声纹聚类', speakerOk ? 1 : 0, 10, reason('SPEAKER_EVIDENCE_MISSING', '缺少真实PCM声纹聚类证据，不能猜测说话人', true))
+      add('word-timing', '真实逐词时间', wordTimingOk ? 1 : 0, 10, reason('WORD_TIMING_MISSING', '逐词时间未与字幕逐字对齐或不是Whisper DTW证据', true))
+      add('karaoke', '逐词高亮与卡拉OK', karaokeOk ? 1 : 0, 10, reason('KARAOKE_PROOF_MISSING', 'ASS卡拉OK标签数量与真实逐词证据不一致', true))
+      add('keyword-emphasis', '关键词强调', keywordOk ? 1 : 0, 10, reason('KEYWORD_EMPHASIS_MISSING', '关键词没有绑定到真实逐词时间并产生强调', true))
+      add('subtitle-safe-area', '字幕安全区避让', safeAreaOk ? 1 : 0, 10, reason('SUBTITLE_SAFE_AREA_FAILED', '字幕像素没有落在真实画面分析选择的安全区', true))
+    }
   } else if (taskType === 'media.shift-subtitles') {
     const cueCount = Number(result.cueCount)
     const sourceCueCount = Number(result.sourceCueCount)

@@ -9,7 +9,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
 test('main process owns planning, frozen execution, recovery and cancellation for exact trim jobs', () => {
   const main = read('electron/main.js')
   assert.match(main, /compileEditDecisionList/)
-  assert.match(main, /new MediaEditService\(\{ frames: videoFrames \}\)/)
+  assert.match(main, /new MediaEditService\(\{ frames: videoFrames, transcription: transcriptionService \}\)/)
   assert.match(main, /persistentTaskRuntime\.register\('media\.edit-trim'/)
   const executor = main.slice(main.indexOf("persistentTaskRuntime.register('media.edit-trim'"), main.indexOf("persistentTaskRuntime.register('media.edit-remove'"))
   assert.equal((executor.match(/validateMediaSources\(task\.spec\.sources\)/g) || []).length, 2, '剪辑前后都必须复核源文件指纹')

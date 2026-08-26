@@ -270,7 +270,7 @@ function buildEditDecisionList(decision) {
       operations: [{
         id: 'operation-1', type: 'burn-subtitles', materialId: 'material-subtitle-1',
         trackIds: ['track-subtitle-1'],
-        parameters: { style: JSON.parse(JSON.stringify(decision.subtitle?.style || {})) }
+        parameters: { style: JSON.parse(JSON.stringify(decision.subtitle?.style || {})), ...(decision.subtitle?.professional ? { professional: JSON.parse(JSON.stringify(decision.subtitle.professional)) } : {}) }
       }],
       output, quality
     }

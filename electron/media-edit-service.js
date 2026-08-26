@@ -7,6 +7,7 @@ const { AudioMixService } = require('./audio-mix-service')
 const { AudioRepairService } = require('./audio-repair-service')
 const { RhythmEditService } = require('./rhythm-edit-service')
 const { AudioExportQualityGate } = require('./audio-export-quality')
+const { ProfessionalSubtitleService } = require('./professional-subtitle-service')
 const { parseSignalStatsLog, shakeScoreFromTransforms } = require('./visual-repair-service')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.ts', '.m4v', '.wmv', '.flv', '.avi'])
@@ -249,7 +250,7 @@ function renderSubtitleCuesAuto(cues, format) {
 }
 
 class MediaEditService {
-  constructor({ frames, fsImpl = fs } = {}) {
+  constructor({ frames, fsImpl = fs, transcription = null } = {}) {
     if (!frames) throw new Error('媒体剪辑服务缺少 FFmpeg 执行器')
     this.frames = frames
     this.fs = fsImpl
@@ -257,6 +258,7 @@ class MediaEditService {
     this.audioMixService = new AudioMixService({ frames, fsImpl, exportQuality: this.exportQuality })
     this.audioRepairService = new AudioRepairService({ frames, fsImpl, exportQuality: this.exportQuality })
     this.rhythmEditService = new RhythmEditService({ frames, fsImpl, exportQuality: this.exportQuality })
+    this.professionalSubtitleService = transcription ? new ProfessionalSubtitleService({ frames, transcription, fsImpl }) : null
   }
 
   async mixAudio(input = {}) { return this.audioMixService.mix(input) }
@@ -1114,13 +1116,21 @@ class MediaEditService {
 
     const sourceDuration = await this.frames.probeDuration(source, { signal })
     if (!(sourceDuration > 0)) throw new Error('无法读取源视频时长')
+    const parsed = path.parse(output)
+    const generatedAssPath = path.join(parsed.dir, `.${parsed.name}.agentplay-professional-subtitle-${process.pid}-${Date.now()}.ass`)
+    let subtitleToBurn = subtitle
+    let professionalSubtitle = null
+    if (decision.subtitle?.professional?.enabled) {
+      if (!this.professionalSubtitleService) throw new Error('专业动态字幕所需逐词转写服务不可用')
+      professionalSubtitle = await this.professionalSubtitleService.prepare({ sourcePath: source, subtitlePath: subtitle, outputAssPath: generatedAssPath, decision, signal })
+      subtitleToBurn = generatedAssPath
+    }
     // ffmpeg filter 参数转义：统一正斜杠、盘符冒号加反斜杠、单引号加倍转义；中文路径原样可行
-    const escapedSubtitle = subtitle.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''")
+    const escapedSubtitle = subtitleToBurn.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''")
     const forceStyle = burnForceStyle(decision.subtitle?.style)
-    const subtitleFilter = `subtitles='${escapedSubtitle}'${forceStyle ? `:force_style='${forceStyle}'` : ''}`
+    const subtitleFilter = `subtitles='${escapedSubtitle}'${forceStyle && !professionalSubtitle ? `:force_style='${forceStyle}'` : ''}`
     const sourceBefore = this.fs.statSync(source)
     const subtitleBefore = this.fs.statSync(subtitle)
-    const parsed = path.parse(output)
     const tempPath = path.join(parsed.dir, `.${parsed.name}.agentplay-edit-${process.pid}-${Date.now()}${parsed.ext || '.mp4'}`)
     try {
       await this.frames.run([
@@ -1143,12 +1153,15 @@ class MediaEditService {
       if (!(actualDuration > 0) || Math.abs(actualDuration - sourceDuration) > tolerance) {
         throw new Error(`烧录成果时长校验失败：期望 ${sourceDuration.toFixed(3)} 秒，实际 ${Number(actualDuration || 0).toFixed(3)} 秒`)
       }
+      const professionalSubtitleProof = professionalSubtitle
+        ? await this.professionalSubtitleService.verifyRender({ sourcePath: source, outputPath: tempPath, plan: professionalSubtitle, signal })
+        : null
       this.fs.renameSync(tempPath, output)
-      return this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
+      return this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle, professionalSubtitleProof })
     } catch (error) {
       if (this.fs.existsSync(tempPath)) this.fs.rmSync(tempPath, { force: true })
       throw error
-    }
+    } finally { if (this.fs.existsSync(generatedAssPath)) this.fs.rmSync(generatedAssPath, { force: true }) }
   }
 
   // 软字幕封装：字幕作为可开关的独立轨道封进 mp4（mov_text）；音画流直接 copy 不重编码，秒级完成。
@@ -1863,6 +1876,16 @@ class MediaEditService {
       this.assertAudioProofDeliverable(musicAudioProof)
       musicAudioExportQc = await this.exportQuality.audit({ sourcePath: source, outputPath: output, decision, externalAudioPaths: [{ path: audio, role: 'music' }], signal })
     }
+    let professionalSubtitle = null
+    let professionalSubtitleProof = null
+    if (isBurnSubtitles && decision.subtitle?.professional?.enabled) {
+      if (!this.professionalSubtitleService) throw new Error('专业动态字幕所需逐词转写服务不可用')
+      const assPath = path.join(path.dirname(output), `.${path.parse(output).name}.agentplay-professional-verify-${process.pid}-${Date.now()}.ass`)
+      try {
+        professionalSubtitle = await this.professionalSubtitleService.prepare({ sourcePath: source, subtitlePath: decision.subtitle.path, outputAssPath: assPath, decision, signal })
+        professionalSubtitleProof = await this.professionalSubtitleService.verifyRender({ sourcePath: source, outputPath: output, plan: professionalSubtitle, signal })
+      } finally { if (this.fs.existsSync(assPath)) this.fs.rmSync(assPath, { force: true }) }
+    }
     return isRemove
       ? this.removeReceipt({ source, output, decision, sourceDuration, expectedDuration, actualDuration, frameProof: editFrameProof })
       : isConcat
@@ -1872,7 +1895,7 @@ class MediaEditService {
           : isMusic
             ? this.musicReceipt({ output, decision, sourceDuration, actualDuration, audioProof: musicAudioProof, loudnessProof: musicLoudnessProof, audioExportQc: musicAudioExportQc })
           : isBurnSubtitles
-            ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
+            ? this.burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle, professionalSubtitleProof })
             : isMuxSubtitles
               ? this.muxSubtitlesReceipt({ output, decision, sourceDuration, actualDuration })
               : this.resultReceipt({ source, output, decision, sourceDuration, actualDuration, frameProof: editFrameProof })
@@ -2008,7 +2031,7 @@ class MediaEditService {
     }
   }
 
-  burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration }) {
+  burnSubtitlesReceipt({ output, decision, sourceDuration, actualDuration, professionalSubtitle = null, professionalSubtitleProof = null }) {
     const subtitleName = String(decision.subtitle?.name || path.basename(String(decision.subtitle?.path || '字幕文件')))
     const fullRange = `${formatTimestamp(0)} → ${formatTimestamp(sourceDuration)}`
     const style = decision.subtitle?.style
@@ -2023,12 +2046,15 @@ class MediaEditService {
       sourceDurationSeconds: sourceDuration,
       expectedDurationSeconds: sourceDuration,
       durationSeconds: Number(actualDuration.toFixed(3)),
+      ...(professionalSubtitle ? { professionalSubtitle, professionalSubtitleProof } : {}),
       timelineReceipt: [{
         operation: `烧录字幕（${subtitleName}）${styleText}`,
         sourceRange: fullRange,
         outputRange: fullRange
       }],
-      summary: `已把字幕《${subtitleName}》逐条烧录进画面${styleText}，生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
+      summary: professionalSubtitle
+        ? `已把字幕《${subtitleName}》生成专业动态字幕：匿名声纹聚类 ${professionalSubtitle.speakers.speakerCount} 位说话人、${professionalSubtitle.wordTiming.wordCount} 个真实逐词高亮/卡拉OK标签、${professionalSubtitle.keywords.emphasisCount} 次关键词强调，并自动避让到${professionalSubtitle.safeArea.chosenZone === 'top' ? '顶部' : '底部'}安全区；生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
+        : `已把字幕《${subtitleName}》逐条烧录进画面${styleText}，生成 ${sourceDuration.toFixed(3)} 秒新视频；原文件与字幕文件均未改动`
     }
   }
 

@@ -245,4 +245,4 @@ async function runLiveTranslation({ cues, complete, getPosition = () => 0, onBat
   return { translations, failed: failed.size, done: true, cancelled: false }
 }
 
-module.exports = { parseSrt, formatSrtEntries, buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, subtitleTextLanguage, parseTranslationsJson, translateEntries, translateBatch, formatSrtTimestamp, cuesToEntries, nextLiveBatch, runLiveTranslation }
+module.exports = { parseSrt, parseSrtTimestamp, formatSrtEntries, buildBilingualSrt, buildTranslationOnlySrt, chooseOppositeTarget, subtitleTextLanguage, parseTranslationsJson, translateEntries, translateBatch, formatSrtTimestamp, cuesToEntries, nextLiveBatch, runLiveTranslation }

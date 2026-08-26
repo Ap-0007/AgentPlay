@@ -686,7 +686,7 @@ const videoFrames = new VideoFrameService({
   ffmpegPath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffmpeg.exe'),
   ffprobePath: path.join(app.getPath('userData'), 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin', 'ffprobe.exe')
 })
-const mediaEditService = new MediaEditService({ frames: videoFrames })
+const mediaEditService = new MediaEditService({ frames: videoFrames, transcription: transcriptionService })
 const visualExportQuality = new VisualExportQualityGate({ frames: videoFrames })
 const smartReframePlanner = new SmartReframePlanner({ frames: videoFrames })
 const mediaAutoInspection = new MediaAutoInspection({ frames: videoFrames })
@@ -2592,12 +2592,13 @@ app.whenReady().then(async () => {
   }, { autoResume: true })
 
   persistentTaskRuntime.register('media.edit-burn-subtitles', async ({ task, signal, checkpoint, status }) => {
-    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const [sourcePath, frozenSubtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.burn-subtitles') throw new Error('冻结的烧录字幕决策无效')
     assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的烧录字幕决策与源视频不一致')
-    assertAllowedPath(decision.subtitle?.path || '')
+    const subtitlePath = assertAllowedPath(decision.subtitle?.path || '')
+    if (!frozenSubtitlePath || path.resolve(subtitlePath).toLowerCase() !== path.resolve(frozenSubtitlePath).toLowerCase()) throw new Error('冻结的烧录字幕任务缺少字幕文件快照或路径不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(`正在把字幕《${path.basename(String(decision.subtitle?.path || ''))}》烧录进画面`)
     const result = fs.existsSync(outputPath)
@@ -2612,12 +2613,13 @@ app.whenReady().then(async () => {
   }, { autoResume: true })
 
   persistentTaskRuntime.register('media.edit-mux-subtitles', async ({ task, signal, checkpoint, status }) => {
-    const [sourcePath] = validateMediaSources(task.spec.sources)
+    const [sourcePath, frozenSubtitlePath] = validateMediaSources(task.spec.sources)
     const decision = task.spec.decision
     if (!decision || decision.schemaVersion !== 1 || decision.kind !== 'media.mux-subtitles') throw new Error('冻结的软字幕封装决策无效')
     assertEditDecisionList(decision)
     if (path.resolve(String(decision.source?.path || '')) !== path.resolve(sourcePath)) throw new Error('冻结的软字幕封装决策与源视频不一致')
-    assertAllowedPath(decision.subtitle?.path || '')
+    const subtitlePath = assertAllowedPath(decision.subtitle?.path || '')
+    if (!frozenSubtitlePath || path.resolve(subtitlePath).toLowerCase() !== path.resolve(frozenSubtitlePath).toLowerCase()) throw new Error('冻结的软字幕任务缺少字幕文件快照或路径不一致')
     const outputPath = validatePlannedMediaOutput(task.spec.outputPath, sourcePath, decision.output.suffix, '.mp4', task.id)
     status(`正在把字幕《${path.basename(String(decision.subtitle?.path || ''))}》封装成软字幕轨`)
     const result = fs.existsSync(outputPath)
@@ -2964,7 +2966,9 @@ app.whenReady().then(async () => {
            ? [sourcePath, assertAllowedPath(decision.music?.path || '')]
          : decision.kind === 'media.add-music'
           ? [sourcePath, assertAllowedPath(decision.audio?.path || '')]
-          : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'
+          : decision.kind === 'media.burn-subtitles' || decision.kind === 'media.mux-subtitles'
+            ? [sourcePath, assertAllowedPath(decision.subtitle?.path || '')]
+         : decision.kind === 'media.shift-subtitles' || decision.kind === 'media.translate-subtitles' || decision.kind === 'media.edit-subtitle-cues'
             ? [assertAllowedPath(decision.subtitle?.path || '')]
             : [sourcePath]
       const outputExtension = decision.output?.container === 'vtt' ? '.vtt' : decision.output?.container === 'srt' ? '.srt' : '.mp4'
