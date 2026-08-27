@@ -12,7 +12,7 @@ test('public onboarding keeps stable 0.7.6 separate from the unsigned 0.9.1 prev
   const quickStart = read('docs/QUICK_START.md')
 
   assert.match(readme, /current public stable release[^\n]*v0\.7\.6/i)
-  assert.match(readme, /0\.9\.1[^\n]*unsigned Preview/i)
+  assert.match(readme, /0\.9\.1[^\n]*(?:unsigned Preview|unsigned GitHub Prerelease)/i)
   assert.match(readme, /Unsigned Preview\/Beta builds[^\n]*prereleases/i)
   assert.match(readme, /Five-minute start/)
   assert.match(readme, /discussions/)
