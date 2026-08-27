@@ -1,21 +1,21 @@
 # AgentPlay GitHub 增长方案
 
-> 证据快照：2026-08-27。目标是获得真实用户、问题与贡献，不购买 Star、不互刷、不把 CI 克隆冒充采用。
+> 证据快照：2026-08-28。目标是获得真实用户、问题与贡献，不购买 Star、不互刷、不把 CI 克隆冒充采用。
 
-## 执行进度（2026-08-27）
+## 执行进度（2026-08-28）
 
 - P0 完成率：**9/10**。PR #22/#24/#31/#32 已合并；0.9.1 Preview 1、双语 README、45 秒真实界面演示、三图画廊、GitHub Pages、16 个 Topics、公开维护者资料、AgentPlay 置顶和 6 个可领取 Issue 均已完成。
-- 唯一未完成 P0：仓库 Social Preview 图片已生成并通过 1280×640 检查，但 Chrome ChatGPT 扩展未启用文件 URL 访问，GitHub 官方只提供 Settings 网页上传路径；不得改浏览器权限或伪造 API 完成。
+- 唯一未完成 P0：仓库 Social Preview 图片已生成并通过 1280×640 检查；用户截图证明 Chrome ChatGPT 扩展的文件 URL 访问早已开启，但 GitHub Settings 上传仍没有公开回读，因此继续按未完成记账，不能用本地图片或浏览器权限状态冒充仓库已展示。
 - 第一轮公开发布：GitHub Prerelease、8 资产、Draft 回读、匿名安装器/便携包哈希验收与 Discussion #30 均完成；Stable 仍由有效 Authenticode 签名硬门阻断。
-- 第二轮真实结果：Product Hunt 被 Cloudflare 安全验证阻断，Show HN 没有登录账号；两者均未发布。Electron 官方 `electron/apps` 条目按规范生成并通过 10,279 项 human-data 测试，但上游网页明确限制只有协作者可以创建 PR，因此没有绕过权限提交。
+- 第二轮真实结果：Product Hunt 已通过 GitHub OAuth 建立维护者账号，AgentPlay 0.9.1 的主信息、开源仓库、缩略图、两张图库、三个标签、制造商身份与首条评论均已创建；发布清单必需项 100%，产品页为 `https://www.producthunt.com/products/agentplay-0-9-1?launch=agentplay-0-9-1`。已确认最早的 2026-08-28 太平洋时间排期并出现 launch-day 控制面板；因平台尚未日切且匿名读取受当前网络出口限制，状态为“已排期、待公开验收”，不得提前写“已上线”。Show HN 仍没有登录账号。Electron 官方 `electron/apps` 条目按规范生成并通过 10,279 项 human-data 测试，但上游网页明确限制只有协作者可以创建 PR，因此没有绕过权限提交。
 - 初始外部反馈：新增 `VedantMadane` 与 `Ap-0007` 两个真实用户 Fork，目前为 **1 个真实外部 Star、3 个真实外部 Fork、0 个外部 Issue/Discussion/PR**。Release 下载计数包含维护者的 Draft/匿名哈希验收，不得计为真实采用。
 - 仓库公开描述已改为英文定位：`One local AI workspace for links, media, and documents`；官网、个人资料与置顶仓库均已公开回读。
 
-## 推广前基线
+## 推广前基线与当前差异
 
-- 仓库：1 个真实外部 Star、1 个真实外部 Fork、0 个外部 Issue/讨论/PR；社区健康度 100%。
+- 当前仓库：1 个真实外部 Star、3 个真实外部 Fork、0 个外部 Issue/讨论/PR；社区健康度 100%。
 - 近 14 天 Traffic：28 views / 13 unique visitors；483 clones / 137 unique cloners。Clone 数包含 Actions、维护与机器人活动，不能直接当作用户采用。
-- 入口缺口：仓库 homepage 为空；维护者 GitHub profile 的姓名、简介和网站为空；README 只有中文，没有产品截图、GIF或视频；公开最新 Release 仍是 v0.7.6，无法展示当前 0.9.1 能力。
+- 历史入口缺口已关闭：仓库 homepage、维护者 profile、双语 README、真实演示、截图画廊与 0.9.1 Preview 均已公开；当前只剩 GitHub Social Preview 的网页上传回读和 Stable Authenticode 签名门。
 - 已有优势：Apache-2.0、Issue forms、Discussions、贡献/安全/支持文档、双平台CI、SBOM/哈希/安全扫描和可恢复任务证据。
 
 ## 不能只把自己定义成“AI 视频编辑器”
