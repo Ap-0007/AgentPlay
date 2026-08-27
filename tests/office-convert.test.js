@@ -42,6 +42,8 @@ test('Office COM startup retries only transient server failures and every script
   const enrich = fs.readFileSync(path.join(root, 'electron', 'excel-enrich.ps1'), 'utf8')
   assert.match(helper, /-2146959355/)
   assert.match(helper, /-2147023174/)
+  assert.match(helper, /-2147023170/)
+  assert.match(helper, /AgentPlayAlreadyExitedOfficeHResults/)
   assert.match(helper, /ValidateRange\(1, 5\).*MaxAttempts = 3/)
   assert.match(helper, /FinalReleaseComObject/)
   assert.match(convert, /New-AgentPlayOfficeApplication/)

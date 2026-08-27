@@ -12,8 +12,8 @@ test('electron-builder child-process timeout patch is pinned and active', () => 
   assert.equal(patchPath, 'patches/builder-util@26.15.3.patch')
 
   const patch = fs.readFileSync(path.join(root, patchPath), 'utf8')
-  assert.match(patch, /15 \* 60 \* 1000/)
-  assert.match(patch, /timed out after 15 minutes/)
+  assert.match(patch, /30 \* 60 \* 1000/)
+  assert.match(patch, /timed out after 30 minutes/)
   assert.doesNotMatch(patch, /^\+.*timed out after 4 minutes/m)
 
   const electronBuilderEntry = require.resolve('electron-builder')
@@ -21,6 +21,6 @@ test('electron-builder child-process timeout patch is pinned and active', () => 
     paths: [path.dirname(electronBuilderEntry)],
   })
   const installedUtil = fs.readFileSync(installedUtilPath, 'utf8')
-  assert.match(installedUtil, /15 \* 60 \* 1000/)
-  assert.match(installedUtil, /timed out after 15 minutes/)
+  assert.match(installedUtil, /30 \* 60 \* 1000/)
+  assert.match(installedUtil, /timed out after 30 minutes/)
 })
