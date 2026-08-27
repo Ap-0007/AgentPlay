@@ -2,7 +2,16 @@
 
 > 证据快照：2026-08-27。目标是获得真实用户、问题与贡献，不购买 Star、不互刷、不把 CI 克隆冒充采用。
 
-## 当前基线
+## 执行进度（2026-08-27）
+
+- P0 完成率：**9/10**。PR #22/#24/#31/#32 已合并；0.9.1 Preview 1、双语 README、45 秒真实界面演示、三图画廊、GitHub Pages、16 个 Topics、公开维护者资料、AgentPlay 置顶和 6 个可领取 Issue 均已完成。
+- 唯一未完成 P0：仓库 Social Preview 图片已生成并通过 1280×640 检查，但 Chrome ChatGPT 扩展未启用文件 URL 访问，GitHub 官方只提供 Settings 网页上传路径；不得改浏览器权限或伪造 API 完成。
+- 第一轮公开发布：GitHub Prerelease、8 资产、Draft 回读、匿名安装器/便携包哈希验收与 Discussion #30 均完成；Stable 仍由有效 Authenticode 签名硬门阻断。
+- 第二轮真实结果：Product Hunt 被 Cloudflare 安全验证阻断，Show HN 没有登录账号；两者均未发布。Electron 官方 `electron/apps` 条目按规范生成并通过 10,279 项 human-data 测试，但上游网页明确限制只有协作者可以创建 PR，因此没有绕过权限提交。
+- 初始外部反馈：新增 `VedantMadane` 与 `Ap-0007` 两个真实用户 Fork，目前为 **1 个真实外部 Star、3 个真实外部 Fork、0 个外部 Issue/Discussion/PR**。Release 下载计数包含维护者的 Draft/匿名哈希验收，不得计为真实采用。
+- 仓库公开描述已改为英文定位：`One local AI workspace for links, media, and documents`；官网、个人资料与置顶仓库均已公开回读。
+
+## 推广前基线
 
 - 仓库：1 个真实外部 Star、1 个真实外部 Fork、0 个外部 Issue/讨论/PR；社区健康度 100%。
 - 近 14 天 Traffic：28 views / 13 unique visitors；483 clones / 137 unique cloners。Clone 数包含 Actions、维护与机器人活动，不能直接当作用户采用。
