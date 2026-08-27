@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
+const { once } = require('node:events')
 const { agentPanelSource } = require('./helpers/agent-panel-source')
 
 const { AgentEngine } = require('../electron/llm-service')
@@ -134,7 +135,9 @@ test('single installer carries the in-app local AI download instead of a second 
   const modelCenter = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'ModelCenter.tsx'), 'utf8')
   const verifyRelease = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'verify-release.mjs'), 'utf8')
   const packManifest = require('../electron/local-ai-pack-manifest')
-  assert.equal(packageConfig.scripts['build:electron'], 'pnpm build:web && pnpm build:electron:lean')
+  assert.equal(packageConfig.scripts['build:electron'], 'pnpm build:electron:lean')
+  assert.match(packageConfig.scripts['build:electron:lean'], /^pnpm build:web && /, '标准版打包不得复用陈旧 dist')
+  assert.match(packageConfig.scripts['build:electron:local-ai'], /^pnpm build:web && /, '完整本地 AI 版打包不得复用陈旧 dist')
   assert.match(main, /new LocalAiDownloadService\(\{[\s\S]{0,200}userData/)
   assert.match(main, /localai:download/)
   assert.match(main, /localai:cancel/)
@@ -527,8 +530,10 @@ test('cast file server authorizes a selected file and supports byte ranges', asy
     assert.equal(response.headers.get('content-range'), 'bytes 2-5/10')
     assert.equal(await response.text(), '2345')
   } finally {
+    const serverClosed = cast.fileServer?.listening ? once(cast.fileServer, 'close') : Promise.resolve()
     cast.stop()
-    fs.rmSync(dir, { recursive: true, force: true })
+    await serverClosed
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   }
 })
 
@@ -578,6 +583,6 @@ test('DLNA ContentDirectory Browse exposes playable media with byte-range URLs',
     assert.equal(await media.text(), 'bcd')
   } finally {
     dlna.stop()
-    fs.rmSync(dir, { recursive: true, force: true })
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })

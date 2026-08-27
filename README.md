@@ -38,6 +38,14 @@ AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的
 
 当前版本未购买 Authenticode 代码签名证书，Windows SmartScreen 可能提示“未知发布者”。请只从上述官方 Release 下载并核对 SHA-256。
 
+后续版本分为三条通道：Preview 和 Beta 允许在明确标注 `NotSigned`、GitHub Prerelease、SHA-256、SBOM 与安全扫描齐全时持续发布；Stable 面向普通用户，仍要求安装包和主程序的 Authenticode 均为 `Valid`。数字签名不会再卡住开源预览迭代，但未签名版本不会冒充稳定版。
+
+从下一次采用新资产合同的 Release 起，还会同时提供标准安装器、便携 ZIP 和经过校验的 `Install-AgentPlay.ps1`。命令行安装只是可选入口，不会绕过 SmartScreen；未签名 Preview/Beta 需要用户显式添加 `-AllowUnsigned`。不提供 `irm | iex` 式远程脚本直执行命令，建议先从官方 Release 下载脚本并检查内容，再运行：
+
+```powershell
+powershell -NoProfile -File .\Install-AgentPlay.ps1 -Channel preview -Version <发布页版本> -Package installer -AllowUnsigned
+```
+
 ## 5 分钟上手
 
 1. 从上面的官方 Release 下载稳定版并核对 SHA-256。
@@ -64,6 +72,9 @@ AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的
 - 链接视频：B站、YouTube、抖音、X 与 Facebook 统一进入站点下载链；每个识别链接都保留“仅下载”和“下载并拉片”两个选择。需要登录态的平台通过站点登录或导入 Cookies，失败时明确提示，不伪造下载成功。
 - 模型无关 Agent Runtime：Agnes、OpenAI、Claude、Gemini、本地模型与订阅 CLI 共用“问答 / 规划 / 执行 / 自动”四种模式；工具调用受权限和预算约束，任务中心展示真实步骤、证据回执与成果文件校验。
 - 专业视频拉片报告固定为“视频讲了什么”和“专业视听拆解与 AI 复刻”两部分；关键帧覆盖全片，低质量结果经过门禁和一次自动修复，无法确认的摄影参数明确标记为专业估计。
+- 专业多轨音频：可用一句话安排对白、音乐、环境声和音效，指定出现时间、分段音量和对白闪避；成果另存、可撤销，并从最终编码音轨核对每条外部轨的时间对齐。
+- 音频修复：可用一句话降噪、去直流、匹配响度和填充短数字断音；立体声可另存基础人声/伴奏干线，但这不是 AI 专业分轨，混响、偏置声源和中置乐器可能串轨，也不能恢复已经丢失的对白。
+- 节拍剪辑：拖入本地音乐后可说“按节拍切镜、高潮对齐、片尾自然收束”，并用“更快/更克制”调节镜头密度；Agent先展示真实BPM与方案，确认后另存成片并验证切点、高潮和双淡出。
 
 ## Windows 版本与本地 AI
 
@@ -73,11 +84,12 @@ AgentPlay 是一个面向 AI 时代的本地媒体工作台：在可靠播放的
 
 ## Code signing policy
 
-未来若通过开源项目资格审核，计划采用：Free code signing provided by SignPath.io, certificate by SignPath Foundation。当前申请已于 2026-07-23 因公开采用与社区可见度证据不足被拒，所有现有版本仍未签名，继续以官方 Release 与 SHA-256 校验为准。
+未来若通过开源项目资格审核，计划采用：Free code signing provided by SignPath.io, certificate by SignPath Foundation。首次申请于 2026-07-23 因公开采用与社区可见度证据不足被拒；补齐公开 Release、可验证构建、1 个真实外部 Star 与 1 个真实外部 Fork 后，已于 2026-08-23 如实重新提交申请，目前等待 SignPath Foundation 正式答复。所有现有版本仍未签名，继续以官方 Release 与 SHA-256 校验为准；等待期间可以发布明确标记的 Preview/Beta，但 Stable 仍以有效签名为硬门。
 
 - Committers and reviewers: [wg5759](https://github.com/wg5759)
 - Approvers: [wg5759](https://github.com/wg5759)
 - Privacy policy: [PRIVACY.md](PRIVACY.md)
+- Re-application evidence: [docs/SIGNPATH_REAPPLICATION.md](docs/SIGNPATH_REAPPLICATION.md)
 
 ## 安全与隐私默认值
 
@@ -106,6 +118,7 @@ pnpm check
 pnpm audit --prod --registry=https://registry.npmjs.org
 pnpm audit --registry=https://registry.npmjs.org
 pnpm build:electron
+pnpm release:portable
 pnpm release:verify
 node scripts/smoke-packaged-ui.mjs
 node scripts/smoke-packaged-download.mjs

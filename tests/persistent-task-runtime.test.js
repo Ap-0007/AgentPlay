@@ -58,6 +58,31 @@ test('approval token is bound to frozen task spec, expires and can only be consu
   assert.throws(() => runtime.approve(expiring.approval.id, expiring.approval.token), /已经过期/)
 })
 
+test('cold start expires stale approval without running or waiting forever', async (t) => {
+  const root = tempRoot()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  let now = 10_000
+  const first = new PersistentTaskRuntime({ rootDir: root, now: () => now })
+  first.enqueue({
+    id: 'expired-cloud-1', type: 'analysis.cloud', spec: { source: 'video.mp4' },
+    approval: { action: 'cloud', summary: '上传关键帧', ttlMs: 1000 }
+  })
+
+  now += 1001
+  let calls = 0
+  const changes = []
+  const restarted = new PersistentTaskRuntime({ rootDir: root, now: () => now, onChange: (task) => changes.push(task) })
+  restarted.register('analysis.cloud', async () => { calls += 1; return { success: true } }, { autoResume: true })
+  await restarted.startRecoverable()
+
+  const expired = restarted.get('expired-cloud-1')
+  assert.equal(calls, 0)
+  assert.equal(expired.state, 'failed')
+  assert.equal(expired.approval.status, 'expired')
+  assert.match(expired.error, /审批令牌已经过期/)
+  assert.equal(changes.at(-1).state, 'failed')
+})
+
 test('all sensitive actions use one closed approval vocabulary', () => {
   assert.deepEqual([...APPROVAL_ACTIONS].sort(), ['cloud', 'credential', 'delete', 'paid', 'publish'])
 })

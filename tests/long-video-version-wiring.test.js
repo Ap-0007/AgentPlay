@@ -1,0 +1,32 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const read = (name) => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
+
+test('main process freezes one shared plan and recovers every deterministic version output', () => {
+  const main = read('electron/main.js')
+  assert.match(main, /semanticEditService\.setLongVersionPlanner/)
+  assert.match(main, /taskKind: 'long-video-version-planning'/)
+  assert.match(main, /freezeLongVideoVersionPlan/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.version-bundle'/)
+  assert.match(main, /buildVersionEditDecision/)
+  assert.match(main, /mediaEditService\.(?:trim|concatSegments)/)
+  assert.match(main, /ipcMain\.handle\('media:version-bundle-run'/)
+  assert.match(main, /snapshotMediaSources\(\[sourcePath, subtitlePath\]\)/)
+})
+
+test('preload, renderer and types expose confirm-first multi-output execution and recovery', () => {
+  const preload = read('electron/preload.js')
+  const hook = read('src/components/agent-panel/useMediaCreativeTasks.ts')
+  const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts')
+  const types = read('src/types/global.d.ts')
+  assert.match(preload, /runVersionBundle: \(input\) => ipcRenderer\.invoke\('media:version-bundle-run', input\)/)
+  assert.match(hook, /长视频多版本方案已完成，尚未执行/)
+  assert.match(hook, /runVersionBundleTask/)
+  assert.match(hook, /不会为每个版本重复调用模型/)
+  assert.match(runtime, /media\.version-bundle/)
+  assert.match(types, /interface LongVideoVersionPlanV1/)
+  assert.match(types, /runVersionBundle:/)
+})

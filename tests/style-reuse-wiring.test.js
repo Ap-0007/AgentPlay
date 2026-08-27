@@ -1,0 +1,30 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const read = (name) => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
+
+test('recut task freezes a local abstract blueprint and never sends raw report or frames to shot planning', () => {
+  const main = read('electron/main.js'); const quality = read('electron/task-result-quality.js')
+  assert.match(main, /compileStyleBlueprint\(reportText/)
+  assert.match(main, /protectedFragments = extractProtectedFragments/)
+  assert.match(main, /prompt: buildStyleShotPrompt\(\{ blueprint, originalGoal, count \}\)/)
+  assert.doesNotMatch(main, /prompt: `根据这份视频拉片报告/)
+  assert.match(main, /validateStyleShots\(planJson\.shots/)
+  assert.match(main, /styleReuseReceipt/)
+  assert.match(main, /studio:recut-style-plan/)
+  assert.match(main, /studio:recut-style-validate/)
+  assert.match(quality, /taskType === 'creative\.recut-short'/)
+  assert.match(quality, /COPYRIGHT_BOUNDARY_FAILED/)
+})
+
+test('preload, renderer and types show the local blueprint boundary before paid generation', () => {
+  const preload = read('electron/preload.js'); const hook = read('src/components/agent-panel/useMediaCreativeTasks.ts'); const types = read('src/types/global.d.ts')
+  assert.match(preload, /planRecut: \(input\) => ipcRenderer\.invoke\('studio:recut-style-plan'/)
+  assert.match(preload, /validateRecutShots: \(input\) => ipcRenderer\.invoke\('studio:recut-style-validate'/)
+  assert.match(hook, /正在本机提取节奏、景别、运镜、光线和色彩蓝图/)
+  assert.match(hook, /blueprintSha256: stylePlan\.blueprintSha256/)
+  assert.match(types, /planRecut:/)
+  assert.match(types, /styleReuseReceipt\?:/)
+})

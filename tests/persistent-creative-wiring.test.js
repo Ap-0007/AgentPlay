@@ -18,7 +18,7 @@ test('video generation and report recut use the durable runtime', () => {
   assert.match(main, /stage:\s*'artifact-written'/)
   assert.match(main, /persistentTaskRuntime\.cancel\(String\(requestId/)
   assert.match(mediaTasks, /generateVideo\(\{ prompt, duration: seconds, requestId, workspaceTaskId:/)
-  assert.match(mediaTasks, /recutShort\(\{ \.\.\.input, requestId, workspaceTaskId:/)
+  assert.match(mediaTasks, /recutShort\(\{ \.\.\.input,[\s\S]{0,160}requestId, workspaceTaskId:/)
   assert.match(recovery, /creative\.video-generate/)
   assert.match(recovery, /creative\.recut-short/)
 })

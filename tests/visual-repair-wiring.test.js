@@ -1,0 +1,32 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const read = (name) => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
+
+test('main process plans, confirms, persists, repairs and verifies visual repair tasks', () => {
+  const main = read('electron/main.js'); const service = read('electron/media-edit-service.js'); const quality = read('electron/task-result-quality.js')
+  assert.match(main, /new VisualRepairPlanner/)
+  assert.match(main, /matchesVisualRepairInstruction/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.visual-repair'/)
+  assert.match(main, /plannedMediaOutput\(outputAnchor, '修复前后对比'/)
+  assert.match(service, /async visualRepair\(/)
+  assert.match(service, /vidstabdetect=shakiness=8/)
+  assert.match(service, /vidstabtransform=input=/)
+  assert.match(service, /signalstats-neutral-distance-v1/)
+  assert.match(service, /hstack=inputs=2/)
+  assert.match(quality, /taskType === 'media\.visual-repair'/)
+  assert.match(quality, /STABILIZATION_NOT_IMPROVED/)
+})
+
+test('renderer and types expose confirm-first repair, comparison outputs and persistent recovery', () => {
+  const hook = read('src/components/agent-panel/useMediaCreativeTasks.ts'); const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts'); const types = read('src/types/global.d.ts')
+  assert.match(hook, /visualRepair\?\.confirmationRequired/)
+  assert.match(hook, /低质量片段仅提示、不自动删除/)
+  assert.match(hook, /operation: reviewDecision\.kind === 'media\.rhythm-edit' \? 'rhythm' : reviewDecision\.kind === 'media\.visual-repair' \? 'repair'/)
+  assert.match(runtime, /media\.visual-repair/)
+  assert.match(runtime, /画面防抖与质量修复/)
+  assert.match(types, /'media\.visual-repair'/)
+  assert.match(types, /strategy: 'ffmpeg-visual-repair-v1'/)
+})

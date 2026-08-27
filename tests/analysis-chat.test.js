@@ -151,6 +151,37 @@ test('chat analysis sends frames to vision model and reports multimodal evidence
   assert.match(result.summary, /多模态拉片/)
 })
 
+test('analysis resumes a persisted model draft without repeating the model call', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-resume-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const videoPath = makeVideoWithSubtitle(root)
+  const checkpoint = {}
+  let calls = 0
+  await assert.rejects(runChatAnalysis({
+    sourcePath: videoPath, mediaName: '样片.mp4', duration: 12,
+    instruction: '深度解剖', outputFormat: 'md', cloudApproved: true,
+    workspace: makeWorkspace(root),
+    model: { configured: true, local: true, provider: '本机测试', model: 'analysis-test' },
+    complete: async () => { calls += 1; return { text: validDeepAnalysis('检查点初稿。') } },
+    onCheckpoint: (patch) => {
+      Object.assign(checkpoint, patch)
+      if (patch.stage === 'analysis-model-complete') throw new Error('模拟模型完成后进程退出')
+    }
+  }), /模拟模型完成后进程退出/)
+  assert.equal(calls, 1)
+  assert.equal(checkpoint.stage, 'analysis-model-complete')
+
+  const resumed = await runChatAnalysis({
+    sourcePath: videoPath, mediaName: '样片.mp4', duration: 12,
+    instruction: '深度解剖', outputFormat: 'md', cloudApproved: true,
+    workspace: makeWorkspace(root), resumeCheckpoint: checkpoint,
+    model: { configured: true, local: true, provider: '本机测试', model: 'analysis-test' },
+    complete: async () => { throw new Error('已持久化的分析模型结果不应重复调用') }
+  })
+  assert.equal(resumed.success, true)
+  assert.match(fs.readFileSync(resumed.outputs[0], 'utf8'), /检查点初稿/)
+})
+
 test('default DOCX analysis uses the professional renderer and embeds selected evidence frames', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-chat-'))
   const videoPath = makeVideoWithSubtitle(root)
@@ -244,6 +275,26 @@ test('local model skips frames entirely and uses text path', async () => {
   })
   assert.equal(result.success, true)
   assert.equal(extractCalled, 0)
+})
+
+test('an explicitly vision-capable local model receives frames without becoming cloud', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-chat-local-vision-'))
+  const videoPath = makeVideoWithSubtitle(root)
+  let extractCalled = 0
+  let visionCalled = 0
+  const result = await runChatAnalysis({
+    sourcePath: videoPath, mediaName: '本地视觉样片.mp4', duration: 12,
+    instruction: '深度解剖这个视频', outputFormat: 'md',
+    workspace: makeWorkspace(root),
+    model: { configured: true, local: true, vision: true, provider: '本机视觉', model: 'local-vision' },
+    frames: { extract: async () => { extractCalled += 1; return makeFrames(root).extract() } },
+    completeVisionMulti: async () => { visionCalled += 1; return { text: validDeepAnalysis('本地画面证据有效。') } },
+    complete: async () => { throw new Error('合格本地视觉结果不应退回文本调用') }
+  })
+  assert.equal(result.success, true)
+  assert.equal(extractCalled, 1)
+  assert.equal(visionCalled, 1)
+  assert.ok(result.frameCount >= 2)
 })
 
 test('analysis report keeps exactly two major parts and no appendix noise', () => {

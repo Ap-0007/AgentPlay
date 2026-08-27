@@ -227,6 +227,11 @@ async function generateImageAsset(config, input = {}) {
   const baseUrl = isVolc ? 'https://ark.cn-beijing.volces.com/api/v3' : config.baseUrl
   const model = safeText(input.model, 200) || (isAgnes ? 'agnes-image-2.1-flash' : isVolc ? 'doubao-seedream-4-0-250828' : 'gpt-image-1')
   const controller = new AbortController()
+  const onOuterAbort = () => controller.abort(input.signal?.reason || new Error('已取消'))
+  if (input.signal) {
+    if (input.signal.aborted) onOuterAbort()
+    else input.signal.addEventListener('abort', onOuterAbort, { once: true })
+  }
   const timeout = setTimeout(() => controller.abort(new Error('图像生成超时')), 180000)
   try {
     const headers = { 'Content-Type': 'application/json' }
@@ -269,6 +274,7 @@ async function generateImageAsset(config, input = {}) {
     return { success: true, outputPath, bytes: bytes.length }
   } finally {
     clearTimeout(timeout)
+    input.signal?.removeEventListener('abort', onOuterAbort)
   }
 }
 
@@ -415,10 +421,11 @@ async function synthesizeSystemVoice(input = {}) {
   const text = safeText(input.text, 20000)
   if (!text) throw new Error('旁白文本为空')
   const outputDir = validateOutputDirectory(input.outputDir)
+  const outputStem = safeText(input.id, 80).replace(/[^\w\-㐀-鿿]+/g, '_')
   if (process.platform === 'win32') {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-player-voice-'))
     const textPath = path.join(tempDir, 'narration.txt')
-    const outputPath = path.join(outputDir, `narration-${Date.now()}.wav`)
+    const outputPath = path.join(outputDir, `${outputStem || `narration-${Date.now()}`}.wav`)
     const helperPath = path.resolve(String(input.helperPath || ''))
     if (!fs.existsSync(helperPath) || !fs.statSync(helperPath).isFile()) {
       fs.rmSync(tempDir, { recursive: true, force: true })
@@ -426,6 +433,7 @@ async function synthesizeSystemVoice(input = {}) {
     }
     fs.writeFileSync(textPath, `\uFEFF${text}`, 'utf16le')
     try {
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 1000) return { success: true, outputPath, bytes: fs.statSync(outputPath).size, engine: 'windows-sapi' }
       await runProcess(helperPath, [textPath, outputPath, String(Math.max(-5, Math.min(5, Number(input.rate) || 0)))])
       if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) throw new Error('系统配音没有生成有效音频')
       return { success: true, outputPath, bytes: fs.statSync(outputPath).size, engine: 'windows-sapi' }
@@ -434,11 +442,13 @@ async function synthesizeSystemVoice(input = {}) {
     }
   }
   if (process.platform === 'darwin') {
-    const outputPath = path.join(outputDir, `narration-${Date.now()}.aiff`)
+    const outputPath = path.join(outputDir, `${outputStem || `narration-${Date.now()}`}.aiff`)
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 1000) return { success: true, outputPath, bytes: fs.statSync(outputPath).size, engine: 'macos-say' }
     await runProcess('say', ['-o', outputPath, text])
     return { success: true, outputPath, bytes: fs.statSync(outputPath).size, engine: 'macos-say' }
   }
-  const outputPath = path.join(outputDir, `narration-${Date.now()}.wav`)
+  const outputPath = path.join(outputDir, `${outputStem || `narration-${Date.now()}`}.wav`)
+  if (fs.existsSync(outputPath) && fs.statSync(outputPath).size >= 1000) return { success: true, outputPath, bytes: fs.statSync(outputPath).size, engine: 'espeak-ng' }
   await runProcess('espeak-ng', ['-w', outputPath, text])
   return { success: true, outputPath, bytes: fs.statSync(outputPath).size, engine: 'espeak-ng' }
 }

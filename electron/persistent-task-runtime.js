@@ -152,7 +152,9 @@ class PersistentTaskRuntime {
     this.state.tasks.push(task)
     this.state.tasks = this.state.tasks.slice(-200)
     this.persist()
-    return this.publicTask(task)
+    const snapshot = this.publicTask(task)
+    try { this.onChange?.(snapshot) } catch (error) { this.logger?.warn?.('持久任务创建通知失败', error) }
+    return snapshot
   }
 
   get(id) {
@@ -171,14 +173,20 @@ class PersistentTaskRuntime {
     return snapshot
   }
 
+  expireApproval(task) {
+    if (task?.state !== 'waiting_approval' || task.approval?.status !== 'pending' || this.now() <= task.approval.expiresAt) return false
+    this.update(task, {
+      state: 'failed', status: '审批已过期', error: '审批令牌已经过期', completedAt: this.now(),
+      approval: { ...task.approval, status: 'expired' }
+    })
+    return true
+  }
+
   approve(approvalId, token) {
     const task = this.state.tasks.find((item) => item.approval?.id === String(approvalId || ''))
     if (!task) throw new Error('审批对象不存在')
     if (task.approval.status !== 'pending') throw new Error('审批令牌已经使用')
-    if (this.now() > task.approval.expiresAt) {
-      this.update(task, { state: 'failed', error: '审批令牌已经过期', completedAt: this.now(), approval: { ...task.approval, status: 'expired' } })
-      throw new Error('审批令牌已经过期')
-    }
+    if (this.expireApproval(task)) throw new Error('审批令牌已经过期')
     const expected = this.tokenFor('approval', task.approval.id, task.specHash, task.approval.expiresAt)
     const provided = Buffer.from(String(token || ''))
     const expectedBuffer = Buffer.from(expected)
@@ -299,6 +307,7 @@ class PersistentTaskRuntime {
   async startRecoverable() {
     const runs = []
     for (const task of this.state.tasks) {
+      if (this.expireApproval(task)) continue
       const registration = this.executors.get(task.type)
       if (!registration?.autoResume || task.state === 'waiting_approval' || TERMINAL_STATES.has(task.state)) continue
       if (task.state === 'running') this.update(task, { state: 'queued', status: '检测到程序中断，准备从检查点恢复' })

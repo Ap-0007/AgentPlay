@@ -34,10 +34,23 @@ function modelKey(config = {}) {
   return [config.providerId || 'unknown', config.model || 'unknown', config.thinkingMode || 'default', endpoint].join('::')
 }
 
+function isLocalRoute(config = {}) {
+  if (config.localOnly || config.bundled) return true
+  try {
+    const hostname = new URL(String(config.baseUrl || '')).hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.')
+  } catch {
+    return false
+  }
+}
+
 function taskKindForPersistentType(type) {
   if (type === 'document.run') return 'document'
   if (type === 'analysis.run') return 'analysis'
+  if (type === 'project.evidence-qa') return 'cross-material-qa'
   if (type === 'subtitle.generate') return 'subtitle-translation'
+  if (type === 'media.translate-subtitles' || type === 'media.transform-subtitles') return 'subtitle-translation'
+  if (type === 'creative.asset-bundle') return 'creative-assets'
   if (type === 'creative.video-generate') return 'creative-video'
   if (type === 'creative.recut-short') return 'creative-planning'
   return null
@@ -45,7 +58,7 @@ function taskKindForPersistentType(type) {
 
 function supportsVision(config) {
   if (config?.capabilities?.vision === true) return true
-  // Agnes 由调用层把不收图的 2.5 自动回退到已验证的 2.0 视觉模型。
+  // Agnes 2.5 已支持视觉；调用层仍保留2.0作为历史端点明确拒图时的兼容回退。
   return config?.providerId === 'agnes'
 }
 
@@ -202,7 +215,7 @@ class ModelPerformanceRouter {
       providerId: config.providerId,
       providerName: config.providerName,
       model: config.model,
-      localOnly: Boolean(config.localOnly || config.bundled),
+      localOnly: isLocalRoute(config),
       samples: calls.length,
       qualitySamples: quality.length,
       successRate,
@@ -216,7 +229,7 @@ class ModelPerformanceRouter {
 
   eligibility(config, requirements, cloudAllowed) {
     if (!isConfigured(config)) return { eligible: false, reason: '尚未接入' }
-    if (!cloudAllowed && !config.localOnly && !config.bundled) return { eligible: false, reason: '未授权云端' }
+    if (!cloudAllowed && !isLocalRoute(config)) return { eligible: false, reason: '未授权云端' }
     if (requirements.vision && !supportsVision(config)) return { eligible: false, reason: '不支持看图' }
     if (requirements.text !== false && config.capabilities?.text === false) return { eligible: false, reason: '不支持文字' }
     if (requirements.providerId && config.providerId !== requirements.providerId) return { eligible: false, reason: '不符合任务指定能力' }
@@ -239,9 +252,9 @@ class ModelPerformanceRouter {
     const cloudAllowed = Boolean(input.cloudAllowed)
     const unique = [...new Map((input.candidates || []).map((config) => [modelKey(config), config])).values()]
     let eligible = unique.filter((config) => this.eligibility(config, requirements, cloudAllowed).eligible)
-    if (this.state.settings.preference === 'local') eligible = eligible.filter((config) => config.localOnly || config.bundled)
+    if (this.state.settings.preference === 'local') eligible = eligible.filter((config) => isLocalRoute(config))
     if (this.state.settings.preference === 'cloud') {
-      const cloud = eligible.filter((config) => !config.localOnly && !config.bundled)
+      const cloud = eligible.filter((config) => !isLocalRoute(config))
       if (cloud.length) eligible = cloud
     }
     if (!eligible.length) return { selected: null, reason: '没有满足能力与授权边界的已接入模型', ranking: [] }
@@ -285,5 +298,6 @@ module.exports = {
   ModelPerformanceRouter,
   modelKey,
   normalizeUsage,
+  isLocalRoute,
   taskKindForPersistentType
 }

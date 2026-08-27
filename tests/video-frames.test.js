@@ -167,3 +167,37 @@ test('aborting a media encode kills the ffmpeg child and rejects promptly', asyn
   await assert.rejects(pending, /已取消/)
   assert.equal(child.killed, true)
 })
+
+test('audio probing distinguishes a real audio stream from a silent video', async () => {
+  const { EventEmitter } = require('events')
+  const calls = []
+  const spawnImpl = (_file, args) => {
+    calls.push(args)
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.kill = () => {}
+    process.nextTick(() => {
+      if (args.at(-1) === 'with-audio.mp4') child.stdout.emit('data', Buffer.from('1\n'))
+      child.emit('exit', 0)
+    })
+    return child
+  }
+  const service = new VideoFrameService({ ffprobePath: process.execPath, spawnImpl })
+
+  assert.equal(await service.probeHasAudio('with-audio.mp4'), true)
+  assert.equal(await service.probeHasAudio('silent.mp4'), false)
+  assert.ok(calls.every((args) => args.includes('a:0') && args.includes('stream=index')))
+})
+
+test('audio stream probing returns channel count and layout for separation gates', async () => {
+  const { EventEmitter } = require('events')
+  const spawnImpl = (_file, args) => {
+    const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => {}
+    process.nextTick(() => { child.stdout.emit('data', Buffer.from(JSON.stringify({ streams: [{ channels: 2, channel_layout: 'stereo', sample_rate: '48000', codec_name: 'aac' }] }))); child.emit('exit', 0) })
+    assert.ok(args.includes('stream=channels,channel_layout,sample_rate,codec_name'))
+    return child
+  }
+  const service = new VideoFrameService({ ffprobePath: process.execPath, spawnImpl })
+  assert.deepEqual(await service.probeAudioStreamInfo('stereo.mp4'), { channels: 2, channelLayout: 'stereo', sampleRate: 48000, codecName: 'aac' })
+})

@@ -5,6 +5,7 @@ const path = require('node:path')
 const test = require('node:test')
 const { agentPanelSource } = require('./helpers/agent-panel-source')
 const { Readable } = require('node:stream')
+const { EventEmitter } = require('node:events')
 
 const { analyzeDirAsync, findDuplicates, hashFile } = require('../electron/media-service')
 
@@ -61,6 +62,33 @@ test('duplicate hash abort destroys the active read stream instead of finishing 
   await assert.rejects(pending, /已取消/)
   assert.equal(destroyed, true)
   assert.ok(chunks < 100, `aborted hash still consumed ${chunks} chunks`)
+})
+
+test('duplicate hash does not resolve until the file stream has closed', async () => {
+  const stream = new EventEmitter()
+  stream.destroyed = false
+  stream.destroy = (error) => {
+    stream.destroyed = true
+    if (error) stream.emit('error', error)
+    stream.emit('close')
+  }
+  let closed = false
+  const pending = hashFile('delayed-close-fixture.bin', {
+    createReadStream: () => stream
+  }).then((hash) => ({ hash, closedAtResolution: closed }))
+
+  queueMicrotask(() => {
+    stream.emit('data', Buffer.from('same-media-content'))
+    stream.emit('end')
+    setTimeout(() => {
+      closed = true
+      stream.emit('close')
+    }, 20)
+  })
+
+  const result = await pending
+  assert.equal(result.closedAtResolution, true, 'hash resolved while Windows could still hold the file handle')
+  assert.match(result.hash, /^[a-f0-9]{64}$/)
 })
 
 test('duplicate directory enumeration and candidate hashing stop at the abort boundary', async () => {
@@ -131,9 +159,9 @@ test('preload, renderer and types bind cancellation to the active task id', () =
   const dispatcher = source('src/components/agent-panel/taskCommandDispatcher.ts')
   const types = source('src/types/global.d.ts')
   assert.match(preload, /mediaBatch:[\s\S]{0,260}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
-  assert.match(preload, /mediaTools:[\s\S]{0,180}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
+  assert.match(preload, /mediaTools:[\s\S]{0,600}cancel: \(requestId\) => ipcRenderer\.invoke\('media:task-cancel', requestId\)/)
   assert.match(preload, /cancelTask: \(requestId\) => ipcRenderer\.invoke\('studio:task-cancel', requestId\)/)
-  for (const kind of ['batch', 'compress', 'video-gen', 'recut']) {
+  for (const kind of ['batch', 'compress', 'trim', 'video-gen', 'recut']) {
     assert.ok(panel.includes(`pendingTaskRef.current = '${kind}'`), `${kind} 必须登记取消路由`)
   }
   assert.ok((panel.match(/bindCancelableRequest\(requestId\)/g) || []).length >= 8)

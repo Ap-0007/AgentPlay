@@ -13,6 +13,37 @@ const agentRuntimePolicyPromise = import('./agent-runtime-policy.mjs')
 const SYSTEM_PROMPT = `你是 AgentPlay 的 Agent 助手。用户用自然语言控制播放器，你调用工具执行。
 可用工具：暂停/继续、绝对或相对跳转、音量/静音、倍速、字幕、画面模式、窗口模式、截图、加载字幕、打印、视频摘要。摘要工具返回 transcript 时，必须基于 transcript 给出简洁摘要和章节；工具明确失败时不得编造内容。用中文简洁回复。`
 
+const CAPABILITY_QUESTION_PATTERN = /(?:你是谁|你是什么|你(?:都)?能做什么|你都会什么|你有哪些功能|具体(?:都)?能(?:完成|做)什么(?:任务)?|AgentPlay(?:具体)?能做什么)/i
+
+function productCapabilityAnswer(text) {
+  const input = String(text || '').trim()
+  if (input.length > 80 || !CAPABILITY_QUESTION_PATTERN.test(input) || /(?:帮我|请你|现在|立即).*(?:下载|剪辑|生成|打开|播放|翻译|删除|处理)/i.test(input)) return ''
+  return [
+    '我是 AgentPlay：一个本地优先、能实际执行任务的 AI 媒体与内容工作台。',
+    '目前可以直接完成：',
+    '1. 打开并播放本地视频、音频、图片、PDF、Word、Excel、PPT 等文件；',
+    '2. 下载公开视频，并选择“仅下载”或“下载并拉片”；',
+    '3. 生成、翻译、校对、调时、封装或烧录字幕；',
+    '4. 按全片字幕和关键帧生成专业拉片报告、Word、PPT、表格等成果；',
+    '5. 用自然语言截取、删除、拼接视频，添加本地合法音乐，并撤销/重做；',
+    '6. 检测并删除长停顿，所有剪辑另存新文件，不覆盖原片；',
+    '7. 处理文档、扫描件OCR、表格和多材料证据问答；',
+    '8. 接入本地模型、云模型或订阅模型；上云、付费、发布、删除和凭证操作都会先确认。',
+    '直接打开文件或描述最终想得到的结果即可。'
+  ].join('\n')
+}
+
+function chatRequestTimeoutMs(config = {}) {
+  if (config.providerId === 'bundled-lite') return 120000
+  if (/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::|\/)/i.test(String(config.baseUrl || config.base || ''))) return 90000
+  return 30000
+}
+
+function timeoutReply(config = {}) {
+  const label = config.providerId === 'bundled-lite' ? '本机内置模型' : (config.providerName || '当前模型')
+  return `[模型响应超时] ${label}本次生成时间过长，任务已安全停止。可以直接重试；如经常发生，请切换“优先效果”或更快的模型。`
+}
+
 function friendlyModelError(error, config = {}) {
   const message = String(error?.message || error || '')
   if (!/exceed(?:s|ed)?\s+(?:the\s+)?available context|exceed_context_size|context (?:size|window)|上下文.{0,8}(?:超过|超限)/i.test(message)) return message
@@ -115,7 +146,8 @@ class AgentEngine {
     for (let i = 0; i < runtime.maxToolTurns; i++) {
       if (!ledger.beginTurn()) return { text: '[达到本次任务时间预算]', toolResults }
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 30000)
+      let timedOut = false
+      const timer = setTimeout(() => { timedOut = true; controller.abort() }, chatRequestTimeoutMs(config))
       let response
       try {
         response = await safeFetch(config, `${config.base}/v1/messages`, {
@@ -139,6 +171,7 @@ class AgentEngine {
           signal: controller.signal
         })
       } catch (error) {
+        if (timedOut || error?.name === 'AbortError') return { text: timeoutReply(config), toolResults }
         return { text: `[网络错误] ${error instanceof Error ? error.message : String(error)}`, toolResults }
       } finally {
         clearTimeout(timer)
@@ -171,7 +204,8 @@ class AgentEngine {
     for (let i = 0; i < runtime.maxToolTurns; i++) {
       if (!ledger.beginTurn()) return { text: '[达到本次任务时间预算]', toolResults }
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 30000)
+      let timedOut = false
+      const timer = setTimeout(() => { timedOut = true; controller.abort() }, chatRequestTimeoutMs(config))
       let response
       try {
         response = await safeFetch(config, `${config.base}/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.key)}`, {
@@ -189,6 +223,7 @@ class AgentEngine {
           signal: controller.signal
         })
       } catch (error) {
+        if (timedOut || error?.name === 'AbortError') return { text: timeoutReply(config), toolResults }
         return { text: `[网络错误] ${error instanceof Error ? error.message : String(error)}`, toolResults }
       } finally {
         clearTimeout(timer)
@@ -414,7 +449,7 @@ class AgentEngine {
     try {
       return await this.completeVisionMultiOnce(options)
     } catch (error) {
-      // agnes-2.5-flash 实测不收图（504/400）：agnes 厂商自动回退已验证视觉型号 agnes-2.0-flash 重试一次
+      // 2026-08-24 agnes-2.5-flash 已真实单图返回；仍保留2.0作为端点明确报不支持图片时的历史兼容回退。
       const config = typeof options.apiKey === 'object' && options.apiKey !== null ? options.apiKey : null
       const message = String(error?.message || '')
       const unsupported = /504|400|multimodal|does not support|unsupported.*(image|vision|media|modality)|invalid.*(image|image_url|content)|(不支持|不接受).{0,4}(图|图片|图像|多模态)/i.test(message)
@@ -545,6 +580,8 @@ class AgentEngine {
       })
     })
     const latestText = messages.length > 0 ? String(messages[messages.length - 1].content || '') : ''
+    const capabilityAnswer = productCapabilityAnswer(latestText)
+    if (capabilityAnswer) return finish({ text: capabilityAnswer, toolResults: [] })
     const local = this.localCommand(latestText)
     if (local) {
       if (!runtime.canUseTool(local[0])) {
@@ -608,7 +645,8 @@ class AgentEngine {
       const controller = new AbortController()
       const onOuterAbort = () => controller.abort()
       options.signal?.addEventListener('abort', onOuterAbort, { once: true })
-      const timer = setTimeout(() => controller.abort(), 30000)
+      let timedOut = false
+      const timer = setTimeout(() => { timedOut = true; controller.abort() }, chatRequestTimeoutMs(resolved))
       let resp
       try {
         const headers = { 'Content-Type': 'application/json' }
@@ -628,6 +666,7 @@ class AgentEngine {
         })
       } catch (e) {
         if (options.signal?.aborted) return finish({ text: '[已取消]', toolResults, cancelled: true })
+        if (timedOut || e?.name === 'AbortError') return finish({ text: timeoutReply(resolved), toolResults })
         return finish({ text: `[网络错误] ${e instanceof Error ? e.message : String(e)}`, toolResults })
       } finally {
         clearTimeout(timer)
@@ -662,4 +701,4 @@ class AgentEngine {
   }
 }
 
-module.exports = { AgentEngine, friendlyModelError, openAIRequestBody }
+module.exports = { AgentEngine, chatRequestTimeoutMs, friendlyModelError, openAIRequestBody, productCapabilityAnswer, timeoutReply }

@@ -2,6 +2,7 @@ const { spawn } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { parseWhisperWordJson } = require('./word-timing-service')
 
 // 离线录音转写：whisper.cpp（whisper-cli）+ ggml-tiny 模型。
 // whisper-cli 原生可读 mp3/ogg/flac/wav；其它音频与视频先经 mpv 抽音为 wav。
@@ -26,6 +27,52 @@ const TRADITIONAL_RE = new RegExp('[' + Object.keys(TRADITIONAL_TO_SIMPLIFIED).j
 
 function toSimplified(text) {
   return String(text || '').replace(TRADITIONAL_RE, (char) => TRADITIONAL_TO_SIMPLIFIED[char] || char)
+}
+
+function wavDurationSeconds(input) {
+  let buffer
+  try { buffer = Buffer.isBuffer(input) ? input : fs.readFileSync(input) } catch { return 0 }
+  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') return 0
+  let byteRate = 0
+  let dataBytes = 0
+  for (let offset = 12; offset + 8 <= buffer.length;) {
+    const id = buffer.toString('ascii', offset, offset + 4)
+    const size = buffer.readUInt32LE(offset + 4)
+    if (id === 'fmt ' && size >= 12 && offset + 8 + size <= buffer.length) byteRate = buffer.readUInt32LE(offset + 8 + 8)
+    if (id === 'data') { dataBytes = Math.min(size, buffer.length - offset - 8); break }
+    offset += 8 + size + (size % 2)
+  }
+  return byteRate > 0 && dataBytes > 0 ? dataBytes / byteRate : 0
+}
+
+function parseSrtTime(value) {
+  const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})$/)
+  return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / 1000 : NaN
+}
+
+function formatSrtTime(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) * 1000))
+  const hours = String(Math.floor(total / 3600000)).padStart(2, '0')
+  const minutes = String(Math.floor((total % 3600000) / 60000)).padStart(2, '0')
+  const secs = String(Math.floor((total % 60000) / 1000)).padStart(2, '0')
+  return `${hours}:${minutes}:${secs},${String(total % 1000).padStart(3, '0')}`
+}
+
+function clampSrtToDuration(srt, durationSeconds) {
+  const duration = Number(durationSeconds)
+  if (!(duration > 0)) return String(srt || '').trim()
+  const cues = []
+  for (const block of String(srt || '').replace(/\r/g, '').split(/\n{2,}/)) {
+    const lines = block.split('\n').map((line) => line.trim()).filter(Boolean)
+    const timeIndex = lines.findIndex((line) => line.includes('-->'))
+    if (timeIndex < 0 || timeIndex >= lines.length - 1) continue
+    const [from, to] = lines[timeIndex].split('-->').map((item) => item.trim())
+    const start = parseSrtTime(from)
+    const end = Math.min(parseSrtTime(to), duration)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start >= duration || end - start < 0.05) continue
+    cues.push({ start, end, text: lines.slice(timeIndex + 1).join('\n') })
+  }
+  return cues.map((cue, index) => `${index + 1}\n${formatSrtTime(cue.start)} --> ${formatSrtTime(cue.end)}\n${cue.text}`).join('\n\n')
 }
 
 class TranscriptionService {
@@ -129,12 +176,16 @@ class TranscriptionService {
       // 幻觉抑制（音乐/静默段防乱编）：仅在调用方显式给阈值时启用，默认行为不变
       if (Number(noSpeechThold) > 0) args.push('--no-speech-thold', String(noSpeechThold))
       if (Number.isFinite(logprobThold)) args.push('--logprob-thold', String(logprobThold))
-      if (timestamps) args.push('-osrt')
+      if (timestamps) args.push('-osrt', '-sow', '-ml', '36')
       const output = await this.exec(path.join(this.whisperRoot, 'engine', 'whisper-cli.exe'), args, timeoutMs || this.timeoutMs, { cwd: this.whisperRoot, signal })
       let text = output.trim()
       if (timestamps) {
         const srtPath = `${input}.srt`
-        if (fs.existsSync(srtPath)) text = fs.readFileSync(srtPath, 'utf8').trim()
+        if (fs.existsSync(srtPath)) {
+          text = fs.readFileSync(srtPath, 'utf8').trim()
+          const decodedDuration = path.extname(input).toLowerCase() === '.wav' ? wavDurationSeconds(input) : 0
+          if (decodedDuration > 0) text = clampSrtToDuration(text, decodedDuration)
+        }
       }
       if (!text) throw new Error('没有识别到语音内容（可能是纯音乐或音量过低）')
       if (lang === 'zh') text = toSimplified(text)
@@ -143,6 +194,40 @@ class TranscriptionService {
       fs.rmSync(tempDir, { recursive: true, force: true })
     }
   }
+
+  async transcribeWords({ sourcePath, lang = 'auto', signal, timeoutMs, model } = {}) {
+    const status = this.availability()
+    if (!status.available) throw new Error(`${status.reason}，请先在模型接入中心下载转写组件`)
+    const ext = path.extname(sourcePath).toLowerCase()
+    if (![...DIRECT_AUDIO_EXTS, ...EXTRACT_AUDIO_EXTS].includes(ext)) throw new Error(`不支持逐词转写的格式：${ext || '未知'}`)
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-whisper-words-'))
+    try {
+      let input = sourcePath
+      if (EXTRACT_AUDIO_EXTS.includes(ext)) {
+        const wavPath = path.join(tempDir, 'audio.wav')
+        await this.exec(this.mpvPath, ['--no-video', '--ao=pcm', `--ao-pcm-file=${wavPath}`, sourcePath], 5 * 60 * 1000, { signal })
+        input = wavPath
+      } else if (/[^\x00-\x7F]/.test(input) || !path.isAbsolute(input)) {
+        const staged = path.join(tempDir, `audio${ext}`)
+        fs.copyFileSync(input, staged)
+        input = staged
+      }
+      const modelFile = /^ggml-[\w.-]+\.bin$/.test(String(model || '')) ? String(model) : (status.smallAvailable ? 'ggml-small.bin' : 'ggml-tiny.bin')
+      const dtwPreset = modelFile.replace(/^ggml-/, '').replace(/\.bin$/, '').replace(/-q\d.*$/i, '')
+      const outputBase = path.join(tempDir, 'words')
+      const args = ['-m', modelFile, '-l', lang, '-f', input, '-nt', '-np', '-sow', '-ojf', '-dtw', dtwPreset, '-nfa', '-of', outputBase]
+      await this.exec(path.join(this.whisperRoot, 'engine', 'whisper-cli.exe'), args, timeoutMs || this.timeoutMs, { cwd: this.whisperRoot, signal })
+      const jsonPath = `${outputBase}.json`
+      if (!fs.existsSync(jsonPath)) throw new Error('逐词转写没有生成JSON证据')
+      const payload = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+      const words = parseWhisperWordJson(payload)
+      if (!words.length) throw new Error('逐词转写没有生成可用DTW时间段')
+      if (lang === 'zh') words.forEach((word) => { word.text = toSimplified(word.text) })
+      return { words, model: modelFile, language: payload?.result?.language || lang, timingMethod: 'whisper.cpp-dtw-v1' }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
+  }
 }
 
-module.exports = { TranscriptionService, DIRECT_AUDIO_EXTS, EXTRACT_AUDIO_EXTS, toSimplified }
+module.exports = { TranscriptionService, DIRECT_AUDIO_EXTS, EXTRACT_AUDIO_EXTS, clampSrtToDuration, toSimplified, wavDurationSeconds }

@@ -1,0 +1,354 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const { SemanticEditService, analyzeTextCleanupCues, buildAutoInspectionDecision, buildExactQuoteStartDecision, buildPauseRemovalDecision, buildTextCleanupDecision, buildTopicSelectionDecision, extractExactQuoteStart, extractTopicSelection, matchesExactQuoteStartInstruction, matchesPauseEditInstruction, matchesTextCleanupInstruction, matchesTopicSelectionInstruction, parseSilenceEvents, requestedMinimumSilence, standaloneFiller } = require('../electron/semantic-edit-service')
+const { attachEditDecisionList, assertEditDecisionList } = require('../electron/edit-decision-list')
+
+test('semantic pause intent is narrow and the requested threshold is bounded', () => {
+  assert.equal(matchesPauseEditInstruction('帮我删掉长停顿'), true)
+  assert.equal(matchesPauseEditInstruction('删除超过1.2秒的静音'), true)
+  assert.equal(matchesPauseEditInstruction('删除第4秒到第8秒'), false)
+  assert.equal(matchesPauseEditInstruction('这个停顿怎么处理？'), false)
+  assert.equal(requestedMinimumSilence('删除超过1.2秒的静音'), 1.2)
+  assert.equal(requestedMinimumSilence('删掉停顿'), 0.9)
+  assert.equal(requestedMinimumSilence('删除超过0.1秒的停顿'), 0.5)
+})
+
+test('ffmpeg silencedetect output becomes exact evidence ranges', () => {
+  const parsed = parseSilenceEvents(`
+[silencedetect @ 0001] silence_start: 2.000
+[silencedetect @ 0001] silence_end: 3.400 | silence_duration: 1.400
+[silencedetect @ 0001] silence_start: 6
+[silencedetect @ 0001] silence_end: 7.5 | silence_duration: 1.5`)
+  assert.deepEqual(parsed, [
+    { startSeconds: 2, endSeconds: 3.4, durationSeconds: 1.4 },
+    { startSeconds: 6, endSeconds: 7.5, durationSeconds: 1.5 }
+  ])
+})
+
+test('pause removal plan preserves breathing room and compiles a continuous retained timeline', () => {
+  const decision = buildPauseRemovalDecision({
+    instruction: '删掉超过1秒的长停顿', sourcePath: 'D:\\video\\talk.mp4', durationSeconds: 10,
+    minimumSilenceSeconds: 1,
+    silences: [
+      { startSeconds: 0, endSeconds: 1.2, durationSeconds: 1.2 },
+      { startSeconds: 2, endSeconds: 3.4, durationSeconds: 1.4 },
+      { startSeconds: 6, endSeconds: 7.5, durationSeconds: 1.5 },
+      { startSeconds: 9.3, endSeconds: 10, durationSeconds: 0.7 }
+    ]
+  })
+  assert.equal(decision.kind, 'media.concat-segments')
+  assert.equal(decision.source.name, 'talk.mp4')
+  assert.deepEqual(decision.semanticCut.removed.map((item) => [item.startSeconds, item.endSeconds]), [[2.12, 3.28], [6.12, 7.38]])
+  assert.deepEqual(decision.timeline.segments.map((item) => [item.sourceStartSeconds, item.sourceEndSeconds, item.targetStartSeconds, item.targetEndSeconds]), [
+    [0, 2.12, 0, 2.12], [3.28, 6.12, 2.12, 4.96], [7.38, 10, 4.96, 7.58]
+  ])
+  assert.equal(decision.semanticCut.totalRemovedSeconds, 2.42)
+  assert.equal(decision.timeline.durationSeconds, 7.58)
+  assert.equal(decision.output.overwrite, false)
+  const frozen = attachEditDecisionList(decision)
+  assert.doesNotThrow(() => assertEditDecisionList(frozen))
+  assert.equal(frozen.edl.quality.semanticEvidence.removedCount, 2)
+})
+
+test('semantic service performs one audio scan and returns a frozen plan', async () => {
+  const calls = []
+  const service = new SemanticEditService({ frames: {
+    availability: () => ({ available: true }),
+    probeHasAudio: async () => true,
+    probeDuration: async () => 8,
+    run: async (args) => { calls.push(args); return { stderr: 'silence_start: 2\nsilence_end: 3.2 | silence_duration: 1.2' } }
+  } })
+  const result = await service.plan({ instruction: '自动剪掉停顿', sourcePath: 'C:\\media\\a.mp4' })
+  assert.equal(result.matched, true)
+  assert.equal(result.decision.semanticCut.removed.length, 1)
+  assert.equal(calls.length, 1)
+  assert.ok(calls[0].some((item) => String(item).includes('silencedetect=noise=-35dB')))
+})
+
+test('subtitle cleanup only removes standalone fillers and adjacent exact repetitions', () => {
+  assert.equal(matchesTextCleanupInstruction('删掉口头禅和重复的话'), true)
+  assert.equal(matchesTextCleanupInstruction('这句话里有然后怎么办？'), false)
+  assert.equal(standaloneFiller('嗯。'), true)
+  assert.equal(standaloneFiller('然后我们开始介绍产品'), false)
+  const decision = buildTextCleanupDecision({
+    instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 8,
+    cues: [
+      { start: 0, end: 1, text: '欢迎大家' },
+      { start: 1, end: 1.6, text: '嗯' },
+      { start: 1.6, end: 3, text: '今天介绍产品' },
+      { start: 3.2, end: 4.6, text: '今天介绍产品。' },
+      { start: 4.8, end: 6.2, text: '然后我们介绍价格' },
+      { start: 6.3, end: 8, text: '价格是一百元' }
+    ]
+  })
+  assert.equal(decision.semanticCut.strategy, 'subtitle-cue-cleanup-v1')
+  assert.deepEqual(decision.semanticCut.removed.map((item) => [item.cueIndex, item.reason, item.startSeconds, item.endSeconds]), [
+    [2, '独立口头禅', 1.04, 1.56],
+    [4, '相邻重复第3条', 3.24, 4.56]
+  ])
+  assert.equal(decision.timeline.segments.length, 3)
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(decision)))
+})
+
+test('subtitle cleanup plan uses the existing timed transcript once and never scans audio', async () => {
+  let loads = 0
+  let scans = 0
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 6, run: async () => { scans += 1 } },
+    loadTranscript: async () => { loads += 1; return { path: 'D:\\video\\talk.srt', cues: [
+      { start: 0, end: 1, text: '开场' }, { start: 1, end: 1.5, text: '呃' }, { start: 1.5, end: 3, text: '内容内容' }, { start: 3.1, end: 4.6, text: '内容内容' }, { start: 4.7, end: 6, text: '结尾' }
+    ] } }
+  })
+  const result = await service.plan({ instruction: '去掉口头禅和重复内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.matched, true)
+  assert.equal(result.decision.semanticCut.removed.length, 2)
+  assert.equal(loads, 1)
+  assert.equal(scans, 0)
+})
+
+test('embedded fillers stay review-only while non-adjacent exact repeats require confirmation', () => {
+  const cues = [
+    { start: 0, end: 1.2, text: '欢迎大家' },
+    { start: 1.3, end: 2.7, text: '就是，我们今天介绍产品' },
+    { start: 2.8, end: 4, text: '核心结论有三点' },
+    { start: 4.1, end: 6.5, text: '先说完全不同的例子' },
+    { start: 7.4, end: 8.8, text: '核心结论有三点。' },
+    { start: 8.9, end: 10, text: '谢谢大家' }
+  ]
+  const analysis = analyzeTextCleanupCues(cues, 10)
+  assert.deepEqual(analysis.reviewOnly.map((item) => [item.cueIndex, item.reason, item.matches]), [
+    [2, '句中疑似口头禅', ['就是']]
+  ])
+  assert.deepEqual(analysis.detected.map((item) => [item.cueIndex, item.reason]), [
+    [5, '非紧邻完全重复第3条']
+  ])
+  const decision = buildTextCleanupDecision({
+    instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 10, cues, analysis
+  })
+  assert.equal(decision.semanticCut.confirmationRequired, true)
+  assert.equal(decision.semanticCut.reviewOnly.length, 1)
+  assert.equal(decision.semanticCut.removed[0].cueIndex, 5)
+})
+
+test('review-only embedded filler returns located evidence without creating an executable EDL', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [
+      { start: 0, end: 1.4, text: '欢迎大家' },
+      { start: 1.5, end: 3.2, text: '就是，我们开始介绍产品' },
+      { start: 3.3, end: 5, text: '今天只讲价格' }
+    ] })
+  })
+  const result = await service.plan({ instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.matched, true)
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /第2条.*1\.50–3\.20秒.*就是/)
+  assert.match(result.review.summary, /没有逐词时间戳.*不会删除整句/)
+})
+
+test('real word timing evidence turns an embedded filler into a precise confirm-before-write EDL', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [
+      { start: 0, end: 1.4, text: '欢迎大家' },
+      { start: 1.5, end: 3.2, text: '就是，我们开始介绍产品' },
+      { start: 3.3, end: 5, text: '今天只讲价格' }
+    ] }),
+    loadWordTimings: async (_sourcePath, candidates) => ({
+      resolved: [{ ...candidates[0], match: '就是', preciseStartSeconds: 1.72, preciseEndSeconds: 2.02, timingConfidence: 0.93, timingMethod: 'whisper.cpp-dtw-v1', model: 'ggml-small.bin' }],
+      unresolved: [], model: 'ggml-small.bin', timingMethod: 'whisper.cpp-dtw-v1'
+    })
+  })
+  const result = await service.plan({ instruction: '删掉口头禅和重复的话', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.matched, true)
+  assert.equal(result.review, undefined)
+  assert.equal(result.decision.semanticCut.confirmationRequired, true)
+  assert.deepEqual(result.decision.semanticCut.removed.map((item) => [item.startSeconds, item.endSeconds, item.reason]), [
+    [1.74, 2, '逐词对齐口头禅“就是”']
+  ])
+  assert.equal(result.decision.semanticCut.wordTimingEvidence[0].confidence, 0.93)
+  const frozen = attachEditDecisionList(result.decision)
+  assert.doesNotThrow(() => assertEditDecisionList(frozen))
+  frozen.semanticCut.wordTimingEvidence[0].startSeconds += 0.2
+  assert.throws(() => assertEditDecisionList(frozen), /EDL 与冻结决策不一致/)
+})
+
+test('model-cited near-duplicate and off-topic cues become confirm-only semantic cuts', async () => {
+  const transcript = [
+    { start: 0, end: 1, text: '开场介绍' },
+    { start: 1.1, end: 2.4, text: '价格是一百元' },
+    { start: 2.5, end: 3.8, text: '卖一百块钱' },
+    { start: 3.9, end: 5.2, text: '昨晚吃了火锅' },
+    { start: 5.3, end: 6.8, text: '继续介绍功能' },
+    { start: 6.9, end: 8, text: '结尾总结' }
+  ]
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 8 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: transcript }),
+    analyzeSemanticCues: async () => ({ available: true, topicSummary: '产品价格和功能', model: { providerId: 'vllm', providerName: '本机模型', model: 'reviewer', local: true }, candidates: [
+      { type: 'near_duplicate', cueIndexes: [2, 3], removeCueIndexes: [3], confidence: 0.94, reason: '价格信息重复', evidence: [{ cueIndex: 2, quote: '价格是一百元' }, { cueIndex: 3, quote: '卖一百块钱' }] },
+      { type: 'off_topic', cueIndexes: [4], removeCueIndexes: [4], confidence: 0.96, reason: '与产品主题无关', evidence: [{ cueIndex: 4, quote: '昨晚吃了火锅' }] }
+    ] }),
+    analyzeVisualCandidates: async ({ review }) => ({ available: true, safeCandidateIndexes: [1, 2], blockedCandidateIndexes: [], model: { providerId: 'agnes', providerName: 'Agnes AI', model: 'agnes-2.5-flash', local: false }, validations: review.candidates.map((_, index) => ({ candidateIndex: index + 1, verdict: 'safe', confidence: 0.93, reason: '三帧连续', evidenceLabels: [`candidate-${index + 1}-before`, `candidate-${index + 1}-middle`, `candidate-${index + 1}-after`] })) })
+  })
+  const result = await service.plan({ instruction: '删掉语义重复和跑题内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.semanticCut.strategy, 'model-semantic-review-v1')
+  assert.equal(result.decision.semanticCut.confirmationRequired, true)
+  assert.deepEqual(result.decision.semanticCut.removed.map((item) => item.cueIndex), [3, 4])
+  assert.equal(result.decision.semanticCut.modelEvidence.model.model, 'reviewer')
+  assert.equal(result.decision.semanticCut.visualEvidence.model.model, 'agnes-2.5-flash')
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(result.decision)))
+})
+
+test('semantic candidates remain review-only when visual cross-check is unavailable', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 6 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 1, text: '开场' }, { start: 1.1, end: 2.2, text: '价格一百元' }, { start: 2.3, end: 3.4, text: '卖一百块' }, { start: 3.5, end: 4.6, text: '功能介绍' }, { start: 4.7, end: 6, text: '总结' }] }),
+    analyzeSemanticCues: async () => ({ available: true, topicSummary: '产品介绍', model: { model: 'reviewer' }, candidates: [{ type: 'near_duplicate', cueIndexes: [2, 3], removeCueIndexes: [3], confidence: 0.94, reason: '重复', evidence: [{ cueIndex: 2, quote: '价格一百元' }, { cueIndex: 3, quote: '卖一百块' }] }] }),
+    analyzeVisualCandidates: async () => ({ available: false, reason: '没有可用视觉模型' })
+  })
+  const result = await service.plan({ instruction: '删掉语义重复内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /没有可用视觉模型/)
+  assert.match(result.review.summary, /没有创建剪辑任务/)
+})
+
+test('semantic review degrades to a non-executing explanation when no capable model is available', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 2, text: '正文' }, { start: 2, end: 5, text: '结尾' }] }),
+    analyzeSemanticCues: async () => ({ available: false, reason: '当前只有0.5B轻量模型' })
+  })
+  const result = await service.plan({ instruction: '删掉跑题内容', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /当前只有0\.5B轻量模型/)
+  assert.match(result.review.summary, /没有创建剪辑任务/)
+})
+
+test('a unique quote at cue start freezes an exact trim decision and locator evidence', async () => {
+  assert.equal(extractExactQuoteStart('从他说到“模型权重则要等到下周”开始'), '模型权重则要等到下周')
+  assert.equal(matchesExactQuoteStartInstruction('能不能从“模型权重则要等到下周”开始？'), false)
+  const decision = buildExactQuoteStartDecision({
+    instruction: '从他说到“模型权重则要等到下周”开始', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 8,
+    cues: [{ start: 0, end: 2, text: '开场介绍' }, { start: 2, end: 4, text: '模型权重则要等到下周。今天先用API。' }, { start: 4, end: 8, text: '后续说明' }]
+  })
+  assert.equal(decision.kind, 'media.trim')
+  assert.deepEqual(decision.timeline, { startSeconds: 2, endSeconds: 8, durationSeconds: 6 })
+  assert.deepEqual(decision.semanticLocate, { schemaVersion: 1, strategy: 'subtitle-exact-quote-v1', target: 'start-at-quote', subtitlePath: 'D:\\video\\talk.srt', query: '模型权重则要等到下周', cueIndex: 2, cueStartSeconds: 2, cueEndSeconds: 4, text: '模型权重则要等到下周。今天先用API。' })
+  const frozen = attachEditDecisionList(decision)
+  assert.doesNotThrow(() => assertEditDecisionList(frozen))
+  frozen.semanticLocate.cueStartSeconds = 2.5
+  assert.throws(() => assertEditDecisionList(frozen), /EDL 与冻结决策不一致/)
+})
+
+test('multiple or mid-cue quote matches stay non-executing and list exact locations', async () => {
+  const frames = { availability: () => ({ available: true }), probeDuration: async () => 10 }
+  const multiple = new SemanticEditService({ frames, loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 2, text: '开场' }, { start: 2, end: 4, text: '模型权重下周开放' }, { start: 4, end: 6, text: '过渡' }, { start: 6, end: 8, text: '模型权重下周开放，重复说明' }, { start: 8, end: 10, text: '结尾' }] }) })
+  const result = await multiple.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /找到2处/)
+  assert.match(result.review.summary, /第2条.*2\.00秒/)
+  assert.match(result.review.summary, /第4条.*6\.00秒/)
+  const middle = new SemanticEditService({ frames, loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 3, text: '先说背景，然后模型权重下周开放' }, { start: 3, end: 10, text: '后续' }] }) })
+  const midResult = await middle.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(midResult.decision, undefined)
+  assert.match(midResult.review.summary, /位于第1条字幕中间/)
+  assert.match(midResult.review.summary, /不会把字幕条起点冒充原话起点/)
+})
+
+test('a unique mid-cue quote uses real DTW phrase timing and freezes the word evidence', async () => {
+  const frames = { availability: () => ({ available: true }), probeDuration: async () => 10 }
+  const service = new SemanticEditService({
+    frames,
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 3, text: '先说背景，然后模型权重下周开放' }, { start: 3, end: 10, text: '后续' }] }),
+    loadWordTimings: async (_sourcePath, candidates) => {
+      assert.equal(candidates[0].phrase, '模型权重下周开放')
+      return { resolved: [{ ...candidates[0], phraseStartSeconds: 1.72, phraseEndSeconds: 2.84, timingConfidence: 0.91, timingMethod: 'whisper.cpp-dtw-v1', model: 'ggml-tiny.bin', wordCount: 4 }], unresolved: [] }
+    }
+  })
+  const result = await service.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.kind, 'media.trim')
+  assert.deepEqual(result.decision.timeline, { startSeconds: 1.72, endSeconds: 10, durationSeconds: 8.28 })
+  assert.equal(result.decision.semanticLocate.strategy, 'whisper-dtw-phrase-start-v1')
+  assert.deepEqual(result.decision.semanticLocate.wordTimingEvidence, { phraseStartSeconds: 1.72, phraseEndSeconds: 2.84, confidence: 0.91, method: 'whisper.cpp-dtw-v1', model: 'ggml-tiny.bin', wordCount: 4 })
+  const frozen = attachEditDecisionList(result.decision)
+  frozen.semanticLocate.wordTimingEvidence.phraseStartSeconds += 0.2
+  assert.throws(() => assertEditDecisionList(frozen), /EDL 与冻结决策不一致/)
+})
+
+test('an unresolved mid-cue quote remains non-executing and explains the real timing failure', async () => {
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 5 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 3, text: '先说背景，然后模型权重下周开放' }, { start: 3, end: 5, text: '后续' }] }),
+    loadWordTimings: async (_sourcePath, candidates) => ({ resolved: [], unresolved: [{ ...candidates[0], unresolvedReason: '短语起点落在一个聚合token中' }] })
+  })
+  const result = await service.plan({ instruction: '从“模型权重下周开放”开始', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision, undefined)
+  assert.match(result.review.summary, /短语起点落在一个聚合token中/)
+  assert.match(result.review.summary, /没有创建剪辑任务/)
+})
+
+test('topic keep intent is narrow and compiles cited adjacent cues into a confirm-only trim', () => {
+  assert.equal(extractTopicSelection('保留讲产品价格的部分'), '产品价格')
+  assert.equal(matchesTopicSelectionInstruction('只保留关于收费标准的内容'), true)
+  assert.equal(matchesTopicSelectionInstruction('能不能保留讲价格的部分？'), false)
+  assert.equal(matchesTopicSelectionInstruction('介绍产品价格'), false)
+  const decision = buildTopicSelectionDecision({
+    instruction: '保留讲产品价格的部分', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 10,
+    cues: [{ start: 0, end: 2, text: '开场' }, { start: 2, end: 4, text: '基础版价格一百元' }, { start: 4.2, end: 6, text: '专业版每月三百元' }, { start: 6.2, end: 10, text: '功能演示' }],
+    selection: { topic: '产品价格', confidence: 0.94, selectedCueIndexes: [2, 3], reason: '两条都是价格', evidence: [{ cueIndex: 2, quote: '基础版价格一百元' }, { cueIndex: 3, quote: '专业版每月三百元' }], model: { providerId: 'agnes', providerName: 'Agnes', model: 'agnes-2.5-flash', local: false } }
+  })
+  assert.equal(decision.kind, 'media.trim')
+  assert.deepEqual(decision.timeline, { startSeconds: 1.92, endSeconds: 6.08, durationSeconds: 4.16 })
+  assert.equal(decision.semanticSelect.confirmationRequired, true)
+  assert.deepEqual(decision.semanticSelect.selectedCueIndexes, [2, 3])
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(decision)))
+})
+
+test('non-adjacent topic cues compile a continuous ordered selection and require confirmation', async () => {
+  const cues = [{ start: 0, end: 1.5, text: '开场' }, { start: 1.6, end: 3, text: '基础版价格一百元' }, { start: 3.1, end: 5, text: '功能演示' }, { start: 5.1, end: 6.5, text: '专业版每月三百元' }, { start: 6.6, end: 8, text: '结尾' }]
+  const selection = { available: true, topic: '产品价格', confidence: 0.95, selectedCueIndexes: [2, 4], reason: '两处价格说明', evidence: [{ cueIndex: 2, quote: '基础版价格一百元' }, { cueIndex: 4, quote: '专业版每月三百元' }], model: { providerId: 'local', providerName: '本机模型', model: '8b', local: true } }
+  const service = new SemanticEditService({
+    frames: { availability: () => ({ available: true }), probeDuration: async () => 8 },
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues }),
+    selectTopicCues: async ({ topic }) => { assert.equal(topic, '产品价格'); return selection }
+  })
+  const result = await service.plan({ instruction: '保留讲产品价格的部分', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.kind, 'media.concat-segments')
+  assert.equal(result.decision.timeline.segments.length, 2)
+  assert.deepEqual(result.decision.timeline.segments.map((item) => [item.sourceStartSeconds, item.sourceEndSeconds]), [[1.52, 3.08], [5.02, 6.58]])
+  assert.equal(result.decision.semanticSelect.model.model, '8b')
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(result.decision)))
+})
+
+test('auto inspection freezes safe removals separately from blur and duplicate review findings', () => {
+  const decision = buildAutoInspectionDecision({
+    instruction: '自动检查这个视频并给我剪辑方案', sourcePath: 'D:\\video\\talk.mp4', subtitlePath: 'D:\\video\\talk.srt', durationSeconds: 10,
+    silences: [{ startSeconds: 2, endSeconds: 3, durationSeconds: 1 }],
+    textAnalysis: { detected: [{ cueIndex: 3, startSeconds: 4, endSeconds: 4.5, text: '嗯', reason: '独立口头禅' }], reviewOnly: [{ cueIndex: 4, startSeconds: 5, endSeconds: 5.8, text: '然后继续', reason: '句中疑似口头禅', matches: ['然后'] }] },
+    visual: { schemaVersion: 1, strategy: 'ffmpeg-media-auto-inspection-v1', sampleFps: 2, blackRanges: [{ startSeconds: 6, endSeconds: 7, durationSeconds: 1, score: 1 }], blurRanges: [{ startSeconds: 7.5, endSeconds: 8.5, durationSeconds: 1, score: 12, baseline: 4 }], duplicateRanges: [{ startSeconds: 8.5, endSeconds: 10, durationSeconds: 1.5, referenceStartSeconds: 0, referenceEndSeconds: 1.5, score: 0 }] }
+  })
+  assert.equal(decision.kind, 'media.concat-segments')
+  assert.equal(decision.autoInspection.confirmationRequired, true)
+  assert.deepEqual(decision.autoInspection.safeRemovals.map((item) => [item.startSeconds, item.endSeconds, item.kinds]), [[2.12, 2.88, ['silence']], [4.04, 4.46, ['filler']], [6, 7, ['black']]])
+  assert.deepEqual(decision.autoInspection.reviewOnly.map((item) => item.kind), ['embedded-filler', 'blur', 'duplicate-shot'])
+  assert.equal(decision.timeline.segments.length, 4)
+  assert.doesNotThrow(() => assertEditDecisionList(attachEditDecisionList(decision)))
+})
+
+test('auto inspection service scans each evidence family once and returns a confirm-only batch plan', async () => {
+  const calls = []
+  const frames = {
+    availability: () => ({ available: true }), probeDuration: async () => 10, probeHasAudio: async () => true,
+    run: async (args) => { calls.push(args); return { stderr: 'silence_start: 2\nsilence_end: 3 | silence_duration: 1' } }
+  }
+  const service = new SemanticEditService({
+    frames,
+    loadTranscript: async () => ({ path: 'D:\\video\\talk.srt', cues: [{ start: 0, end: 2, text: '开场' }, { start: 3, end: 3.5, text: '嗯' }, { start: 3.6, end: 10, text: '正文' }] }),
+    inspectMedia: async () => ({ schemaVersion: 1, strategy: 'ffmpeg-media-auto-inspection-v1', sampleFps: 2, blackRanges: [{ startSeconds: 6, endSeconds: 7, durationSeconds: 1, score: 1 }], blurRanges: [], duplicateRanges: [] })
+  })
+  const result = await service.plan({ instruction: '自动检查这个视频并给我剪辑方案', sourcePath: 'D:\\video\\talk.mp4' })
+  assert.equal(result.decision.autoInspection.safeRemovals.length, 3)
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].join(' '), /silencedetect/)
+})

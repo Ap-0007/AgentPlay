@@ -1,0 +1,36 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { spawnSync } = require('node:child_process')
+
+const { attachEditDecisionList } = require('../electron/edit-decision-list')
+const { MediaEditService } = require('../electron/media-edit-service')
+const { VideoFrameService } = require('../electron/video-frame-service')
+const { buildVisualRepairDecision } = require('../electron/visual-repair-service')
+
+const bin = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ai-player', 'yt-dlp', 'ffmpeg-8.0.1-essentials_build', 'bin')
+const ffmpeg = path.join(bin, 'ffmpeg.exe'); const ffprobe = path.join(bin, 'ffprobe.exe')
+const hash = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+
+test('real visual repair stabilizes, rotates, corrects dark color and exports a comparison', { timeout: 180000 }, async (t) => {
+  if (!fs.existsSync(ffmpeg)) return t.skip('ffmpeg unavailable')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-visual-repair-'))
+  try {
+    const source = path.join(dir, 'source.mp4'); const repaired = path.join(dir, 'repaired.mp4'); const comparison = path.join(dir, 'comparison.mp4')
+    const built = spawnSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'testsrc2=duration=5:size=360x240:rate=15', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5', '-vf', "pad=400:280:20:20,crop=360:240:x='20+10*sin(n*1.7)':y='20+8*cos(n*1.3)',eq=brightness=-0.24:saturation=0.55,colorbalance=bs=.18", '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', source, '-loglevel', 'error'], { timeout: 60000 })
+    assert.equal(built.status, 0, String(built.stderr || ''))
+    const before = hash(source)
+    const decision = attachEditDecisionList(buildVisualRepairDecision({ instruction: '防抖，顺时针旋转90度，自动修复曝光和偏色，并提示低质量片段', sourcePath: source, width: 360, height: 240, durationSeconds: 5, request: { stabilize: true, rotationDegrees: 90, autoColor: true, inspectQuality: true, comparison: true }, signalStats: { sampleCount: 10, yAvg: 52, uAvg: 158, vAvg: 110, satAvg: 48 }, inspection: { blackRanges: [], blurRanges: [{ startSeconds: 2, endSeconds: 3 }], duplicateRanges: [] } }))
+    const frames = new VideoFrameService({ ffmpegPath: ffmpeg, ffprobePath: ffprobe })
+    const result = await new MediaEditService({ frames }).visualRepair({ sourcePath: source, outputPaths: [repaired, comparison], decision })
+    assert.deepEqual(result.repairReceipt.rotation.dimensions, { width: 240, height: 360 })
+    assert.equal(result.repairReceipt.stabilization.verdict, 'improved')
+    assert.equal(result.repairReceipt.color.verdict, 'improved')
+    assert.equal(result.repairReceipt.lowQualityFindings[0].action, 'review-only')
+    assert.ok(result.repairReceipt.comparison.dimensions.width > 240)
+    assert.equal(hash(source), before)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})

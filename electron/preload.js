@@ -79,6 +79,42 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('analysis:status', handler)
     }
   },
+  outcomeWorkflow: {
+    detect: (input) => ipcRenderer.invoke('outcome:detect', input),
+    run: (input) => ipcRenderer.invoke('outcome:run', input),
+    cancel: (requestId) => ipcRenderer.invoke('outcome:cancel', requestId),
+    onStatus: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('outcome:status', handler)
+      return () => ipcRenderer.removeListener('outcome:status', handler)
+    }
+  },
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list'),
+    get: (projectId) => ipcRenderer.invoke('projects:get', projectId),
+    listTrash: () => ipcRenderer.invoke('projects:list-trash'),
+    archive: (input) => ipcRenderer.invoke('projects:archive', input),
+    copy: (projectId) => ipcRenderer.invoke('projects:copy', projectId),
+    trash: (input) => ipcRenderer.invoke('projects:trash', input),
+    restore: (projectId) => ipcRenderer.invoke('projects:restore', projectId)
+  },
+  linkContent: {
+    detect: (text) => ipcRenderer.invoke('links:detect', text),
+    handle: (input) => ipcRenderer.invoke('links:handle', input)
+  },
+  evidence: {
+    inspectFile: (filePath) => ipcRenderer.invoke('evidence:inspect-file', filePath)
+  },
+  crossMaterial: {
+    detect: (input) => ipcRenderer.invoke('cross-material:detect', input),
+    ask: (input) => ipcRenderer.invoke('cross-material:ask', input),
+    cancel: (requestId) => ipcRenderer.invoke('cross-material:cancel', requestId),
+    onStatus: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('cross-material:status', handler)
+      return () => ipcRenderer.removeListener('cross-material:status', handler)
+    }
+  },
   localAI: {
     status: () => ipcRenderer.invoke('localai:status'),
     download: () => ipcRenderer.invoke('localai:download'),
@@ -117,8 +153,20 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     }
   },
   mediaTools: {
+    planEdit: (input) => ipcRenderer.invoke('media:edit-plan', input),
+    runVersionBundle: (input) => ipcRenderer.invoke('media:version-bundle-run', input),
+    planHistory: (input) => ipcRenderer.invoke('media:edit-history-plan', input),
+    navigateHistory: (input) => ipcRenderer.invoke('media:edit-history', input),
+    trim: (input) => ipcRenderer.invoke('media:trim', input),
     compress: (input) => ipcRenderer.invoke('media:compress', input),
-    cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId)
+    cancel: (requestId) => ipcRenderer.invoke('media:task-cancel', requestId),
+    planBatchEdit: (input) => ipcRenderer.invoke('media:batch-edit-plan', input),
+    runBatchEdit: (input) => ipcRenderer.invoke('media:batch-edit-run', input)
+  },
+  personalEditSkills: {
+    plan: (input) => ipcRenderer.invoke('personalEditSkills:plan', input),
+    execute: (input) => ipcRenderer.invoke('personalEditSkills:execute', input),
+    list: () => ipcRenderer.invoke('personalEditSkills:list')
   },
   guide: {
     annotate: (question) => ipcRenderer.invoke('guide:annotate', question),
@@ -204,8 +252,12 @@ contextBridge.exposeInMainWorld('aiPlayer', {
     exportProject: (project) => ipcRenderer.invoke('studio:export-project', project),
     render: (input) => ipcRenderer.invoke('studio:render', input),
     creativePlan: (input) => ipcRenderer.invoke('studio:creative-plan', input),
+    planAssets: (input) => ipcRenderer.invoke('studio:asset-bundle-plan', input),
+    generateAssets: (input) => ipcRenderer.invoke('studio:asset-bundle-run', input),
     generateImage: (input) => ipcRenderer.invoke('studio:generate-image', input),
     generateVideo: (input) => ipcRenderer.invoke('studio:generate-video', input),
+    planRecut: (input) => ipcRenderer.invoke('studio:recut-style-plan', input),
+    validateRecutShots: (input) => ipcRenderer.invoke('studio:recut-style-validate', input),
     recutShort: (input) => ipcRenderer.invoke('studio:recut-short', input),
     cancelTask: (requestId) => ipcRenderer.invoke('studio:task-cancel', requestId),
     onRecutProgress: (cb) => {
@@ -325,11 +377,22 @@ contextBridge.exposeInMainWorld('aiPlayer', {
       return () => ipcRenderer.removeListener('task-runtime:event', handler)
     }
   },
+  notifications: {
+    history: () => ipcRenderer.invoke('notifications:history'),
+    activate: (id) => ipcRenderer.invoke('notifications:activate', id),
+    onActivate: (cb) => {
+      const handler = (_event, payload) => cb(payload)
+      ipcRenderer.on('task-notification:activate', handler)
+      return () => ipcRenderer.removeListener('task-notification:activate', handler)
+    }
+  },
   onlineMedia: {
     search: (input) => ipcRenderer.invoke('onlineMedia:search', input),
     files: (input) => ipcRenderer.invoke('onlineMedia:files', input),
+    licensedMusicFiles: (input) => ipcRenderer.invoke('onlineMedia:licensedMusicFiles', input),
     bookFiles: (input) => ipcRenderer.invoke('onlineMedia:bookFiles', input),
     download: (input) => ipcRenderer.invoke('onlineMedia:download', input),
+    downloadLicensedMusic: (input) => ipcRenderer.invoke('onlineMedia:downloadLicensedMusic', input),
     cancel: (requestId) => ipcRenderer.invoke('onlineMedia:cancel', requestId),
     onProgress: (callback) => {
       const handler = (_event, data) => callback(data)

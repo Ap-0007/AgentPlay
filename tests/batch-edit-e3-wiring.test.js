@@ -1,0 +1,22 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('fs')
+const path = require('path')
+
+const root = path.resolve(__dirname, '..')
+const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
+
+test('E3 wires batch edit through trusted IPC, persistent runtime and renderer intent routing', () => {
+  const main = read('electron/main.js')
+  const preload = read('electron/preload.js')
+  const router = read('src/components/agent-panel/intentRouter.ts')
+  const runtime = read('src/components/agent-panel/usePersistentTaskRuntime.ts')
+  assert.match(main, /ipcMain\.handle\('media:batch-edit-plan'/)
+  assert.match(main, /ipcMain\.handle\('media:batch-edit-run'/)
+  assert.match(main, /registerGovernedMediaEdit\('media\.batch-edit'/)
+  assert.match(main, /snapshotMediaSources\(\[sourcePath, \.\.\.dependencies\]\)/)
+  assert.match(preload, /planBatchEdit/)
+  assert.match(preload, /runBatchEdit/)
+  assert.match(router, /runBatchEditTask/)
+  assert.match(runtime, /runtimeTask\.type === 'media\.batch-edit'/)
+})

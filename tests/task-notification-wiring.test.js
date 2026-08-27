@@ -1,0 +1,52 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const root = path.join(__dirname, '..')
+const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
+
+test('main process maps persistent task states to native Windows notifications and durable receipts', () => {
+  const main = read('electron/main.js')
+  const runtime = read('electron/persistent-task-runtime.js')
+  assert.match(main, /globalShortcut, Notification \} = require\('electron'\)/)
+  assert.match(main, /app\.setAppUserModelId\('com\.aiplayer\.app'\)/)
+  assert.match(main, /new TaskNotificationService\(/)
+  assert.match(main, /notificationFactory: \(options\) => new Notification\(options\)/)
+  assert.match(main, /taskNotificationService\?\.notify\(task\)/)
+  assert.match(main, /ipcMain\.handle\('notifications:history'/)
+  assert.match(main, /ipcMain\.handle\('notifications:activate'/)
+  assert.match(runtime, /this\.onChange\?\.\(snapshot\)/, '待审批任务必须在入队当下发出真实状态')
+})
+
+test('notification click restores the app, selects the original task and reopens its output', () => {
+  const main = read('electron/main.js')
+  const preload = read('electron/preload.js')
+  const hook = read('src/components/agent-panel/useTaskNotificationNavigation.ts')
+  const panel = read('src/components/AgentPanel.tsx')
+  assert.match(main, /if \(mainWindow\.isMinimized\(\)\) mainWindow\.restore\(\)/)
+  assert.match(main, /mainWindow\.webContents\.send\('task-notification:activate'/)
+  assert.match(preload, /notifications: \{/)
+  assert.match(preload, /ipcRenderer\.on\('task-notification:activate'/)
+  assert.match(hook, /useAgentStore\.getState\(\)\.openPanel\(\)/)
+  assert.match(hook, /selectTask\(workspaceTaskId\)/)
+  assert.match(hook, /ai-player-play-file/)
+  assert.match(panel, /useTaskNotificationNavigation\(\{ selectTask/)
+})
+
+test('notification activation waits for renderer readiness instead of losing the click', () => {
+  const main = read('electron/main.js')
+  assert.match(main, /pendingTaskNotificationActivations\.push\(record\)/)
+  assert.match(main, /flushPendingTaskNotificationActivations\(\)/)
+  assert.ok(main.indexOf('flushPendingTaskNotificationActivations()') < main.indexOf("executeJavaScript('window.aiPlayer?.isElectron === true')"))
+})
+
+test('packaged acceptance covers approval, completion, failure and result reopen', () => {
+  const smoke = read('scripts/smoke-packaged-task-notifications.mjs')
+  for (const id of ['notification-waiting', 'notification-completed', 'notification-failed']) assert.match(smoke, new RegExp(id))
+  assert.match(smoke, /window\.aiPlayer\.notifications\.history\(\)/)
+  assert.match(smoke, /window\.aiPlayer\.notifications\.activate/)
+  assert.match(smoke, /agentplay-notification-navigated/)
+  assert.match(smoke, /ai-player-play-file/)
+  assert.match(smoke, /nativeSupported && item\.nativeShown/)
+})

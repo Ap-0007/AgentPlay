@@ -6,6 +6,17 @@ const path = require('node:path')
 
 const { evaluateTaskResult, classifyTaskFailure } = require('../electron/task-result-quality')
 
+function matchedAudioExportQc(status = 'user-supplied-unverified') {
+  return {
+    schemaVersion: 1, method: 'unified-audio-export-qc-v1', verdict: 'matched',
+    clipping: { verdict: 'matched', samplePeakDbfs: -1.4, truePeakDbtp: -1.3 },
+    loudness: { verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 },
+    avSync: { verdict: 'matched', startDeltaSeconds: 0.02, endDeltaSeconds: 0.01 },
+    silence: { verdict: 'matched', maximumSilenceSeconds: 0, silenceRatio: 0 },
+    copyright: { verdict: 'documented', sources: [{ status, requiresUserResponsibility: status === 'user-supplied-unverified' }] }
+  }
+}
+
 test('subtitle quality score verifies a real target-language SRT artifact', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-srt-'))
   try {
@@ -55,6 +66,317 @@ test('video artifacts require a real supported container signature', () => {
     assert.equal(invalidQuality.passed, false)
     assert.ok(invalidQuality.reasons.some((item) => item.code === 'INVALID_FORMAT'))
     assert.equal(validQuality.passed, true)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('media trim quality requires a verified timeline and duration receipt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-trim-'))
+  try {
+    const output = path.join(dir, 'trimmed.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const spec = { decision: { timeline: { durationSeconds: 16 }, verification: { toleranceSeconds: 0.2 } } }
+    const passed = evaluateTaskResult('media.edit-trim', {
+      success: true,
+      outputs: [output],
+      durationSeconds: 16.04,
+      expectedDurationSeconds: 16,
+      frameProof: { verdict: 'matched', first: { matchDiff: 0.1, margin: 8 }, last: { matchDiff: 0.2, margin: 7 } },
+      timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }, spec)
+    assert.equal(passed.passed, true)
+    assert.ok(passed.checks.some((item) => item.id === 'duration-receipt' && item.passed))
+
+    const failed = evaluateTaskResult('media.edit-trim', {
+      success: true, outputs: [output], durationSeconds: 14.8, expectedDurationSeconds: 16,
+      frameProof: { verdict: 'matched' }, timelineReceipt: []
+    }, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'DURATION_MISMATCH'))
+    assert.ok(failed.reasons.some((item) => item.code === 'TIMELINE_RECEIPT_MISSING'))
+
+    const missingProject = evaluateTaskResult('media.edit-trim', {
+      success: true, outputs: [output], durationSeconds: 16.04, expectedDurationSeconds: 16,
+      frameProof: { verdict: 'matched' },
+      timelineReceipt: [{ sourceRange: '00:04.000 → 00:20.000', outputRange: '00:00.000 → 00:16.000' }]
+    }, spec)
+    assert.equal(missingProject.passed, false)
+    assert.ok(missingProject.reasons.some((item) => item.code === 'PROJECT_CAPSULE_MISSING'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('visual effect quality requires the frozen effect list, dimensions, duration, changed pixels and undo project', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-effects-'))
+  try {
+    const output = path.join(dir, 'effects.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const spec = { decision: { verification: { toleranceSeconds: 0.35, expectedEffectKinds: ['crop', 'color'] } } }
+    const base = { success: true, outputs: [output], durationSeconds: 5, expectedDurationSeconds: 5, effectReceipt: { effectKinds: ['crop', 'color'], dimensionMatch: true, outputDimensions: { width: 100, height: 180 }, changed: true, representativeSample: { meanAbsDiff: 12 } }, visualQc: { strategy: 'unified-visual-export-qc-v1', passed: true, artifacts: [{}] }, projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, canUndo: true } }
+    assert.equal(evaluateTaskResult('media.edit-visual-effects', base, spec).passed, true)
+    const unchanged = evaluateTaskResult('media.edit-visual-effects', { ...base, effectReceipt: { ...base.effectReceipt, changed: false, representativeSample: { meanAbsDiff: 0 } } }, spec)
+    assert.equal(unchanged.passed, false)
+    assert.ok(unchanged.reasons.some((item) => item.code === 'EFFECT_CHANGE_MISSING'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('smart reframe quality requires three exact aspect outputs, frozen tracking evidence and undo project', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-reframe-'))
+  try {
+    const outputs = ['16x9.mp4', '9x16.mp4', '1x1.mp4'].map((name) => path.join(dir, name))
+    outputs.forEach((output) => fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)])))
+    const expected = [{ aspect: '16:9', width: 640, height: 360 }, { aspect: '9:16', width: 202, height: 360 }, { aspect: '1:1', width: 360, height: 360 }]
+    const spec = { decision: { reframe: { durationSeconds: 6, subject: { description: '红衣人物' }, outputs: expected }, verification: { toleranceSeconds: 0.35, minimumSubjectCoverage: 0.75 } } }
+    const base = { success: true, outputs, versions: expected.map((item, index) => ({ ...item, outputPath: outputs[index], dimensions: { width: item.width, height: item.height }, durationSeconds: 6 })), trackingReceipt: { strategy: 'vision-keyframes-linear-follow-v1', subject: { description: '红衣人物' }, frameCount: 5, minimumConfidence: 0.94, minimumSubjectCoverage: 0.98 }, visualQc: { strategy: 'unified-visual-export-qc-v1', passed: true, artifacts: [{}, {}, {}] }, projectCapsule: { schemaVersion: 1, projectId: 'edit-1', currentPath: outputs[0], canUndo: true } }
+    assert.equal(evaluateTaskResult('media.smart-reframe', base, spec).passed, true)
+    const wrongSubject = evaluateTaskResult('media.smart-reframe', { ...base, trackingReceipt: { ...base.trackingReceipt, subject: { description: '另一个人' } } }, spec)
+    assert.equal(wrongSubject.passed, false)
+    assert.ok(wrongSubject.reasons.some((item) => item.code === 'TRACKING_EVIDENCE_MISSING'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('visual repair quality requires measurable stabilization/color improvement and a comparison artifact', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-visual-repair-'))
+  try {
+    const outputs = ['repaired.mp4', 'comparison.mp4'].map((name) => path.join(dir, name))
+    outputs.forEach((output) => fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)])))
+    const finding = { type: 'blur', startSeconds: 2, endSeconds: 3, reason: '仅提示', action: 'review-only' }
+    const spec = { decision: { repair: { durationSeconds: 5, stabilize: true, rotationDegrees: 90, expectedDimensions: { width: 240, height: 360 }, autoColor: true, lowQualityFindings: [finding] }, verification: { toleranceSeconds: 0.35 } } }
+    const base = { success: true, outputs, durationSeconds: 5, repairReceipt: { stabilization: { requested: true, verdict: 'improved', before: { frameCount: 20, averageMagnitude: 10 }, after: { frameCount: 20, averageMagnitude: 3 } }, rotation: { degrees: 90, dimensions: { width: 240, height: 360 }, matched: true }, color: { requested: true, verdict: 'improved', beforeDistance: 70, afterDistance: 20 }, lowQualityFindings: [finding], comparison: { path: outputs[1], dimensions: { width: 720, height: 360 } } }, visualQc: { strategy: 'unified-visual-export-qc-v1', passed: true, artifacts: [{}, {}] }, projectCapsule: { schemaVersion: 1, projectId: 'edit-1', currentPath: outputs[0], canUndo: true } }
+    assert.equal(evaluateTaskResult('media.visual-repair', base, spec).passed, true)
+    const failed = evaluateTaskResult('media.visual-repair', { ...base, repairReceipt: { ...base.repairReceipt, stabilization: { ...base.repairReceipt.stabilization, verdict: 'failed' } } }, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'STABILIZATION_NOT_IMPROVED'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('style recut quality requires an abstract blueprint, structural match and copyright-safe prompts', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-style-recut-'))
+  try {
+    const output = path.join(dir, 'recut.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const blueprint = { schemaVersion: 1, strategy: 'abstract-style-blueprint-v1', sourceReportSha256: 'a'.repeat(64), sourceSpecificTextExcluded: true, rhythm: { durations: [2, 3] }, shotSizes: ['中景', '近景'], movements: ['固定', '推'] }
+    const styleShots = [{ prompt: '原创场景一', duration: 2, shotSize: '中景', movement: '固定' }, { prompt: '原创场景二', duration: 3, shotSize: '近景', movement: '推' }]
+    const base = { success: true, outputs: [output], clips: 2, styleBlueprint: blueprint, styleShots, styleReuseReceipt: { structureMatched: true, rawReportSentToShotModel: false, referenceImagesSent: 0, promptSafetyPassed: true, promptSha256: ['b'.repeat(64), 'c'.repeat(64)] }, visualQc: { strategy: 'unified-visual-export-qc-v1', passed: true, artifacts: [{}] } }
+    assert.equal(evaluateTaskResult('creative.recut-short', base, {}).passed, true)
+    const unsafe = evaluateTaskResult('creative.recut-short', { ...base, styleReuseReceipt: { ...base.styleReuseReceipt, rawReportSentToShotModel: true } }, {})
+    assert.equal(unsafe.passed, false)
+    assert.ok(unsafe.reasons.some((item) => item.code === 'COPYRIGHT_BOUNDARY_FAILED'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('music edit quality requires decoded audio proof instead of trusting an audio stream flag', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-music-'))
+  try {
+    const output = path.join(dir, 'music-edit.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const spec = { decision: { kind: 'media.add-music', verification: { toleranceSeconds: 0.2 } } }
+    const base = {
+      success: true,
+      outputs: [output],
+      durationSeconds: 12.04,
+      expectedDurationSeconds: 12,
+      timelineReceipt: [{ operation: '添加背景音乐', sourceRange: '00:00.000 → 00:12.000', outputRange: '00:00.000 → 00:12.000' }],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }
+
+    const missingProof = evaluateTaskResult('media.edit-music', base, spec)
+    assert.equal(missingProof.passed, false)
+    assert.ok(missingProof.reasons.some((item) => item.code === 'AUDIO_PROOF_MISSING'))
+
+    const passed = evaluateTaskResult('media.edit-music', {
+      ...base,
+      audioExportQc: matchedAudioExportQc(),
+      audioProof: {
+        schemaVersion: 1,
+        method: 'decoded-pcm-s16le-v1',
+        verdict: 'matched',
+        output: { hasAudio: true, nonSilent: true, samplePeakDbfs: -1.2, overloadFree: true },
+        change: { verdict: 'changed', comparedWindows: 3, changedWindows: 3 },
+        fades: { verdict: 'matched', fadeIn: { verdict: 'matched' }, fadeOut: { verdict: 'matched' } },
+        ducking: { requested: true, configured: true, claim: 'configuration-only' }
+      }
+    }, spec)
+    assert.equal(passed.passed, true)
+    assert.ok(passed.checks.some((item) => item.id === 'audio-proof' && item.passed))
+    const fullTrack = evaluateTaskResult('media.edit-music', { ...base, timelineReceipt: [{ operation: '添加背景音乐', sourceRange: '音乐文件全段', outputRange: '00:00.000 → 00:12.000' }], audioExportQc: matchedAudioExportQc(), audioProof: { schemaVersion: 1, method: 'decoded-pcm-s16le-v1', verdict: 'matched', output: { hasAudio: true, nonSilent: true, samplePeakDbfs: -1.2, overloadFree: true }, change: { verdict: 'changed', comparedWindows: 3, changedWindows: 3 }, fades: { verdict: 'matched', fadeIn: { verdict: 'matched' }, fadeOut: { verdict: 'matched' } } } }, spec)
+    assert.equal(fullTrack.passed, true, '整首音乐循环铺满必须接受“音乐文件全段”回执')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('normalized music quality requires an encoded EBU R128 receipt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-loudness-'))
+  try {
+    const output = path.join(dir, 'normalized-music.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048, 0)]))
+    const spec = { decision: { kind: 'media.add-music', audio: { loudness: { enabled: true } }, verification: { toleranceSeconds: 0.2 } } }
+    const result = {
+      success: true,
+      outputs: [output],
+      durationSeconds: 12.04,
+      expectedDurationSeconds: 12,
+      timelineReceipt: [{ operation: '添加背景音乐', sourceRange: '00:00.000 → 00:12.000', outputRange: '00:00.000 → 00:12.000' }],
+      audioProof: {
+        schemaVersion: 1,
+        method: 'decoded-pcm-s16le-v1',
+        verdict: 'matched',
+        output: { hasAudio: true, nonSilent: true, samplePeakDbfs: -1.2, overloadFree: true },
+        change: { verdict: 'changed', comparedWindows: 3, changedWindows: 3 },
+        fades: { verdict: 'matched', fadeIn: { verdict: 'matched' }, fadeOut: { verdict: 'matched' } }
+      },
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }
+
+    const missing = evaluateTaskResult('media.edit-music', result, spec)
+    assert.equal(missing.passed, false)
+    assert.ok(missing.reasons.some((item) => item.code === 'LOUDNESS_PROOF_MISSING'))
+
+    const passed = evaluateTaskResult('media.edit-music', {
+      ...result,
+      audioExportQc: matchedAudioExportQc(),
+      loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 }
+    }, spec)
+    assert.equal(passed.passed, true)
+    assert.ok(passed.checks.some((item) => item.id === 'loudness-proof' && item.passed))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C1 multitrack quality requires every aligned track, automation, ducking, loudness and undo project', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-audio-mix-'))
+  try {
+    const output = path.join(dir, 'audio-mix.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const tracks = [
+      { id: 'music-1', role: 'music', duckAgainstDialogue: true, automation: [] },
+      { id: 'ambience-1', role: 'ambience', duckAgainstDialogue: true, automation: [] },
+      { id: 'sfx-1', role: 'sfx', duckAgainstDialogue: false, automation: [] }
+    ]
+    const spec = { decision: { kind: 'media.mix-audio', verification: { toleranceSeconds: 0.2 }, audioMix: { dialogue: { enabled: true, automation: [{ startSeconds: 3, endSeconds: 4, volume: 0.7 }] }, tracks, master: { loudness: { enabled: true } } } } }
+    const base = {
+      success: true,
+      outputs: [output],
+      expectedDurationSeconds: 6,
+      durationSeconds: 6.02,
+      timelineReceipt: [
+        { sourceRange: '00:00.000 → 00:06.000', outputRange: '00:00.000 → 00:06.000' },
+        ...tracks.map(() => ({ sourceRange: '00:00.000 → 素材结束', outputRange: '00:00.000 → 00:06.000' }))
+      ],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false },
+      loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched', integratedLufs: -16.1, truePeakDbtp: -1.3 },
+      audioExportQc: matchedAudioExportQc(),
+      audioMixProof: {
+        schemaVersion: 1,
+        method: 'decoded-multitrack-pcm-v1',
+        verdict: 'matched',
+        output: { nonSilent: true, overloadFree: true, samplePeakDbfs: -1.4 },
+        tracks: tracks.map((track) => ({ id: track.id, role: track.role, aligned: true })),
+        automation: { requested: 1, configured: 1 },
+        ducking: { configuredTracks: 2 },
+        dialogue: { configured: true }
+      }
+    }
+    assert.equal(evaluateTaskResult('media.edit-audio-mix', base, spec).passed, true)
+    const misaligned = structuredClone(base)
+    misaligned.audioMixProof.tracks[1].aligned = false
+    const failed = evaluateTaskResult('media.edit-audio-mix', misaligned, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'TRACK_ALIGNMENT_MISMATCH'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('C2 audio repair quality requires measurable repairs and an explicit non-AI separation warning', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentplay-quality-audio-repair-'))
+  try {
+    const outputs = ['repaired.mp4', 'voice.wav', 'accompaniment.wav'].map((name) => path.join(dir, name))
+    fs.writeFileSync(outputs[0], Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    fs.writeFileSync(outputs[1], Buffer.alloc(2048, 1)); fs.writeFileSync(outputs[2], Buffer.alloc(2048, 2))
+    const repair = { denoise: { enabled: true }, dcRemoval: { enabled: true }, silenceRepair: { enabled: true }, loudness: { enabled: true }, separation: { enabled: true } }
+    const spec = { decision: { kind: 'media.repair-audio', verification: { toleranceSeconds: 0.2 }, audioRepair: repair } }
+    const base = {
+      success: true, outputs, expectedDurationSeconds: 6, durationSeconds: 6.02,
+      audioRepairProof: { schemaVersion: 1, method: 'decoded-audio-repair-v1', denoise: { verdict: 'improved' }, dcRemoval: { verdict: 'improved' }, silenceRepair: { verdict: 'filled', restoresSpeech: false } },
+      separationProof: { schemaVersion: 1, method: 'stereo-mid-side-v1', verdict: 'matched-with-artifact-warning', outputs: [{}, {}], distinct: true, artifactWarning: '有串音和变薄风险；这不是AI专业分轨。', claims: { professionalAiSeparation: false, mayContainBleed: true } },
+      loudnessProof: { schemaVersion: 1, method: 'ebur128-post-encode-v1', verdict: 'matched' },
+      audioExportQc: matchedAudioExportQc('source-contained'),
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: outputs[0], canUndo: true }
+    }
+    const passed = evaluateTaskResult('media.audio-repair', base, spec)
+    assert.equal(passed.passed, true)
+    assert.equal(passed.score, 100)
+    const dishonest = structuredClone(base); dishonest.separationProof.artifactWarning = ''
+    const failed = evaluateTaskResult('media.audio-repair', dishonest, spec)
+    assert.equal(failed.passed, false)
+    assert.ok(failed.reasons.some((item) => item.code === 'SEPARATION_WARNING_MISSING'))
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('removed-segment media uses the same artifact, duration, timeline and project quality gate', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-remove-segment-'))
+  try {
+    const output = path.join(dir, 'removed.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const quality = evaluateTaskResult('media.edit-remove', {
+      success: true,
+      outputs: [output],
+      durationSeconds: 14.03,
+      expectedDurationSeconds: 14,
+      frameProof: { verdict: 'matched', boundaries: [{ first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } }] },
+      timelineReceipt: [
+        { operation: '删除片段', sourceRange: '00:04.000 → 00:20.000', outputRange: '未进入成片' },
+        { operation: '保留片段', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:00.000 → 00:04.000' }
+      ],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }, { decision: { kind: 'media.remove-segment', verification: { toleranceSeconds: 0.2 } } })
+
+    assert.equal(quality.passed, true)
+    assert.equal(quality.score, 100)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('reordered concat quality requires a receipt for every frozen segment', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-concat-segments-'))
+  try {
+    const output = path.join(dir, 'reordered.mp4')
+    fs.writeFileSync(output, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(2048)]))
+    const spec = {
+      decision: {
+        kind: 'media.concat-segments',
+        timeline: { segments: [{}, {}], durationSeconds: 8 },
+        verification: { toleranceSeconds: 0.2 }
+      }
+    }
+    const result = {
+      success: true,
+      outputs: [output],
+      durationSeconds: 8.03,
+      expectedDurationSeconds: 8,
+      frameProof: { verdict: 'matched', boundaries: [
+        { first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } },
+        { first: { verdict: 'matched', matchDiff: 0.1, margin: 8 }, last: { verdict: 'matched', matchDiff: 0.2, margin: 7 } }
+      ] },
+      timelineReceipt: [
+        { operation: '拼接片段 1', sourceRange: '00:08.000 → 00:12.000', outputRange: '00:00.000 → 00:04.000' },
+        { operation: '拼接片段 2', sourceRange: '00:00.000 → 00:04.000', outputRange: '00:04.000 → 00:08.000' }
+      ],
+      projectCapsule: { schemaVersion: 1, projectId: 'edit-1', versionId: 'version-2', currentPath: output, cursor: 1, versionCount: 2, canUndo: true, canRedo: false }
+    }
+
+    assert.equal(evaluateTaskResult('media.edit-concat', result, spec).passed, true)
+    const incompleteProof = evaluateTaskResult('media.edit-concat', { ...result, frameProof: { verdict: 'matched', boundaries: result.frameProof.boundaries.slice(0, 1) } }, spec)
+    assert.equal(incompleteProof.passed, false)
+    assert.ok(incompleteProof.reasons.some((item) => item.code === 'FRAME_PROOF_INCOMPLETE'))
+    const incomplete = evaluateTaskResult('media.edit-concat', { ...result, timelineReceipt: result.timelineReceipt.slice(0, 1) }, spec)
+    assert.equal(incomplete.passed, false)
+    assert.ok(incomplete.reasons.some((item) => item.code === 'SEGMENT_RECEIPT_INCOMPLETE'))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
