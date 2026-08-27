@@ -59,9 +59,9 @@ test('0.9.0 reports strict closure separately from implementation coverage again
 
 test('0.9.1 records completed semantic and professional visual groups without overstating later work', () => {
   const content = section('### 0.9.1：', '### 0.9.2 ')
-  assert.match(content, /功能交付完成率：\*\*96%（24\/25）\*\*/)
-  assert.equal(checkboxCount(content, true), 24)
-  assert.equal(checkboxCount(content, false), 1)
+  assert.match(content, /功能交付完成率：\*\*100%（25\/25）\*\*/)
+  assert.equal(checkboxCount(content, true), 25)
+  assert.equal(checkboxCount(content, false), 0)
   assert.match(content, /#### A\. 语义剪辑（5\/5）/)
   assert.match(content, /删掉废话、停顿、重复和跑题段落/)
   assert.match(content, /多轨对白、音乐、环境声和音效/)
@@ -216,7 +216,7 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /三条活跃时刻相对源片像素差为1\.3008\/0\.8350\/1\.4209/)
   assert.match(content, /990 tests、990 pass、0 fail、0 skip/)
   assert.match(content, /D组5\/5闭环，0\.9\.1更新为20\/25=80%/)
-  assert.match(content, /#### E\. AI 素材、个人风格与批处理（4\/5）/)
+  assert.match(content, /#### E\. AI 素材、个人风格与批处理（5\/5）/)
   assert.match(content, /第二十九个纵向切片（E1闭环并正式勾选）/)
   assert.match(content, /ai-generated-asset-bundle-v1/)
   assert.match(content, /审批对象消费前模型\/生图调用严格为0/)
@@ -245,6 +245,13 @@ test('0.9.1 records completed semantic and professional visual groups without ov
   assert.match(content, /toolCalls=1\/1/)
   assert.match(content, /1008 tests、1008 pass、0 fail、0 skip/)
   assert.match(content, /E组更新为4\/5，0\.9\.1更新为24\/25=96%/)
+  assert.match(content, /第三十三个纵向切片（E5闭环并正式勾选）/)
+  assert.match(content, /agentplay\.professional-corpus-e5/)
+  assert.match(content, /20\/20质量100/)
+  assert.match(content, /INVALID_SAMPLE_ASPECT_RATIO/)
+  assert.match(content, /P50 5506\.9ms\/样本、P95 36077\.2ms\/样本/)
+  assert.match(content, /1011 tests、1011 pass、0 fail、0 skip/)
+  assert.match(content, /E组5\/5、0\.9\.1固定分母25\/25=100%闭环/)
 })
 
 test('roadmap reflects the current public source and stable release boundary', () => {

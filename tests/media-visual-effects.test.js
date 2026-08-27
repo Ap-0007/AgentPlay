@@ -30,6 +30,8 @@ test('real combined crop, scale, motion, mask, blur and color effects produce ve
     assert.deepEqual(result.effectReceipt.outputDimensions, { width: 100, height: 180 })
     assert.equal(result.effectReceipt.changed, true)
     assert.deepEqual(result.effectReceipt.effectKinds, ['crop', 'scale', 'motion', 'mask', 'blur', 'color'])
+    const sar = spawnSync(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=sample_aspect_ratio', '-of', 'default=nw=1:nk=1', output], { encoding: 'utf8' })
+    assert.equal(String(sar.stdout || '').trim(), '1:1', '组合裁切/推近后必须显式归一SAR，不能让统一视觉门误杀')
     assert.equal(hash(source), before)
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })

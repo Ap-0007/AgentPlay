@@ -1720,7 +1720,8 @@ class MediaEditService {
     const args = ['-hide_banner', '-nostdin', '-i', source]
     const pipEffects = decision.effects.filter((item) => item.type === 'pip')
     for (const pip of pipEffects) { if (!this.fs.existsSync(pip.path)) throw new Error(`画中画素材不存在：${path.basename(pip.path)}`); args.push('-i', path.resolve(pip.path)) }
-    const graph = [`[0:v]${filters.length ? filters.join(',') : 'null'}[base]`]
+    filters.push('setsar=1')
+    const graph = [`[0:v]${filters.join(',')}[base]`]
     let current = 'base'
     pipEffects.forEach((pip, index) => {
       const pipWidth = even(width * Number(pip.scale)); const margin = Math.max(4, even(Math.min(width, height) * 0.03)); const positions = { 'top-left': [margin, margin], 'top-right': [`W-w-${margin}`, margin], 'bottom-left': [margin, `H-h-${margin}`], 'bottom-right': [`W-w-${margin}`, `H-h-${margin}`], center: ['(W-w)/2', '(H-h)/2'] }; const [x, y] = positions[pip.position] || positions['top-right']
