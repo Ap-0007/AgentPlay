@@ -6,18 +6,23 @@ const path = require('node:path')
 const root = path.join(__dirname, '..')
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8')
 
-test('public onboarding keeps stable downloads separate from the 0.8.0 source candidate', () => {
+test('public onboarding keeps stable 0.7.6 separate from the unsigned 0.9.1 preview in both languages', () => {
   const readme = read('README.md')
+  const chineseReadme = read('README.zh-CN.md')
   const quickStart = read('docs/QUICK_START.md')
 
-  for (const content of [readme, quickStart]) {
-    assert.match(content, /(?:公开)?稳定版[^。\n]*0\.7\.6|0\.7\.6[^。\n]*(?:公开)?稳定版/)
-    assert.match(content, /0\.8\.0[^。\n]*(?:源码)?候选|(?:源码)?候选[^。\n]*0\.8\.0/)
-    assert.match(content, /尚未.*签名|未经签名|未取得 Authenticode 签名/s)
-  }
-  assert.match(readme, /5 分钟上手/)
+  assert.match(readme, /current public stable release[^\n]*v0\.7\.6/i)
+  assert.match(readme, /0\.9\.1[^\n]*unsigned Preview/i)
+  assert.match(readme, /Unsigned Preview\/Beta builds[^\n]*prereleases/i)
+  assert.match(readme, /Five-minute start/)
   assert.match(readme, /discussions/)
   assert.match(readme, /resources\/icons\/agentplay-mark\.svg/)
+
+  for (const content of [chineseReadme, quickStart]) {
+    assert.match(content, /(?:公开)?稳定版[^。\n]*0\.7\.6|0\.7\.6[^。\n]*(?:公开)?稳定版/)
+    assert.match(content, /0\.9\.1[^。\n]*(?:Preview|Prerelease|预览)|(?:Preview|Prerelease|预览)[^。\n]*0\.9\.1/i)
+    assert.match(content, /NotSigned|尚未.*签名|未经签名|未取得 Authenticode 签名/s)
+  }
 })
 
 test('community guidance distinguishes real adoption from maintainer and bot activity', () => {
@@ -47,7 +52,7 @@ test('structured issue forms collect reproducible evidence without secrets', () 
 })
 
 test('local links in onboarding documents resolve to repository files', () => {
-  const documents = ['README.md', 'SUPPORT.md', 'docs/QUICK_START.md', 'docs/COMMUNITY.md']
+  const documents = ['README.md', 'README.zh-CN.md', 'SUPPORT.md', 'docs/QUICK_START.md', 'docs/COMMUNITY.md']
   const markdownLink = /!?\[[^\]]*\]\(([^)]+)\)/g
 
   for (const document of documents) {

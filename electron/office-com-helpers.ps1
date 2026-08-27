@@ -3,6 +3,11 @@ $script:AgentPlayTransientOfficeStartupHResults = @(
   -2147023174  # 0x800706BA RPC_S_SERVER_UNAVAILABLE
 )
 
+$script:AgentPlayAlreadyExitedOfficeHResults = @(
+  -2147023174, # 0x800706BA RPC_S_SERVER_UNAVAILABLE
+  -2147023170  # 0x800706BE RPC_S_CALL_FAILED
+)
+
 function New-AgentPlayOfficeApplication {
   param(
     [Parameter(Mandatory=$true)][string]$ProgId,
@@ -29,7 +34,7 @@ function Stop-AgentPlayOfficeApplication {
   } catch {
     # Office may exit after its last read-only document closes. RPC unavailable
     # means the target process is already gone; every other HRESULT must fail.
-    if ($_.Exception.HResult -ne -2147023174) { throw }
+    if ($script:AgentPlayAlreadyExitedOfficeHResults -notcontains $_.Exception.HResult) { throw }
     Write-Output "$Name QUIT OK | process already exited"
   } finally {
     try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Application) } catch { }

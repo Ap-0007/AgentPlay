@@ -7,7 +7,7 @@ index 177eb99..88e7900 100644
              timedOut = true;
              childProcess.kill();
 -        }, 4 * 60 * 1000);
-+        }, 15 * 60 * 1000);
++        }, 30 * 60 * 1000);
          childProcess.on("error", (err) => {
              clearTimeout(timeout);
              reject(err);
@@ -16,7 +16,7 @@ index 177eb99..88e7900 100644
              clearTimeout(timeout);
              if (timedOut) {
 -                reject(new Error(`${command} timed out after 4 minutes`));
-+                reject(new Error(`${command} timed out after 15 minutes`));
++                reject(new Error(`${command} timed out after 30 minutes`));
              }
              else if (code === 0) {
                  resolve({ stdout, stderr });
