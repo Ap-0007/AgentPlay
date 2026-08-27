@@ -26,6 +26,19 @@
 
 ![AgentPlay workspace](docs/assets/promo/social-preview.png)
 
+<table>
+  <tr>
+    <td width="33%"><img src="marketing/remotion/public/workspace.png" alt="AgentPlay unified workspace with a local video"></td>
+    <td width="33%"><img src="marketing/remotion/public/edit.png" alt="AgentPlay natural-language non-destructive video editing result"></td>
+    <td width="33%"><img src="marketing/remotion/public/create.png" alt="AgentPlay AI asset generation result with provenance"></td>
+  </tr>
+  <tr>
+    <td align="center">One calm entry</td>
+    <td align="center">Say the edit</td>
+    <td align="center">Create with provenance</td>
+  </tr>
+</table>
+
 AgentPlay is a desktop workspace built around one simple interaction: open a file or paste a link, then describe the result you want. It combines reliable playback with downloads, subtitles, video analysis, natural-language editing, document work, AI creation, and visible delivery evidence.
 
 It is not another hidden automation spinner. Source files are preserved, risky actions require approval, long tasks have checkpoints, and completed work can carry quality scores, failure reasons, repair history, and hashes.
