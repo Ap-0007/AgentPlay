@@ -1,6 +1,6 @@
 # SignPath Foundation re-application evidence
 
-Updated: 2026-08-23
+Updated: 2026-08-27
 
 This page is the public, reproducible evidence package for AgentPlay's free open-source code-signing re-application. It contains no credentials or private application data. Approval remains solely at SignPath Foundation's discretion.
 
@@ -11,8 +11,10 @@ The free OSS re-application was submitted through the official SignPath Foundati
 ## Project identity
 
 - Project: AgentPlay
-- Repository and homepage: <https://github.com/wg5759/AgentPlay>
-- Public download: <https://github.com/wg5759/AgentPlay/releases/tag/v0.7.6>
+- Repository: <https://github.com/wg5759/AgentPlay>
+- Project homepage and real-interface demo: <https://wg5759.github.io/AgentPlay/>
+- Stable public download: <https://github.com/wg5759/AgentPlay/releases/tag/v0.7.6>
+- Latest unsigned Preview: <https://github.com/wg5759/AgentPlay/releases/tag/v0.9.1-preview.1>
 - License: Apache License 2.0 for project-owned source; bundled upstream components retain their own open-source licenses as recorded in `THIRD_PARTY_NOTICES.md`.
 - Maintainer, committer and reviewer: [wg5759](https://github.com/wg5759)
 - Signing approver: [wg5759](https://github.com/wg5759)
@@ -28,12 +30,14 @@ Public facts available for re-review:
 - The repository has been public since 2026-07-16 and is actively maintained.
 - The current stable public release is `v0.7.6`, published on 2026-08-10 in the same Windows installer form that the project intends to sign.
 - That release contains a Windows installer, SPDX 2.3 SBOM, security-scan report, verification report and SHA-256 checksums. The installer has recorded public downloads.
-- The repository now has one genuine non-maintainer Star (`fayyi`) and one genuine non-maintainer Fork (`TheThingInTheThing`). The fork has no commits ahead of upstream; this is stated honestly rather than presented as a contribution.
+- The unsigned `v0.9.1-preview.1` GitHub Prerelease is also public. It contains eight release assets: installer, portable ZIP, SHA-256 list, release manifest, verification report, packaged security scan, GitHub Dependency Graph SPDX 2.3 SBOM and reviewed installer script. All eight Draft assets were downloaded and hash-compared before publication; the public installer and portable ZIP were then downloaded anonymously and matched the published SHA-256 values.
+- The repository now has one genuine non-maintainer Star (`fayyi`) and three genuine non-maintainer Forks (`TheThingInTheThing`, `VedantMadane` and `Ap-0007`). No fork has submitted a contribution, so these are reported only as external discovery signals.
 - GitHub Discussions, structured Issue Forms, support guidance, a five-minute quick start and contribution guidance are public.
-- Ubuntu and Windows GitHub-hosted quality jobs, production and complete dependency audits, source checks and release security scans are reproducible. The 2026-08-23 candidate head passed both jobs in [Actions run 32614121530](https://github.com/wg5759/AgentPlay/actions/runs/32614121530).
+- The primary README is English, the Chinese README remains available, the repository has a real installed-app screenshot gallery, and the public GitHub Pages site carries a 45-second real-interface demo.
+- Ubuntu and Windows GitHub-hosted quality jobs, production and complete dependency audits, source checks and release security scans are reproducible. The 2026-08-27 public master head passed both jobs in [Actions run 33070580035](https://github.com/wg5759/AgentPlay/actions/runs/33070580035).
 - Public GPL compliance evidence for bundled mpv includes a pinned binary archive, manifest and complete corresponding source: <https://github.com/wg5759/AgentPlay/releases/tag/mpv-gpl-v0.41.0-20260719>.
 
-This is still a small project. One Star and one Fork are evidence of external discovery, not proof of broad adoption. The application asks SignPath Foundation to re-evaluate the project using the complete released, documented and verifiable-build record.
+This is still a small project. One Star and three Forks are evidence of external discovery, not proof of broad adoption. There are still no external Issues, Discussions or pull requests. The application asks SignPath Foundation to re-evaluate the project using the complete released, documented and verifiable-build record.
 
 ## Security, privacy and release controls
 
@@ -62,12 +66,14 @@ AgentPlay is an Apache-2.0, local-first Windows desktop media and content workst
 ### Repository and download URLs
 
 - Repository/homepage: `https://github.com/wg5759/AgentPlay`
-- Download: `https://github.com/wg5759/AgentPlay/releases/tag/v0.7.6`
+- Stable download: `https://github.com/wg5759/AgentPlay/releases/tag/v0.7.6`
+- Unsigned Preview: `https://github.com/wg5759/AgentPlay/releases/tag/v0.9.1-preview.1`
+- Project homepage: `https://wg5759.github.io/AgentPlay/`
 - Re-application evidence: `https://github.com/wg5759/AgentPlay/blob/master/docs/SIGNPATH_REAPPLICATION.md` (available after merge)
 
 ### Build and reputation statement
 
-Windows artifacts are built from the public repository on GitHub-hosted runners. Unsigned artifacts are uploaded to GitHub Actions before the SignPath signing request, allowing SignPath to verify repository, workflow and commit origin. Releases include an SPDX SBOM, security scan, verification report and SHA-256 list. Since the prior rejection the repository has shipped a complete public Windows release, enabled Discussions and structured contribution/support entry points, retained green Ubuntu/Windows gates, and gained one genuine external Star and one genuine external Fork. We do not claim those two signals as broad adoption or external contribution.
+Windows artifacts are built from the public repository on GitHub-hosted runners. Unsigned artifacts are uploaded to GitHub Actions before the SignPath signing request, allowing SignPath to verify repository, workflow and commit origin. Releases include an SPDX SBOM, security scan, verification report and SHA-256 list. Since the prior rejection the repository has shipped a complete stable Windows release and an eight-asset unsigned Preview, published a real-interface website and demo, enabled Discussions and structured contribution/support entry points, retained green Ubuntu/Windows gates, and gained one genuine external Star and three genuine external Forks. We report these signals only as external discovery, not broad adoption or external contribution.
 
 ## Remaining human-only fields
 
