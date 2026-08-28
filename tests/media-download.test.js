@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -124,6 +125,54 @@ test('direct media download resumes a persisted partial file with HTTP Range', a
   assert.equal(fs.readFileSync(result.outputPath, 'utf8'), 'abcdef')
   assert.equal(result.bytes, 6)
   assert.equal(checkpoints.at(-1).received, 6)
+})
+
+test('direct media download waits for the Windows file handle to close before reporting completion', async (t) => {
+  const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-close-'))
+  t.after(() => fs.rmSync(destDir, { recursive: true, force: true }))
+  const originalCreateWriteStream = fs.createWriteStream
+  const originalRenameSync = fs.renameSync
+  const delayedStream = new EventEmitter()
+  delayedStream.closed = false
+  delayedStream.write = () => true
+  delayedStream.end = (callback) => {
+    callback()
+    setTimeout(() => {
+      delayedStream.closed = true
+      delayedStream.emit('close')
+    }, 20)
+  }
+  delayedStream.destroy = () => {
+    if (delayedStream.closed) return
+    delayedStream.closed = true
+    delayedStream.emit('close')
+  }
+  fs.createWriteStream = () => delayedStream
+  fs.renameSync = () => {}
+  t.after(() => {
+    fs.createWriteStream = originalCreateWriteStream
+    fs.renameSync = originalRenameSync
+  })
+
+  let closed = false
+  delayedStream.once('close', () => { closed = true })
+  let resolved = false
+  const pending = downloadRemoteMedia('https://cdn.com/close.mp4', {
+    destDir,
+    dnsLookup: dnsPublic,
+    fetchImpl: fetchReturning(200, {
+      headers: { 'content-type': 'video/mp4', 'content-length': '3' },
+      chunks: [Buffer.from('abc')]
+    })
+  }).then((result) => {
+    resolved = true
+    return result
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.equal(resolved, false, 'download promise must not resolve before the write stream closes')
+  await pending
+  assert.equal(closed, true)
 })
 
 test('rejects html pages with a site-link hint and oversized files', async () => {

@@ -76,6 +76,11 @@ function fileNameFor(parsed, contentType) {
   return sanitizeFileName(decoded + (extByType[contentType] || '.mp4'))
 }
 
+function waitForStreamClose(stream) {
+  if (stream.closed) return Promise.resolve()
+  return new Promise((resolve) => stream.once('close', resolve))
+}
+
 async function downloadRemoteMedia(url, { destDir, onProgress, onCheckpoint, checkpoint, signal, fetchImpl, dnsLookup } = {}) {
   const fetcher = fetchImpl || globalThis.fetch
   if (!fetcher) throw new Error('当前环境缺少下载能力')
@@ -130,6 +135,9 @@ async function downloadRemoteMedia(url, { destDir, onProgress, onCheckpoint, che
   const tempPath = acceptedResume ? resumeTempPath : `${finalPath}.agentplay.part`
   if (!acceptedResume && fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true })
   const out = fs.createWriteStream(tempPath, { flags: acceptedResume ? 'a' : 'w' })
+  const closePromise = waitForStreamClose(out)
+  let streamError = null
+  out.once('error', (error) => { streamError = error })
   let received = acceptedResume ? resumeReceived : 0
   onCheckpoint?.({ received, total, tempPath, finalPath, finalUrl: current })
   try {
@@ -145,11 +153,16 @@ async function downloadRemoteMedia(url, { destDir, onProgress, onCheckpoint, che
       onCheckpoint?.({ received, total, tempPath, finalPath, finalUrl: current })
     }
     await new Promise((resolve, reject) => { out.end((error) => (error ? reject(error) : resolve())) })
+    await closePromise
+    if (streamError) throw streamError
     if (total && received !== total) throw new Error(`下载不完整（${received}/${total} 字节）`)
     fs.renameSync(tempPath, finalPath)
     return { outputPath: finalPath, bytes: received, finalUrl: current }
   } catch (error) {
-    try { out.destroy() } catch { /* 已关闭 */ }
+    if (!out.closed) {
+      try { out.destroy() } catch { /* 已关闭 */ }
+      await closePromise
+    }
     throw error
   }
 }
