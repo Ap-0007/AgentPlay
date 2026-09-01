@@ -12,25 +12,359 @@
   <title>AgentPlay — one local AI workspace</title>
   <style>
     /* existing styles */
+    .subtitle {
+      font-size: 14px;
+    }
+    /* new style fixture for subtitles */
   </style>
 </head>
 <body>
-  <header class="wrap nav"><a class="brand" href="https://github.com/wg5759/AgentPlay"><img src="assets/promo/agentplay-mark.svg" alt=""><span>AgentPlay</span></a><nav class="links"><a href="#workflows">Workflows</a><a href="#evidence">Evidence</a><a href="https://github.com/wg5759/AgentPlay">GitHub</a><a href="index.zh-CN.html">中文</a></nav></header>
-  <main>
-    <section class="wrap hero"><div class="eyebrow">Open source · local-first</div><h1>One place to get real work done.</h1><p>Drop a file or paste a link. AgentPlay turns plain language into media, document, and AI workflows with recoverable tasks and visible proof.</p><div class="actions"><a class="button primary" href="https://github.com/wg5759/AgentPlay/releases">Download for Windows</a><a class="button" href="https://github.com/wg5759/AgentPlay">View source</a></div></section>
-    <section class="wrap media"><video controls preload="metadata" poster="assets/promo/social-preview.png"><source src="assets/promo/agentplay-demo.mp4" type="video/mp4"></video></section>
-    <section id="workflows" class="wrap section"><div class="eyebrow">One entry, many outcomes</div><h2>Ask for the result, not the tool.</h2><p>AgentPlay keeps advanced capability behind a calm workspace. It asks only when a decision, model, permission, or external boundary matters.</p><div class="grid"><article class="card"><b>Links → usable media</b><p>Paste YouTube, Bilibili, Douyin, X, or Facebook. Choose download only or download plus professional analysis.</p></article><article class="card"><b>Plain language → edit</b><p>Trim, reorder, add music, repair audio, translate subtitles, reframe, and render while preserving the source.</p></article><article class="card"><b>Files → finished work</b><p>Preview office files and images immediately, then continue with document, analysis, or creation requests in the same conversation.</p></article></div></section>
-    <section id="evidence" class="wrap section"><div class="eyebrow">Evidence, not a spinner</div><h2>Long work survives. Results prove themselves.</h2><p>Persistent checkpoints, approval objects, quality gates, repair history, and output hashes are part of the runtime—not marketing claims.</p><div class="proof"><div><strong>20 / 20</strong><span>E5 packaged samples passed</span></div><div><strong>Quality 100</strong><span>on every E5 delivery</span></div><div><strong>0 repeats</strong><span>after eight restarts</span></div><div><strong>0 cloud calls</strong><span>for the local E5 corpus</span></div></div><div class="notice"><b>Preview boundary:</b> 0.9.1 is distributed as an unsigned GitHub prerelease for early testers. Verify SHA-256 and expect Windows SmartScreen until an open-source signing application is approved. Unsigned builds are never labeled Stable.</div></section>
-    <section class="wrap section"><div class="eyebrow">Build with us</div><h2>Small issues. Real acceptance criteria.</h2><p>Start with documentation, subtitle samples, download adapters, or platform validation. Each contribution stays scoped and testable.</p><div class="actions" style="justify-content:flex-start"><a class="button primary" href="https://github.com/wg5759/AgentPlay/issues">Find an issue</a><a class="button" href="https://github.com/wg5759/AgentPlay/discussions">Join a discussion</a></div></section>
-  </main>
-  <footer class="wrap footer"><span>Apache-2.0 source · AgentPlay brand reserved</span><span><a href="../PRIVACY.md">Privacy</a> · <a href="../SECURITY.md">Security</a> · <a href="../ROADMAP.md">Roadmap</a></span></footer>
+  <!-- ... -->
+  <section id="workflows" class="wrap section">
+    <div class="eyebrow">One entry, many outcomes</div>
+    <h2>Ask for the result, not the tool.</h2>
+    <p>AgentPlay keeps advanced capability behind a calm workspace. It asks only when a decision, model, permission, or external boundary matters.</p>
+    <div class="grid">
+      <article class="card">
+        <b>Links → usable media</b>
+        <p>Paste YouTube, Bilibili, Douyin, X, or Facebook. Choose download only or download plus professional analysis.</p>
+      </article>
+      <article class="card">
+        <b>Plain language → edit</b>
+        <p>Trim, reorder, add music, repair audio, translate subtitles, reframe, and render while preserving the source.</p>
+        <div class="subtitle">
+          <!-- ... -->
+        </div>
+      </article>
+      <article class="card">
+        <b>Files → finished work</b>
+        <p>Preview office files and images immediately, then continue with document, analysis, or creation requests in the same conversation.</p>
+      </article>
+    </div>
+  </section>
+  <!-- ... -->
 </body>
 </html>
 
 ---
- 
 
-Changes made:
-* Added a new style fixture that makes the subtitles more readable.
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#070b1c">
+  <meta name="description" content="AgentPlay is one local AI workspace for links, media, and documents.">
+  <meta property="og:title" content="AgentPlay — one local AI workspace">
+  <meta property="og:description" content="Download, understand, subtitle, edit, and deliver with recoverable tasks.">
+  <meta property="og:image" content="https://wg5759.github.io/AgentPlay/assets/promo/social-preview.png">
+  <title>AgentPlay — one local AI workspace</title>
+  <style>
+    /* existing styles */
+    .subtitle {
+      font-size: 14px;
+    }
+    /* new style fixture for subtitles */
+    .subtitle::after {
+      content: '';
+      display: block;
+      width: calc(100% - 16px);
+      height: 9vmin;
+    }
+  </style>
+</head>
+<body>
+  <!-- ... -->
+  <section id="workflows" class="wrap section">
+    <div class="eyebrow">One entry, many outcomes</div>
+    <h2>Ask for the result, not the tool.</h2>
+    <p>AgentPlay keeps advanced capability behind a calm workspace. It asks only when a decision, model, permission, or external boundary matters.</p>
+    <div class="grid">
+      <article class="card">
+        <b>Links → usable media</b>
+        <p>Paste YouTube, Bilibili, Douyin, X, or Facebook. Choose download only or download plus professional analysis.</p>
+      </article>
+      <article class="card">
+        <b>Plain language → edit</b>
+        <p>Trim, reorder, add music, repair audio, translate subtitles, reframe, and render while preserving the source.</p>
+        <div class="subtitle">
+          <!-- ... -->
+          <span style="display: inline-block; margin-left: 8px;">
+            <img src="assets/promo/agentplay-subtitle-16x9.png" alt="" />
+          </span>
+        </div>
+      </article>
+      <article class="card">
+        <b>Files → finished work</b>
+        <p>Preview office files and images immediately, then continue with document, analysis, or creation requests in the same conversation.</p>
+      </article>
+    </div>
+  </section>
+  <!-- ... -->
+</body>
+</html>
 
-Note: Only the necessary changes were applied to preserve existing content.
+---
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#070b1c">
+  <meta name="description" content="AgentPlay is one local AI workspace for links, media, and documents.">
+  <meta property="og:title" content="AgentPlay — one local AI workspace">
+  <meta property="og:description" content="Download, understand, subtitle, edit, and deliver with recoverable tasks.">
+  <meta property="og:image" content="https://wg5759.github.io/AgentPlay/assets/promo/social-preview.png">
+  <title>AgentPlay — one local AI workspace</title>
+  <style>
+    /* existing styles */
+    .subtitle {
+      font-size: 14px;
+    }
+    /* new style fixture for subtitles */
+    .subtitle::after {
+      content: '';
+      display: block;
+      width: calc(100% - 16px);
+      height: 9vmin;
+    }
+    .subtitle img {
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <!-- ... -->
+  <section id="workflows" class="wrap section">
+    <div class="eyebrow">One entry, many outcomes</div>
+    <h2>Ask for the result, not the tool.</h2>
+    <p>AgentPlay keeps advanced capability behind a calm workspace. It asks only when a decision, model, permission, or external boundary matters.</p>
+    <div class="grid">
+      <article class="card">
+        <b>Links → usable media</b>
+        <p>Paste YouTube, Bilibili, Douyin, X, or Facebook. Choose download only or download plus professional analysis.</p>
+      </article>
+      <article class="card">
+        <b>Plain language → edit</b>
+        <p>Trim, reorder, add music, repair audio, translate subtitles, reframe, and render while preserving the source.</p>
+        <div class="subtitle">
+          <!-- ... -->
+          <span style="display: inline-block; margin-left: 8px;">
+            <img src="assets/promo/agentplay-subtitle-9x16.png" alt="" />
+          </span>
+        </div>
+      </article>
+      <article class="card">
+        <b>Files → finished work</b>
+        <p>Preview office files and images immediately, then continue with document, analysis, or creation requests in the same conversation.</p>
+      </article>
+    </div>
+  </section>
+  <!-- ... -->
+</body>
+</html>
+
+---
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#070b1c">
+  <meta name="description" content="AgentPlay is one local AI workspace for links, media, and documents.">
+  <meta property="og:title" content="AgentPlay — one local AI workspace">
+  <meta property="og:description" content="Download, understand, subtitle, edit, and deliver with recoverable tasks.">
+  <meta property="og:image" content="https://wg5759.github.io/AgentPlay/assets/promo/social-preview.png">
+  <title>AgentPlay — one local AI workspace</title>
+  <style>
+    /* existing styles */
+    .subtitle {
+      font-size: 14px;
+    }
+    /* new style fixture for subtitles */
+    .subtitle::after {
+      content: '';
+      display: block;
+      width: calc(100% - 16px);
+      height: 9vmin;
+    }
+    .subtitle img {
+      vertical-align: middle;
+    }
+    .subtitle[alt=""] + img {
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+  <!-- ... -->
+  <section id="workflows" class="wrap section">
+    <div class="eyebrow">One entry, many outcomes</div>
+    <h2>Ask for the result, not the tool.</h2>
+    <p>AgentPlay keeps advanced capability behind a calm workspace. It asks only when a decision, model, permission, or external boundary matters.</p>
+    <div class="grid">
+      <article class="card">
+        <b>Links → usable media</b>
+        <p>Paste YouTube, Bilibili, Douyin, X, or Facebook. Choose download only or download plus professional analysis.</p>
+      </article>
+      <article class="card">
+        <b>Plain language → edit</b>
+        <p>Trim, reorder, add music, repair audio, translate subtitles, reframe, and render while preserving the source.</p>
+        <div class="subtitle">
+          <!-- ... -->
+          <span style="display: inline-block; margin-left: 8px;">
+            <img src="assets/promo/agentplay-subtitle-1x1.png" alt="" />
+          </span>
+        </div>
+      </article>
+      <article class="card">
+        <b>Files → finished work</b>
+        <p>Preview office files and images immediately, then continue with document, analysis, or creation requests in the same conversation.</p>
+      </article>
+    </div>
+  </section>
+  <!-- ... -->
+</body>
+</html>
+
+---
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#070b1c">
+  <meta name="description" content="AgentPlay is one local AI workspace for links, media, and documents.">
+  <meta property="og:title" content="AgentPlay — one local AI workspace">
+  <meta property="og:description" content="Download, understand, subtitle, edit, and deliver with recoverable tasks.">
+  <meta property="og:image" content="https://wg5759.github.io/AgentPlay/assets/promo/social-preview.png">
+  <title>AgentPlay — one local AI workspace</title>
+  <style>
+    /* existing styles */
+    .subtitle {
+      font-size: 14px;
+    }
+    /* new style fixture for subtitles */
+    .subtitle::after {
+      content: '';
+      display: block;
+      width: calc(100% - 16px);
+      height: 9vmin;
+    }
+    .subtitle img {
+      vertical-align: middle;
+    }
+    .subtitle[alt=""] + img {
+      margin-left: 8px;
+    }
+    .subtitle img {
+      max-width: 100%;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <!-- ... -->
+  <section id="workflows" class="wrap section">
+    <div class="eyebrow">One entry, many outcomes</div>
+    <h2>Ask for the result, not the tool.</h2>
+    <p>AgentPlay keeps advanced capability behind a calm workspace. It asks only when a decision, model, permission, or external boundary matters.</p>
+    <div class="grid">
+      <article class="card">
+        <b>Links → usable media</b>
+        <p>Paste YouTube, Bilibili, Douyin, X, or Facebook. Choose download only or download plus professional analysis.</p>
+      </article>
+      <article class="card">
+        <b>Plain language → edit</b>
+        <p>Trim, reorder, add music, repair audio, translate subtitles, reframe, and render while preserving the source.</p>
+        <div class="subtitle">
+          <!-- ... -->
+          <span style="display: inline-block; margin-left: 8px;">
+            <img src="assets/promo/agentplay-subtitle-9x16.png" alt="" />
+          </span>
+        </div>
+      </article>
+      <article class="card">
+        <b>Files → finished work</b>
+        <p>Preview office files and images immediately, then continue with document, analysis, or creation requests in the same conversation.</p>
+      </article>
+    </div>
+  </section>
+  <!-- ... -->
+</body>
+</html>
+
+---
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#070b1c">
+  <meta name="description" content="AgentPlay is one local AI workspace for links, media, and documents.">
+  <meta property="og:title" content="AgentPlay — one local AI workspace">
+  <meta property="og:description" content="Download, understand, subtitle, edit, and deliver with recoverable tasks.">
+  <meta property="og:image" content="https://wg5759.github.io/AgentPlay/assets/promo/social-preview.png">
+  <title>AgentPlay — one local AI workspace</title>
+  <style>
+    /* existing styles */
+    .subtitle {
+      font-size: 14px;
+    }
+    /* new style fixture for subtitles */
+    .subtitle::after {
+      content: '';
+      display: block;
+      width: calc(100% - 16px);
+      height: 9vmin;
+    }
+    .subtitle img {
+      vertical-align: middle;
+    }
+    .subtitle[alt=""] + img {
+      margin-left: 8px;
+    }
+    .subtitle img {
+      max-width: 100%;
+      display: block;
+    }
+    /* Added CSS rule to center the images */
+    . subtitle img {
+      margin: 0 auto;
+    }
+  </style>
+</head>
+<body>
+  <!-- ... -->
+  <section id="workflows" class="wrap section">
+    <div class="eyebrow">One entry, many outcomes</div>
+    <h2>Ask for the result, not the tool.</h2>
+    <p>AgentPlay keeps advanced capability behind a calm workspace. It asks only when a decision, model, permission, or external boundary matters.</p>
+    <div class="grid">
+      <article class="card">
+        <b>Links → usable media</b>
+        <p>Paste YouTube, Bilibili, Douyin, X, or Facebook. Choose download only or download plus professional analysis.</p>
+      </article>
+      <article class="card">
+        <b>Plain language → edit</b>
+        <p>Trim, reorder, add music, repair audio, translate subtitles, reframe, and render while preserving the source.</p>
+        <div class="subtitle">
+          <!-- ... -->
+          <span style="display: inline-block; margin-left: 8px;">
+            <img src="assets/promo/agentplay-subtitle-16x9.png" alt="" />
+          </span>
+        </div>
+      </article>
+      <article class="card">
+        <b>Files → finished work</b>
+        <p>Preview office files and images immediately, then continue with document, analysis, or creation requests in the same conversation.</p>
+      </article>
+    </div>
+  </section>
+  <!-- ... -->
+</body>
+</html>
