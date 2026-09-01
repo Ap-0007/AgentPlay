@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/clip"
+        android:layout_width="108dp"
+        android:layout_height="192dp"
+        android:scaleX="1"
+        android:scaleY="1.7778" />
+    <item
+        android:id="@+id/subtitle"
+        android:layout_width="160dp"
+        android:layout_height="90dp"
+        android:scaleX="1"
+        android:scaleY="0.6" />
+
+</layout>
