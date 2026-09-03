@@ -1,32 +1,31 @@
-/* new code */
+import os
+from PIL import Image
 
-{
-  "$default": {
-    "style": "normal",
-    "fontFamily": "Arial"
-  },
-  "16:9": {
-    "style": "subtitles",
-    "fontFamily": "Arial",
-    "color": "#FFFFFF"
-  }
-}
+# Set image path and name
+image_path = "docs/assets/promo/social-preview.png"
+logo_design = Image.open(image_path)
 
-clip {
-  name: "clip_0",
-  image: [
-    {
-      url: "/path/to/image/1.png",
-      scale: [0.5, 0.5]
-    },
-    {
-      url: "/path/to/image/2.png",
-      scale: [0.5, 0.5]
-    }
-  ]
-}
+# Resize logo design to 1280x720 (16:9 format)
+resized_logo = logo_design.resize((1280, 720))
 
-subtitles {
-  defaultFontFamily: "Arial"
-  fontColor: "#FFFFFF"
-}
+# Save resized logo as new file
+new_image_path = os.path.join("docs", "assets", "promo", "social-preview-169.png")
+resized_logo.save(new_image_path)
+
+# Resize logo design to 1920x1080 (9:16 format)
+resized_logo_9by16 = logo_design.resize((1920, 1080))
+
+# Save resized logo as new file
+new_image_path_9by16 = os.path.join("docs", "assets", "promo", "social-preview-916.png")
+resized_logo_9by16.save(new_image_path_9by16)
+
+# Resize logo design to 1080x1920 (1:1 format)
+resized_logo_1by1 = logo_design.resize((1080, 1920))
+
+# Save resized logo as new file
+new_image_path_1by1 = os.path.join("docs", "assets", "promo", "social-preview-1120.png")
+resized_logo_1by1.save(new_image_path_1by1)
+
+# Create a new directory for review screenshots
+review_screenshots_dir = "docs/assets/promo/review-screenshots"
+os.makedirs(review_screenshots_dir, exist_ok=True)
