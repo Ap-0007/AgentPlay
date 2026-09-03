@@ -1,6 +1,11 @@
-ffmpeg -i input.mp4 -vf "drawtext=text=Hello World\0x000000;fontsize=50;x=cw-100:y=cw-100:fontsizecolor=white", output.mp4
+---
+ffmpeg -i input.mp4 -vf "drawtext=text=Hello World\0x000000;fontsize=50;x=cw-100;y=cw-100:fontsizecolor=white", output.mp4
 ffmpeg -i input.mp4 -vf "drawtext=text=Hello \nWorld!\0x000000;fontsize=50;x=cw-100:y=cw-100:fontsizecolor=white", output_16_9.mp4
 ffmpeg -i input.mp4 -vf "drawtext=text=\np\ncolor=White;textwidth=50.00\0x000000;fontsize=50;x=cw-100;y=cw-100:fontsizecolor=white", output_16_9_subtitle.mp4
 pnpm check
 ffmpeg -i input.mp4 -vf "drawtext=text=\n\nHello World!\n\n pnpm check\0x000000;fontsize=50;x=cw-100:y=cw-100:fontsizecolor=white", output_1_1.mp4
 ffmpeg -i input.mp4 -vf "drawtext=text=Hello World! \n Hello!\n pnpm check \0x000000;fontsize=50;x=cw-100;y=cw-100:fontsizecolor=white", output_9_16.mp4
+ffmpeg -i input.mp4 -vf "drawtext=text=Hello\nWorld!\0x000000;\nfont-size: 50;\n\nx=100;y=100:;\nfontsizecolor=white;\n\nduratio=10;\n\n0x000000;\nfont-size: 25;\nx=150;y=150:;\nfontsizecolor=white;,\n\ntextalign=left;\n" output_16_9_subtitle.mp4
+ffmpeg -i input.mp4 -vf "drawtext=text=Hello\nWorld!\0x000000;\nfont-size: 50;\n\nx=100;y=100:\nfontsizecolor=white;\nduratio=10;,\n\ntextalign=left;", output_1_1.mp4
+ffmpeg -i input.mp4 -vf "drawtext=text=Hello\nWorld!\0x000000;\nfont-size: 50;\nx=100;y=100:\nfontsizecolor=white;\nduratio=10;,\n\ntextalign=left;,\n\npnpcheck\n0x000000;\nfont-size: 25;\nx=150;y=150:;\nfontsizecolor=white;", output_9_16.mp4
+pnpm run build
